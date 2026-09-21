@@ -350,7 +350,7 @@ test('MEDIUM web PATCH is_active → setActive: sessiyalar yopiladi, ta’sischi
   assert.equal(p.status, 400);
   assert.match(p.body.message, /Ta’sischini bloklab bo‘lmaydi/);
   p = await E.http('PATCH', `/api/users/${fid}`, { role_code: 'EMPLOYEE', is_active: 0 }, admin.access_token);
-  assert.equal(p.status, 400, 'bitta so‘rovda tushirib-bloklab bo‘lmaydi');
+  assert.ok([400, 403].includes(p.status), 'bitta so‘rovda tushirib-bloklab bo‘lmaydi (ADMIN ta’sischi rolini o‘zgartira olmaydi — 403)');
   assert.deepEqual({ ...E.db.get('SELECT role_code, is_active FROM users WHERE id=?', fid) }, { role_code: 'FOUNDER', is_active: 1 });
   p = await E.http('PATCH', `/api/users/${E.user('admin@utax.uz').id}`, { is_active: false }, admin.access_token);
   assert.equal(p.status, 400);

@@ -308,7 +308,7 @@ export function register(app) {
       name: 'get_dashboard', perm: ['dashboard', 'VIEW'], parameters: obj(),
       description: 'Bosh sahifa: asosiy KPI (bank, kassa, jami pul, ishlatish mumkin, avans, oy daromadi/xarajati/sof foydasi, debitorlik), o‘tgan oyga nisbatan o‘zgarish %, kutayotgan ishlar soni',
       run: (_, ctx) => {
-        const d = S().reports.dashboard();
+        const d = S().reports.dashboard(null, ctx?.user || null); // debitorlik KPI ham scope bo'yicha
         const sc = rcvScope(ctx);
         const top = sc.manager_user_id ? S().receivables.summary(today(), sc).top_debtors.slice(0, 5) : d.receivables?.top || []; // SALES — faqat o'z mijozlari
         return { sana: d.as_of, oy: d.month, kpi: d.kpi, ozgarish_pct: d.deltas, kutayotgan: d.pending, korsatkichlar: d.indicators, debitorlik: omit(d.receivables, ['top']), top_qarzdorlar: top.map((x) => ({ mijoz: x.client, qarz: x.debt, kechikish_kun: x.days_overdue })) };

@@ -113,8 +113,13 @@ export function register(app) {
     markPaid(id, { bank_transaction_id, cash_transaction_id, paid_at }, ctx) {
       const e = db.get('SELECT * FROM expenses WHERE id=?', id);
       if (!e) throw notFound('Xarajat topilmadi');
-      if (e.status !== 'APPROVED' && e.status !== 'PAID') throw badRequest(`Faqat APPROVED xarajat to‘lanadi (hozir ${e.status})`);
-      db.run("UPDATE expenses SET status='PAID', paid_at=?, bank_transaction_id=COALESCE(?, bank_transaction_id), cash_transaction_id=COALESCE(?, cash_transaction_id), updated_at=? WHERE id=?", paid_at || today(), bank_transaction_id || null, cash_transaction_id || null, nowIso(), id);
+      // Bekor qilingan (reversal) yoki allaqachon to'langan xarajat qayta to'lanmaydi — web /pay, bot va oylik uchun bir xil qoida
+      if (e.reversed_at) throw badRequest('Xarajat bekor qilingan (reversal) — to‘lab bo‘lmaydi');
+      if (e.status === 'PAID') throw badRequest('Xarajat allaqachon to‘langan');
+      if (e.status !== 'APPROVED') throw badRequest(`Faqat APPROVED xarajat to‘lanadi (hozir ${e.status})`);
+      // Shartli UPDATE — parallel so'rovda faqat bittasi o'tadi
+      const r = db.run("UPDATE expenses SET status='PAID', paid_at=?, bank_transaction_id=COALESCE(?, bank_transaction_id), cash_transaction_id=COALESCE(?, cash_transaction_id), updated_at=? WHERE id=? AND status='APPROVED' AND reversed_at IS NULL", paid_at || today(), bank_transaction_id || null, cash_transaction_id || null, nowIso(), id);
+      if (!r?.changes) throw badRequest('Xarajat holati o‘zgargan — qayta tekshiring');
       audit(ctx, { action: 'EXPENSE_PAID', entity: 'expense', entityId: id, newValue: { bank_transaction_id, cash_transaction_id, paid_at } });
     },
     unpay(id, ctx) {

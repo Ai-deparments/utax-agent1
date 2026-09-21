@@ -28,7 +28,7 @@ export function startText(ctx) {
 }
 
 async function holat(ctx) {
-  const d = ctx.S.reports.dashboard();
+  const d = ctx.S.reports.dashboard(null, ctx.user);
   const k = d.kpi, dl = d.deltas, pd = d.pending;
   const html = lines(
     `${title('📊', 'Bugungi holat')} · ${esc(date(d.as_of))}`,

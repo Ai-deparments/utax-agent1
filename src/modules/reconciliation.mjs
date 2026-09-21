@@ -73,6 +73,9 @@ export function register(app) {
     for (const e of rows) {
       let score = 0;
       const reasons = [];
+      // «Bankdan to‘landi» (PAID, bog'lanmagan) nomzod — faqat to'langan sanasiga yaqin (±10 kun) ko'chirma uchun; aks holda eski to'lov
+      // yangi APPROVED xarajatning avtomatik bog'lanishini bo'lib qo'yadi
+      if (e.status === 'PAID' && (!e.paid_at || Math.abs(daysBetween(e.paid_at, tx.tx_date)) > 10)) continue;
       if (Math.abs(tx.amount - e.amount) <= Math.max(1, e.amount * tol)) { score += 55; reasons.push('amount'); } else continue;
       const sim = similarity(tx.counterparty_name, e.counterparty);
       if (sim >= 0.6) { score += Math.round(25 * sim); reasons.push('counterparty'); }
@@ -107,7 +110,9 @@ export function register(app) {
       const cands = tx.direction === 'INCOME' ? scoreIncome(tx) : scoreExpense(tx);
       if (!cands.length) { db.run("UPDATE bank_transactions SET matching_status='UNMATCHED', suggested_contract_id=NULL, confidence=0 WHERE id=?", tx.id); return { status: 'UNMATCHED' }; }
       const best = cands[0], second = cands[1];
-      const unique = !second || second.score < best.score - 10;
+      // Yagona nomzod: ball farqi > 10 yoki (xarajat) faqat eng yaxshisida xarajat kodi to'lov maqsadida bor
+      const codeOnlyBest = tx.direction !== 'INCOME' && best.reasons?.includes('expense code') && !second?.reasons?.includes('expense code');
+      const unique = !second || second.score < best.score - 10 || codeOnlyBest;
       if (tx.direction === 'INCOME') {
         if (best.score >= autoT && unique && ctx?.user?.role_code !== 'AI_AGENT') {
           svc.confirm(tx.id, best.contract_id, { ...ctx, source: ctx?.source || 'SYSTEM' }, { auto: true, confidence: best.score, reason: best.reasons.join(', ') });
