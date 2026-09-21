@@ -1,5 +1,5 @@
 import { api, get, post, setTokens, isLoggedIn, qs } from './api.js';
-import { h, clear, toast, err, icon, fmt, date } from './ui.js';
+import { h, clear, toast, err, icon, fmt, date, alert } from './ui.js';
 
 export const NAV = [
   ['dashboard', 'Bosh sahifa', 'dashboard', 'home'], ['treasury', 'Pul boshqaruvi', 'treasury', 'wallet'], ['contracts', 'Shartnomalar', 'contracts', 'contract'], ['transactions', 'Tushumlar', 'transactions', 'inflow'],
@@ -19,7 +19,8 @@ const root = document.getElementById('root');
 const logoMark = () => h('div', { class: 'mark' }, icon('x_mark', 20));
 
 // ---------- LOGIN ----------
-function renderLogin() {
+/** notice — login ustida ko'rsatiladigan ogohlantirish (masalan Telegram Mini App orqali kirish muvaffaqiyatsiz bo'lsa) */
+function renderLogin(notice) {
   const email = h('input', { class: 'input', type: 'email', placeholder: 'Elektron pochta', autocomplete: 'username', value: 'founder@utax.uz' });
   const pass = h('input', { class: 'input', type: 'password', placeholder: 'Parol', autocomplete: 'current-password' });
   const code = h('input', { class: 'input', placeholder: '2FA kodi (6 raqam)', inputmode: 'numeric', style: { display: 'none' } });
@@ -37,6 +38,7 @@ function renderLogin() {
   };
   clear(root).append(h('div', { class: 'login' }, h('form', { class: 'card box', onSubmit: submit, style: { padding: '28px' } },
     h('div', { class: 'brand' }, logoMark(), h('div', {}, h('div', { class: 'nm' }, 'UTAX Finance'), h('small', {}, 'Moliya boshqaruv tizimi'))),
+    notice ? h('div', { class: 'mb12' }, alert('warn', notice, 'send')) : null,
     h('div', { class: 'field mt8' }, h('label', {}, 'Elektron pochta'), email), h('div', { class: 'field mt12' }, h('label', {}, 'Parol'), pass), h('div', { class: 'field mt8' }, code), msg, btn,
     h('div', { class: 'xs muted mt16' }, 'Pilot foydalanuvchilar: founder@ · ceo@ · cfo@ · finance@ · accountant@ · sales@ · head.marketing@ · employee@ · auditor@ · admin@ (utax.uz). Parol: ', h('code', {}, 'Utax2026!')))));
   setTimeout(() => pass.focus(), 50);
@@ -105,9 +107,11 @@ async function route() {
   const query = Object.fromEntries(new URLSearchParams(queryPart || ''));
   const page = parts[0] || 'dashboard';
   const perm = NAV.find(([p]) => p === page)?.[2];
+  // Profil (parol, 2FA, Telegram botlar) — har bir kirgan foydalanuvchi uchun ochiq; boshqa sozlamalar ruxsat bilan
+  const openForAll = page === 'settings' && parts[1] === 'profile';
   renderNav();
   window.scrollTo(0, 0);
-  if (!PAGES[page] || (perm && !App.can(perm))) { clear(layout.main).append(h('div', { class: 'empty-state' }, icon('alert', 28), h('b', {}, 'Sahifa topilmadi yoki ruxsat yo‘q'))); return; }
+  if (!PAGES[page] || (perm && !openForAll && !App.can(perm))) { clear(layout.main).append(h('div', { class: 'empty-state' }, icon('alert', 28), h('b', {}, 'Sahifa topilmadi yoki ruxsat yo‘q'))); return; }
   const head = h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, NAV.find(([p]) => p === page)?.[1] || page), h('div', { class: 'sub' }, '')), h('div', { class: 'acts' }));
   const cont = h('div', {}, h('div', { class: 'empty-state' }, 'Yuklanmoqda…'));
   clear(layout.main).append(head, cont);
@@ -123,10 +127,67 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 
-export async function boot() {
-  if (!isLoggedIn()) return renderLogin();
-  try { await App.refreshMe(); } catch (e) { setTokens(null); return renderLogin(); }
+export async function boot(notice) {
+  if (!isLoggedIn()) return renderLogin(notice);
+  try { await App.refreshMe(); } catch (e) { setTokens(null); return renderLogin(notice); }
   renderLayout();
   if (!location.hash) location.hash = '#/dashboard'; else route();
 }
-boot();
+
+// ---------- TELEGRAM MINI APP ----------
+/**
+ * Bot tugmasi ilovani `https://domen/?tgp=<sahifa>#tgWebAppData=…&tgWebAppVersion=…` ko'rinishida ochadi.
+ * tgWebAppData — Telegram imzolagan xom initData satri: server uni bot tokeni bilan tekshirib, bog'langan foydalanuvchiga sessiya beradi.
+ * Marshrut hash'da emas, `?tgp` da keladi (hash'ni Telegram egallaydi). Kirishdan keyin manzil `#/<sahifa>` ga keltiriladi.
+ */
+const cleanRoute = (p) => String(p || '').replace(/^[#/]+/, '').replace(/[^\w\-/?=&.%]/g, '').slice(0, 200);
+
+/** telegram-web-app.js — faqat ready()/expand() uchun; yuklanmasa ham (bloklangan, sekin tarmoq) ilova ishlayveradi */
+function loadTelegramScript(timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const done = () => { try { window.Telegram?.WebApp?.ready(); window.Telegram?.WebApp?.expand(); } catch {} resolve(); };
+    if (window.Telegram?.WebApp) return done();
+    const s = document.createElement('script');
+    s.src = 'https://telegram.org/js/telegram-web-app.js';
+    s.async = true;
+    s.onload = done;
+    s.onerror = () => resolve();
+    document.head.append(s);
+    setTimeout(resolve, timeoutMs);
+  });
+}
+
+async function telegramLaunch() {
+  const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const initData = hashParams.get('tgWebAppData');
+  const tgp = new URLSearchParams(location.search).get('tgp');
+  if (!initData && tgp === null) return null;
+  let notice = null;
+  let route = cleanRoute(tgp);
+  if (initData) {
+    // Skript hash hali o'zgarmagan paytda yuklanishi kerak (u launch parametrlarini hash'dan o'qiydi)
+    const scriptReady = loadTelegramScript();
+    try {
+      // api.js emas: 401 da refresh urinishi va eski sessiya bilan aralashmasligi uchun to'g'ridan-to'g'ri fetch
+      const res = await fetch('/api/auth/telegram-webapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ init_data: initData }) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.access_token) {
+        setTokens(data);
+        if (!route && data.start_param) route = cleanRoute(String(data.start_param).replace(/__/g, '/'));
+      } else {
+        if (res.status === 401) setTokens(null); // boshqa Telegram hisobi yoki uzilgan bog'lanish — eski sessiya qolmasin
+        notice = data.message || 'Telegram orqali kirib bo‘lmadi. Elektron pochta va parol bilan kiring.';
+      }
+    } catch {
+      notice = 'Server bilan aloqa yo‘q. Birozdan so‘ng qayta urinib ko‘ring.';
+    }
+    await scriptReady;
+  }
+  history.replaceState(null, '', location.pathname + '#/' + (route || 'dashboard'));
+  return notice;
+}
+
+telegramLaunch().catch(() => null).then((notice) => {
+  boot(notice);
+  if (notice && isLoggedIn()) toast(notice, 'err'); // eski sessiya bilan davom etilsa ham sababi ko'rinsin
+});

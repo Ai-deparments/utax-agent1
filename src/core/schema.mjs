@@ -200,6 +200,38 @@ CREATE INDEX IF NOT EXISTS ix_audit_entity ON audit_logs(entity, entity_id);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_logs(ts);
 `,
   },
+  {
+    version: 2,
+    name: 'telegram_bots',
+    sql: `
+ALTER TABLE users ADD COLUMN telegram_user_id TEXT;
+ALTER TABLE users ADD COLUMN telegram_username TEXT;
+ALTER TABLE users ADD COLUMN telegram_linked_at TEXT;
+ALTER TABLE users ADD COLUMN telegram_link_expires TEXT;
+ALTER TABLE users ADD COLUMN tg_quiet_from TEXT;
+ALTER TABLE users ADD COLUMN tg_quiet_to TEXT;
+UPDATE users SET telegram_user_id = telegram_chat_id
+  WHERE id IN (SELECT MAX(id) FROM users WHERE telegram_chat_id IS NOT NULL AND telegram_chat_id NOT LIKE '-%' GROUP BY telegram_chat_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_tg ON users(telegram_user_id);
+
+CREATE TABLE IF NOT EXISTS bot_chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER REFERENCES users(id), bot_key TEXT NOT NULL, chat_id TEXT NOT NULL,
+  tg_user_id TEXT, tg_username TEXT, started_at TEXT NOT NULL, last_seen_at TEXT, blocked_at TEXT, UNIQUE(bot_key, chat_id));
+CREATE INDEX IF NOT EXISTS ix_bot_chats_user ON bot_chats(user_id);
+CREATE TABLE IF NOT EXISTS bot_dialogs (key TEXT PRIMARY KEY, state TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS notification_prefs (
+  user_id INTEGER NOT NULL REFERENCES users(id), type TEXT NOT NULL, telegram INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, type));
+
+ALTER TABLE notifications ADD COLUMN bot_key TEXT;
+ALTER TABLE notifications ADD COLUMN parent_id INTEGER;
+ALTER TABLE notifications ADD COLUMN tg_chat_id TEXT;
+ALTER TABLE notifications ADD COLUMN tg_message_id TEXT;
+ALTER TABLE notifications ADD COLUMN attempts INTEGER DEFAULT 0;
+ALTER TABLE notifications ADD COLUMN next_try_at TEXT;
+CREATE INDEX IF NOT EXISTS ix_notif_channel ON notifications(channel, sent_at);
+`,
+  },
 ];
 
 export function migrate(db) {

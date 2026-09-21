@@ -88,24 +88,30 @@ export function register(app) {
       }
       return { as_of: asOf, created: created.length, tasks: created };
     },
+    /** Undiruv vazifalari: {status, assigned_to} — status berilmasa SUPERSEDED'dan boshqasi */
+    listCollections(f = {}) {
+      const w = [f.status ? 'k.status=?' : "k.status<>'SUPERSEDED'"], p = f.status ? [f.status] : [];
+      if (f.assigned_to) { w.push('k.assigned_to=?'); p.push(f.assigned_to); }
+      return db.all(`SELECT k.*, c.contract_number, c.company_id, co.name AS client, co.phone AS client_phone, u.name AS assigned_name FROM collections k JOIN contracts c ON c.id=k.contract_id JOIN companies co ON co.id=c.company_id LEFT JOIN users u ON u.id=k.assigned_to WHERE ${w.join(' AND ')} ORDER BY k.task_date DESC, k.id DESC LIMIT 500`, ...p);
+    },
+    updateCollection(id, b, ctx) {
+      const k = db.get('SELECT * FROM collections WHERE id=?', id);
+      if (!k) throw notFound('Vazifa topilmadi');
+      const upd = {};
+      if (b.status) { upd.status = b.status; if (b.status === 'DONE') upd.done_at = nowIso(); }
+      if (b.note !== undefined) upd.note = b.note;
+      if (b.assigned_to !== undefined) upd.assigned_to = b.assigned_to;
+      db.update('collections', k.id, upd);
+      audit(ctx, { action: 'COLLECTION_UPDATED', entity: 'collection', entityId: k.id, oldValue: k, newValue: upd });
+      return db.get('SELECT * FROM collections WHERE id=?', k.id);
+    },
   };
   app.services.receivables = svc;
 
   r.get('/api/receivables', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Debitorlik jadvali', query: ['filter', 'service', 'manager_user_id', 'company_id', 'min_amount', 'max_amount', 'q', 'as_of'] }, async (ctx) => svc.list(ctx.query, ctx.query.as_of || today()).map(({ portions, ...x }) => x));
   r.get('/api/receivables/aging', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Aging: 0–7, 8–15, 16–30, 31–60, 60+' }, async (ctx) => svc.aging(ctx.query.as_of || today()));
   r.get('/api/receivables/summary', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'TOTAL / OVERDUE / CRITICAL + kutilayotgan 7/30 kun' }, async (ctx) => svc.summary(ctx.query.as_of || today()));
-  r.get('/api/collections', { perm: ['collections', 'VIEW'], tags: ['receivables'], summary: 'Undiruv vazifalari', query: ['status'] }, async (ctx) =>
-    db.all(`SELECT k.*, c.contract_number, co.name AS client, u.name AS assigned_name FROM collections k JOIN contracts c ON c.id=k.contract_id JOIN companies co ON co.id=c.company_id LEFT JOIN users u ON u.id=k.assigned_to WHERE ${ctx.query.status ? 'k.status=?' : "k.status<>'SUPERSEDED'"} ORDER BY k.task_date DESC, k.id DESC LIMIT 500`, ...(ctx.query.status ? [ctx.query.status] : [])));
-  r.patch('/api/collections/:id', { perm: ['collections', 'EDIT'], tags: ['receivables'], summary: 'Vazifa holati/izoh' }, async (ctx) => {
-    const k = db.get('SELECT * FROM collections WHERE id=?', ctx.params.id);
-    if (!k) throw notFound();
-    const upd = {};
-    if (ctx.body?.status) { upd.status = ctx.body.status; if (ctx.body.status === 'DONE') upd.done_at = nowIso(); }
-    if (ctx.body?.note !== undefined) upd.note = ctx.body.note;
-    if (ctx.body?.assigned_to !== undefined) upd.assigned_to = ctx.body.assigned_to;
-    db.update('collections', k.id, upd);
-    audit(ctx, { action: 'COLLECTION_UPDATED', entity: 'collection', entityId: k.id, oldValue: k, newValue: upd });
-    return db.get('SELECT * FROM collections WHERE id=?', k.id);
-  });
+  r.get('/api/collections', { perm: ['collections', 'VIEW'], tags: ['receivables'], summary: 'Undiruv vazifalari', query: ['status'] }, async (ctx) => svc.listCollections({ status: ctx.query.status }));
+  r.patch('/api/collections/:id', { perm: ['collections', 'EDIT'], tags: ['receivables'], summary: 'Vazifa holati/izoh' }, async (ctx) => svc.updateCollection(ctx.params.id, ctx.body || {}, ctx));
   r.post('/api/collections/run', { perm: ['collections', 'CREATE'], tags: ['receivables'], summary: 'Collection agentni ishga tushirish' }, async (ctx) => svc.runCollectionAgent(ctx.body?.as_of || today(), ctx));
 }

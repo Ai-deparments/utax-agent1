@@ -28,6 +28,7 @@ export function register(app) {
 
   const svc = {
     suggestCategory,
+    categories() { return db.all('SELECT id, code, name, pnl_group FROM expense_categories WHERE is_active=1 ORDER BY sort, name'); },
     nextCode() {
       const last = db.get("SELECT code FROM expenses WHERE code LIKE 'EXP-%' ORDER BY CAST(substr(code,5) AS INTEGER) DESC LIMIT 1");
       return padCode('EXP', last ? Number(last.code.slice(4)) + 1 : 1);

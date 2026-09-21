@@ -13,7 +13,7 @@ npm start                     # http://127.0.0.1:8100  (Node ≥ 22.5, tashqi pa
 ```
 
 Birinchi ishga tushishda baza bo‘sh bo‘lsa **Iyul 2026 pilot ma’lumotlari** avtomatik yuklanadi (`SEED_ON_EMPTY=true`).
-Qayta yuklash: `npm run seed:reset`. Testlar: `npm test` (25 ta, shu jumladan TZ §45 acceptance).
+Qayta yuklash: `npm run seed:reset`. Testlar: `npm test` (shu jumladan TZ §45 acceptance va botlar — soxta Telegram server bilan, tarmoqsiz). Sintaksis: `npm run check`.
 
 | Rol | Login | Parol |
 |---|---|---|
@@ -36,10 +36,14 @@ API hujjati (OpenAPI/Swagger): `http://127.0.0.1:8100/api/docs` · Health: `/api
 - **P&L, Xizmat rentabelligi, Cash Flow (operating/investing/financing), Balans, Plan/Fakt, Byudjet, Forecast (3 scenariy)**.
 - **KPI & Oylik** — rule engine (formulalar bazada), zanjir Dept Head → CEO → CFO → Accounting → PAID.
 - **AI Finance Center** — chat (rule-based router API kalitsiz ishlaydi; `ANTHROPIC_API_KEY` bo‘lsa Claude tool-use), 14 agent, AI takliflari → inson tasdig‘i → bajarish → audit.
-- **Telegram bot** — /balance /cash /revenue /expenses /debtors /forecast /approvals /report + tabiiy til + CONFIRM/CANCEL tasdiqlash.
+- **4 ta Telegram bot** ([docs/BOTS.md](docs/BOTS.md)) — web panelning Telegram'dagi oynasi (o'sha servislar, o'sha RBAC, audit `source=TELEGRAM`):
+  **@utax_rahbar_bot** (holat, pul, P&L, prognoz, debitorlik, tasdiqlar, AI takliflari, hisobotlar, Kill switch) ·
+  **@utax_buxgalter_bot** (vipiska, bog'lash, kassa, to'lov, daromad, akt, oylik, byudjet, integratsiyalar) ·
+  **@utax_sorov_bot** (xarajat so'rovi, holati, bo'lim tasdig'i, o'z shartnoma/qarz/oylik) ·
+  **@utax_signal_bot** (barcha bildirishnomalar, ✅/❌ tugmalar, jim soatlar). Bog'lash: web → Profil → Telegram botlar; egalar — `BOT_OWNER_IDS`; https bo'lsa Telegram Mini App.
 - **Notification engine** (CRM + Telegram + Email webhook), **Audit log** (o‘chirish yo‘q, reversal), **Integratsiyalar** (adapter: Bank API, Google Sheets, Excel/CSV, 1C, ERP, Telegram, Email, inbound webhook), **Excel/PDF eksport**, **Backup**.
 
-Batafsil: [docs/GLOSSARY.md](docs/GLOSSARY.md) (atamalar va formulalar) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DEPLOY.md](docs/DEPLOY.md) · [docs/API.md](docs/API.md).
+Batafsil: [docs/GLOSSARY.md](docs/GLOSSARY.md) (atamalar va formulalar) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DEPLOY.md](docs/DEPLOY.md) · [docs/API.md](docs/API.md) · [docs/BOTS.md](docs/BOTS.md).
 
 ## Texnik qarorlar (TZ §37 dan farqlar)
 
@@ -57,7 +61,7 @@ TZ Next.js + NestJS/FastAPI + PostgreSQL + Redis + Docker ni **tavsiya** qilgan.
 ```
 src/core/       config, db (adapter), schema (migratsiyalar), http, router, auth (JWT/scrypt/TOTP/AES), rbac, audit, settings, export (xlsx), openapi, scheduler
 src/modules/    auth users companies contracts revenue banking reconciliation approvals expenses receivables payroll budget reports forecast notifications integrations ai audit settings
-src/telegram/   bot.mjs (long polling)
+src/bots/       4 Telegram bot: shared/ (factory, API klient, tasdiq UI, dispatcher) + rahbar/ buxgalter/ sorov/ signal/
 src/seed/       seed.mjs — Iyul pilot (xronologik voqealar → barcha raqamlar biznes qoidalari orqali hisoblanadi)
 public/         index.html, css/app.css, js/{app,api,ui,charts}.js, js/pages/*.js (19 modul)
 tests/          core.test.mjs, acceptance.test.mjs

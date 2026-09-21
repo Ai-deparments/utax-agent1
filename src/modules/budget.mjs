@@ -22,6 +22,13 @@ export function register(app) {
       for (let i = 0; i < months; i++) { const pf = svc.planFact(p); out.push({ period: p, revenue_plan: pf.items[0].plan, revenue_fact: pf.items[0].fact, expense_plan: pf.items[1].plan, expense_fact: pf.items[1].fact, profit_plan: pf.items[2].plan, profit_fact: pf.items[2].fact }); p = addMonths(p, 1); }
       return out;
     },
+    /** Bo'lim/kategoriya byudjeti va fakt bajarilishi */
+    budgets(period) {
+      const { from, to } = monthRange(period);
+      return db.all(`SELECT b.*, d.name AS department_name, ec.name AS category_name,
+          COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND (b.department_id IS NULL OR e.department_id=b.department_id) AND (b.category_id IS NULL OR e.category_id=b.category_id)),0) AS fact
+        FROM budgets b LEFT JOIN departments d ON d.id=b.department_id LEFT JOIN expense_categories ec ON ec.id=b.category_id WHERE b.period=? ORDER BY d.name`, from, to, period).map((x) => ({ ...x, pct: pct(x.fact, x.amount), exceeded: x.fact > x.amount }));
+    },
   };
   app.services.budget = svc;
 
@@ -41,11 +48,7 @@ export function register(app) {
     return { ...svc.planFact(period), series: svc.series(6, monthRange(period).to) };
   });
   r.get('/api/budgets', { perm: ['planfact', 'VIEW'], tags: ['planfact'], summary: 'Bo‘lim/kategoriya byudjeti va bajarilishi', query: ['month'] }, async (ctx) => {
-    const period = ctx.query.month || monthOf(today());
-    const { from, to } = monthRange(period);
-    return db.all(`SELECT b.*, d.name AS department_name, ec.name AS category_name,
-        COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND (b.department_id IS NULL OR e.department_id=b.department_id) AND (b.category_id IS NULL OR e.category_id=b.category_id)),0) AS fact
-      FROM budgets b LEFT JOIN departments d ON d.id=b.department_id LEFT JOIN expense_categories ec ON ec.id=b.category_id WHERE b.period=? ORDER BY d.name`, from, to, period).map((x) => ({ ...x, pct: pct(x.fact, x.amount), exceeded: x.fact > x.amount }));
+    return svc.budgets(ctx.query.month || monthOf(today()));
   });
   r.put('/api/budgets', { perm: ['planfact', 'EDIT'], tags: ['planfact'], summary: 'Byudjet qatori {period, department_id, category_id, amount}' }, async (ctx) => {
     const b = ctx.body || {};

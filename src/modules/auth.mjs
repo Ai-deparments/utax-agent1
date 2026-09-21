@@ -1,7 +1,8 @@
 import { hashPassword, verifyPassword, signJwt, verifyJwt, totpSecret, totpVerify, otpauthUrl } from '../core/auth.mjs';
 import { badRequest, unauthorized, forbidden, rateLimiter } from '../core/http.mjs';
 import { config } from '../core/config.mjs';
-import { nowIso, sha256, uid, addDays } from '../core/util.mjs';
+import { nowIso, sha256, uid } from '../core/util.mjs';
+import { verifyInitData } from '../bots/shared/webapp-auth.mjs';
 
 export function register(app) {
   const { r, db, audit } = app;
@@ -9,7 +10,7 @@ export function register(app) {
 
   const publicUser = (u) => u && ({
     id: u.id, email: u.email, name: u.name, role_code: u.role_code, department_id: u.department_id,
-    phone: u.phone, totp_enabled: !!u.totp_enabled, telegram_linked: !!u.telegram_chat_id, last_login_at: u.last_login_at,
+    phone: u.phone, totp_enabled: !!u.totp_enabled, telegram_linked: !!u.telegram_user_id, telegram_username: u.telegram_username || null, last_login_at: u.last_login_at,
   });
 
   function issueTokens(user, ctx) {
@@ -40,6 +41,7 @@ export function register(app) {
       return null;
     },
     publicUser,
+    issueTokens,
   };
 
   r.post('/api/auth/login', { auth: false, tags: ['auth'], summary: 'Login (email + parol); 2FA yoqilgan bo‘lsa temp token qaytaradi' }, async (ctx) => {
@@ -123,9 +125,47 @@ export function register(app) {
     return { ok: true };
   });
 
-  r.post('/api/auth/telegram-link', { tags: ['auth'], summary: 'Telegram bog‘lash kodi (botga /start KOD)' }, async (ctx) => {
+  const LINK_TTL_MS = 24 * 3600e3;
+  r.post('/api/auth/telegram-link', { tags: ['auth'], summary: 'Telegram bog‘lash kodi + 4 bot uchun deep link (t.me/<bot>?start=KOD)' }, async (ctx) => {
     const code = uid(4).toUpperCase();
-    db.run('UPDATE users SET telegram_link_code=? WHERE id=?', code, ctx.user.id);
-    return { code, instruction: `Telegram botga yuboring: /start ${code}`, expires: addDays(nowIso().slice(0, 10), 1) };
+    const expires = new Date(Date.now() + LINK_TTL_MS).toISOString();
+    db.run('UPDATE users SET telegram_link_code=?, telegram_link_expires=? WHERE id=?', code, expires, ctx.user.id);
+    audit(ctx, { action: 'TELEGRAM_LINK_CODE', entity: 'user', entityId: ctx.user.id });
+    const links = (app.botCatalog?.() || []).filter((b) => b.allowed_roles.includes(ctx.user.role_code)).map((b) => ({ key: b.key, title: b.title, username: b.username, url: `https://t.me/${b.username}?start=${code}` }));
+    return { code, expires_at: expires, links, instruction: `Botni oching va «Start» ni bosing (yoki yuboring: /start ${code}). Bitta bog‘lash barcha UTAX botlariga amal qiladi.` };
+  });
+  r.post('/api/auth/telegram-unlink', { tags: ['auth'], summary: 'Telegram hisobini uzish' }, async (ctx) => {
+    const u = db.get('SELECT telegram_user_id FROM users WHERE id=?', ctx.user.id);
+    db.tx(() => {
+      db.run('UPDATE users SET telegram_user_id=NULL, telegram_chat_id=NULL, telegram_username=NULL, telegram_linked_at=NULL, telegram_link_code=NULL, telegram_link_expires=NULL WHERE id=?', ctx.user.id);
+      db.run('UPDATE bot_chats SET user_id=NULL WHERE user_id=?', ctx.user.id);
+      if (u?.telegram_user_id) db.run('DELETE FROM bot_dialogs WHERE key LIKE ?', `%:${u.telegram_user_id}`);
+    });
+    audit(ctx, { action: 'TELEGRAM_UNLINKED', entity: 'user', entityId: ctx.user.id, oldValue: { telegram_user_id: u?.telegram_user_id || null } });
+    return { ok: true };
+  });
+  /** Telegram Mini App: initData (HMAC, bot tokeni bilan imzolangan) → shu Telegram hisobiga bog'langan foydalanuvchi sessiyasi */
+  r.post('/api/auth/telegram-webapp', { auth: false, tags: ['auth'], summary: 'Telegram Mini App orqali kirish {init_data}' }, async (ctx) => {
+    if (!loginLimit(ctx.ip)) throw new Error('RATE_LIMIT');
+    const initData = String(ctx.body?.init_data || '');
+    if (!initData) throw badRequest('init_data kerak');
+    let verified = null, botKey = null;
+    for (const [key, token] of Object.entries(config.bots)) {
+      if (!token) continue;
+      verified = verifyInitData(initData, token);
+      if (verified) { botKey = key; break; }
+    }
+    if (!verified) {
+      audit(ctx, { action: 'TELEGRAM_WEBAPP_DENIED', entity: 'user', newValue: { reason: 'invalid_init_data' } });
+      throw unauthorized('Telegram ma’lumotlari tasdiqlanmadi');
+    }
+    const u = db.get('SELECT * FROM users WHERE telegram_user_id=?', String(verified.user.id));
+    if (!u || !u.is_active) {
+      audit(ctx, { action: 'TELEGRAM_WEBAPP_DENIED', entity: 'user', entityId: u?.id, newValue: { telegram_user_id: verified.user.id, reason: u ? 'blocked' : 'not_linked' } });
+      throw unauthorized(u ? 'Hisobingiz bloklangan' : 'Telegram hisobingiz UTAX foydalanuvchisiga bog‘lanmagan. Web → Sozlamalar → Profil → Telegram botlar.');
+    }
+    db.run('UPDATE users SET last_login_at=? WHERE id=?', nowIso(), u.id);
+    audit({ ...ctx, user: u, source: 'TELEGRAM' }, { action: 'LOGIN_TELEGRAM_WEBAPP', entity: 'user', entityId: u.id, newValue: { bot: botKey } });
+    return { ...issueTokens(u, ctx), user: publicUser(u), start_param: verified.start_param || null };
   });
 }

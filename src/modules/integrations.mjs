@@ -34,8 +34,16 @@ export const ADAPTERS = {
   ERP: { name: 'ERP', description: 'Umumiy ERP REST (JSON) adapteri', config_schema: { base_url: '', endpoint: '/api/bank-transactions', bank_account_id: 1 }, secret_schema: { token: '' },
     async test(cfg, sec) { await fetchJson(`${cfg.base_url}${cfg.endpoint}?limit=1`, { Authorization: `Bearer ${sec.token}` }); return 'OK'; },
     async pull(cfg, sec, since) { return genericJsonRows(await fetchJson(`${cfg.base_url}${cfg.endpoint}?since=${since || ''}`, { Authorization: `Bearer ${sec.token}` })); } },
-  TELEGRAM: { name: 'Telegram', description: 'Bot orqali bildirishnoma va buyruqlar (TELEGRAM_BOT_TOKEN .env)', config_schema: {}, secret_schema: {},
-    async test() { if (!config.telegramToken) throw new Error('TELEGRAM_BOT_TOKEN sozlanmagan'); const j = await fetchJson(`https://api.telegram.org/bot${config.telegramToken}/getMe`); return `OK @${j.result?.username}`; }, async pull() { return []; } },
+  TELEGRAM: { name: 'Telegram', description: '4 ta bot: rahbar, buxgalter, so‘rov, signal (BOT_*_TOKEN .env)', config_schema: {}, secret_schema: {},
+    async test() {
+      const out = [];
+      for (const [key, token] of Object.entries(config.bots)) {
+        if (!token) { out.push(`${key}: token yo‘q`); continue; }
+        try { const j = await fetchJson(`https://api.telegram.org/bot${token}/getMe`); out.push(`${key}: @${j.result?.username}`); } catch (e) { out.push(`${key}: xato (${e.message})`); }
+      }
+      if (!out.some((x) => x.includes('@'))) throw new Error(out.join(' · '));
+      return 'OK ' + out.join(' · ');
+    }, async pull() { return []; } },
   EMAIL: { name: 'Email', description: 'Webhook orqali email (EMAIL_WEBHOOK_URL)', config_schema: {}, secret_schema: {}, async test() { if (!config.emailWebhook) throw new Error('EMAIL_WEBHOOK_URL sozlanmagan'); return 'OK'; }, async pull() { return []; } },
   WEBHOOK_IN: { name: 'Inbound webhook', description: 'Tashqi tizim POST /api/integrations/webhook/:token orqali tranzaksiya yuboradi', config_schema: { bank_account_id: 1 }, secret_schema: { token: '' }, async test() { return 'OK'; }, async pull() { return []; } },
 };
@@ -63,7 +71,11 @@ export function register(app) {
       throw badRequest('Sync xato: ' + e.message);
     }
   }
-  app.services.integrations = { sync, ADAPTERS };
+  app.services.integrations = {
+    sync, ADAPTERS,
+    list() { return db.all('SELECT * FROM integrations ORDER BY id').map(view); },
+    get(id) { return db.get('SELECT * FROM integrations WHERE id=?', id); },
+  };
 
   r.get('/api/integrations', { perm: ['integrations', 'VIEW'], tags: ['integrations'], summary: 'Integratsiyalar' }, async () => db.all('SELECT * FROM integrations ORDER BY id').map(view));
   r.get('/api/integrations/adapters', { perm: ['integrations', 'VIEW'], tags: ['integrations'], summary: 'Mavjud adapterlar va config sxemasi' }, async () => Object.entries(ADAPTERS).map(([type, a]) => ({ type, name: a.name, description: a.description, config_schema: a.config_schema, secret_schema: a.secret_schema })));

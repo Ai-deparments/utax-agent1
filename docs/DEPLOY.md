@@ -30,7 +30,11 @@ Ma’lumotlar `finance-data` volume da (`/app/data`). Kubernetes: shu image + PV
 | `DB_PATH` | SQLite fayl |
 | `JWT_SECRET`, `SECRETS_KEY` | **majburiy, tasodifiy 32+ belgi** |
 | `ANTHROPIC_API_KEY`, `AI_MODEL` | LLM (ixtiyoriy; default `claude-opus-5`) |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` | bot va kritik alertlar kanali |
+| `BOT_RAHBAR_TOKEN`, `BOT_BUXGALTER_TOKEN`, `BOT_SOROV_TOKEN`, `BOT_SIGNAL_TOKEN` | 4 ta Telegram bot tokeni (bo‘sh bot o‘chiq qoladi) — [BOTS.md](BOTS.md) |
+| `BOT_OWNER_IDS` | egalar: Telegram user id'lar (vergul bilan) — FOUNDER roli, barcha botlar, kodsiz bog‘lanadi |
+| `BOT_MODE` | `polling` (default) · `webhook` (prod: `PUBLIC_URL` https + `WEBHOOK_SECRET`, nginx `/telegram/` → ilova) · `off` |
+| `WEBAPP_URL` | botlardagi «Web’da ochish» manzili; `https://` bo‘lsa Telegram Mini App (ichida avtomatik kirish) |
+| `TELEGRAM_ALERT_CHAT_ID` | CRITICAL ogohlantirishlar guruhi (signal bot) |
 | `EMAIL_WEBHOOK_URL` | email yuborish webhook (POST {to, subject, body}) |
 | `SEED_ON_EMPTY` | bo‘sh bazaga pilot yuklash (prod da `false`) |
 

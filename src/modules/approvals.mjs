@@ -80,6 +80,12 @@ export function register(app) {
       return rows.map((a) => ({ ...a, can_act: ['PENDING', 'POSTPONED'].includes(a.status) && !!a.steps[a.current_step] && canAct(user, a.steps[a.current_step], a), is_mine: a.requested_by === user?.id }));
     },
     pendingFor(user) { return svc.list({ status: 'PENDING' }, user).filter((a) => a.can_act); },
+    /** Bitta approval + joriy foydalanuvchi uchun can_act / is_mine */
+    getFor(id, user) {
+      const a = svc.get(id);
+      if (!a) return null;
+      return { ...a, can_act: ['PENDING', 'POSTPONED'].includes(a.status) && !!a.steps[a.current_step] && canAct(user, a.steps[a.current_step], a), is_mine: a.requested_by === user?.id };
+    },
   };
   app.services.approvals = svc;
 

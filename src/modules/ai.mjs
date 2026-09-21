@@ -134,7 +134,8 @@ export function register(app) {
       return { answer: [`Forecast ${days} kun (${f.as_of} → ${f.to}). Hozirgi pul: ${M(f.cash_now)}`, ...Object.entries(f.scenarios).map(([k, s]) => `• ${k}: kirim ${M(s.inflow)}, chiqim ${M(s.outflow)}, net ${M(s.net)} → pul ${M(s.projected_cash)}`), `Risk: ${f.risk}`].join('\n'), data: { kind: 'table', columns: [{ key: 'scenario', label: 'Scenariy' }, { key: 'inflow', label: 'Kirim', money: true }, { key: 'outflow', label: 'Chiqim', money: true }, { key: 'net', label: 'Net', money: true }, { key: 'projected_cash', label: 'Prognoz pul', money: true }], rows: Object.entries(f.scenarios).map(([k, s]) => ({ scenario: k, ...s })) } };
     },
     APPROVALS(q, ctx) {
-      const rows = S().approvals.list({ status: 'PENDING' }, ctx.user);
+      let rows = S().approvals.list({ status: 'PENDING' }, ctx.user);
+      if (['EMPLOYEE', 'SALES'].includes(ctx.user?.role_code)) rows = rows.filter((a) => a.is_mine); // web /api/approvals bilan bir xil scope
       return { answer: rows.length ? [`Tasdiq kutayotgan: ${rows.length} ta, jami ${M(sum(rows, (a) => a.amount))}`, ...rows.slice(0, 10).map((a) => `• #${a.id} ${a.title} — ${M(a.amount)} (qadam ${a.current_step + 1}/${a.steps.length}: ${a.steps[a.current_step]?.role})${a.can_act ? ' ← siz tasdiqlashingiz mumkin' : ''}`)].join('\n') : 'Tasdiq kutayotgan so‘rovlar yo‘q.', data: { kind: 'table', columns: [{ key: 'id', label: '#' }, { key: 'title', label: 'Nomi' }, { key: 'amount', label: 'Summa', money: true }, { key: 'status', label: 'Status' }], rows } };
     },
     APPROVE_REQUEST(q, ctx) {
@@ -162,8 +163,8 @@ export function register(app) {
       const s = S().payroll.summary(period);
       return { answer: s.rows ? [`Oylik ${period}: ${s.rows} xodim, gross ${M(s.gross)}, KPI ${M(s.kpi)}, net ${M(s.net)} — status ${s.status}`, ...s.by_department.map((d) => `• ${d.department}: net ${M(d.net)} (${d.n} kishi)`)].join('\n') : `Oylik ${period} hisoblanmagan.`, data: { kind: 'table', columns: [{ key: 'department', label: 'Bo‘lim' }, { key: 'n', label: 'Xodim' }, { key: 'gross', label: 'Gross', money: true }, { key: 'kpi', label: 'KPI', money: true }, { key: 'net', label: 'Net', money: true }], rows: s.by_department } };
     },
-    CONTRACTS(q) {
-      const rows = S().contracts.list({ q: /UTAX-/i.test(q) ? /UTAX-[A-Z]+-\d+/i.exec(q)[0] : undefined });
+    CONTRACTS(q, ctx) {
+      const rows = S().contracts.list({ q: /UTAX-/i.test(q) ? /UTAX-[A-Z]+-\d+/i.exec(q)[0] : undefined, manager_user_id: ctx?.user?.role_code === 'SALES' ? ctx.user.id : undefined });
       const active = rows.filter((c) => !['DRAFT', 'CANCELLED', 'CLOSED'].includes(c.contract_status));
       return { answer: [`Shartnomalar: ${rows.length} ta, faol ${active.length} ta, jami summa ${M(sum(active, (c) => c.amount))}`, `To‘langan: ${M(sum(active, (c) => c.paid))}, qoldiq ${M(sum(active, (c) => c.remaining))}`, ...rows.slice(0, 8).map((c) => `• ${c.contract_number} ${c.company_name}: ${M(c.amount)} — ${c.contract_status}, to‘langan ${c.paid_pct}%`)].join('\n'), data: { kind: 'table', columns: [{ key: 'contract_number', label: '№' }, { key: 'company_name', label: 'Mijoz' }, { key: 'service_code', label: 'Xizmat' }, { key: 'amount', label: 'Summa', money: true }, { key: 'paid', label: 'To‘langan', money: true }, { key: 'contract_status', label: 'Status' }], rows } };
     },
@@ -180,9 +181,24 @@ export function register(app) {
     },
   };
 
+  // Har intent web'dagi qaysi resursni ko'rsatadi — foydalanuvchida ruxsat bo'lmasa javob berilmaydi (web RBAC bilan bir xil).
+  const INTENT_PERM = {
+    APPROVE_REQUEST: ['approvals', 'APPROVE'], DAILY_STATUS: ['treasury', 'VIEW'], EXPECTED_EXPENSES: ['pnl', 'VIEW'], EXPECTED_INCOME: ['receivables', 'VIEW'],
+    WHY_PROFIT: ['pnl', 'VIEW'], SERVICE_PROFIT: ['pnl', 'VIEW'], OVERDUE: ['receivables', 'VIEW'], DEBTORS: ['receivables', 'VIEW'], UNMATCHED: ['transactions', 'VIEW'],
+    APPROVALS: ['approvals', 'VIEW'], FORECAST: ['forecast', 'VIEW'], PLAN: ['planfact', 'VIEW'], PAYROLL: ['payroll', 'VIEW'], CASH: ['treasury', 'VIEW'],
+    EXPENSES: ['pnl', 'VIEW'], REVENUE: ['revenue', 'VIEW'], PROFIT: ['pnl', 'VIEW'], CONTRACTS: ['contracts', 'VIEW'], DATA_QUALITY: ['dashboard', 'VIEW'],
+  };
+  const RESOURCE_LABEL = { treasury: 'Pul boshqaruvi', pnl: 'Foyda va zarar', receivables: 'Debitorlik', transactions: 'Tushumlar', approvals: 'Tasdiqlashlar', forecast: 'Prognoz', planfact: 'Reja / Fakt', payroll: 'KPI va oylik', revenue: 'Daromad', contracts: 'Shartnomalar', dashboard: 'Bosh sahifa', cashflow: 'Pul oqimi', ai: 'AI moliya' };
+  const allowed = (ctx, perm) => !perm || (!!ctx?.user && app.rbac.can(ctx.user, perm[0], perm[1]));
+
   function route(question, ctx) {
     const t = String(question || '').toLowerCase();
-    for (const it of INTENTS) if (it.test(t)) return { intent: it.name, ...handlers[it.name](question, ctx) };
+    for (const it of INTENTS) {
+      if (!it.test(t)) continue;
+      const perm = INTENT_PERM[it.name];
+      if (!allowed(ctx, perm)) return { intent: it.name, denied: true, answer: `⛔ Bu savol «${RESOURCE_LABEL[perm[0]] || perm[0]}» ma’lumotini talab qiladi — sizning rolingizda bunga ruxsat yo‘q.`, data: null };
+      return { intent: it.name, ...handlers[it.name](question, ctx) };
+    }
     return { intent: 'HELP', ...handlers.HELP() };
   }
 
@@ -207,12 +223,20 @@ export function register(app) {
 Qoidalar: BANKDAGI PUL ≠ DAROMAD ≠ ISHLATISH MUMKIN BO'LGAN PUL. Cash received ≠ recognized revenue. Mijoz avanslari cheklangan pul.
 AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat tasdiqlamaysan, shartnoma summasi/maoshni o'zgartirmaysan. Kerak bo'lsa propose_action orqali taklif qil — inson tasdiqlaydi.`;
 
+  // LLM faqat foydalanuvchi web'da ko'ra oladigan ma'lumot tool'larini oladi
+  const TOOL_PERM = {
+    get_treasury: ['treasury', 'VIEW'], get_receivables: ['receivables', 'VIEW'], get_pnl: ['pnl', 'VIEW'], get_expenses: ['pnl', 'VIEW'], get_revenue: ['revenue', 'VIEW'],
+    get_forecast: ['forecast', 'VIEW'], get_service_profitability: ['pnl', 'VIEW'], get_plan_fact: ['planfact', 'VIEW'], get_pending_approvals: ['approvals', 'VIEW'],
+    get_unmatched_transactions: ['transactions', 'VIEW'], get_contracts: ['contracts', 'VIEW'], get_data_quality: ['dashboard', 'VIEW'], get_cash_flow: ['cashflow', 'VIEW'], propose_action: ['ai', 'CREATE'],
+  };
+
   async function llmChat(question, ctx, history = []) {
     let Anthropic;
     try { Anthropic = (await import('@anthropic-ai/sdk')).default; } catch { return null; }
     const client = new Anthropic({ apiKey: config.anthropicKey });
     const messages = [...history.slice(-8).map((h) => ({ role: h.role, content: h.content })), { role: 'user', content: question }];
-    const tools = TOOLS.map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+    const permitted = TOOLS.filter((t) => allowed(ctx, TOOL_PERM[t.name] || ['ai', 'VIEW']));
+    const tools = permitted.map(({ name, description, input_schema }) => ({ name, description, input_schema }));
     let firstData = null;
     for (let i = 0; i < 8; i++) {
       const response = await client.messages.create({ model: config.aiModel, max_tokens: 4096, system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }], tools, messages });
@@ -226,7 +250,7 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
       messages.push({ role: 'assistant', content: response.content });
       const results = [];
       for (const tu of toolUses) {
-        const tool = TOOLS.find((t) => t.name === tu.name);
+        const tool = permitted.find((t) => t.name === tu.name);
         let out;
         try { out = tool ? tool.run(tu.input || {}, ctx) : { error: 'unknown tool' }; if (!firstData && tool && tool.name !== 'propose_action') firstData = { kind: 'json', tool: tool.name, value: out }; }
         catch (e) { out = { error: e.message }; }
@@ -408,6 +432,12 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
       return res;
     },
     seedAgents() { for (const a of AGENTS) { db.run('INSERT OR IGNORE INTO ai_agents (code,name,description,schedule,permissions) VALUES (?,?,?,?,?)', a.code, a.name, a.description, a.schedule, JSON.stringify(['VIEW', 'PROPOSE'])); db.run('UPDATE ai_agents SET name=?, description=? WHERE code=?', a.name, a.description, a.code); } },
+    agentCtx,
+    listAgents() { return db.all('SELECT * FROM ai_agents ORDER BY id').map((a) => ({ ...a, api_key_hash: undefined, has_api_key: !!a.api_key_hash, permissions: parseJson(a.permissions, []), last_result: parseJson(a.last_result, null), proposed: db.get("SELECT COUNT(*) n FROM ai_actions WHERE agent_code=? AND status='PROPOSED'", a.code).n })); },
+    listActions(status) {
+      return db.all(`SELECT a.*, u.name AS decided_by_name FROM ai_actions a LEFT JOIN users u ON u.id=a.decided_by ${status ? 'WHERE a.status=?' : ''} ORDER BY a.id DESC LIMIT 300`, ...(status ? [status] : [])).map((a) => { const p = parseJson(a.payload, {}); delete p.__k; return { ...a, payload: p }; });
+    },
+    getAction(id) { const a = db.get('SELECT * FROM ai_actions WHERE id=?', id); if (!a) return null; const p = parseJson(a.payload, {}); delete p.__k; return { ...a, payload: p }; },
   };
   app.services.ai = svc;
   svc.seedAgents();
@@ -422,7 +452,7 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
     return S().approvals.decide(ctx.body.approval_id, 'APPROVE', { ...ctx, source: ctx.source || 'AI_CHAT' }, ctx.body.comment || 'AI chat orqali tasdiqlandi');
   });
   r.get('/api/ai/history', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'Chat tarixi' }, async (ctx) => db.all('SELECT * FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 50', ctx.user.id).reverse());
-  r.get('/api/ai/agents', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'AI agentlar va oxirgi natijalari' }, async () => db.all('SELECT * FROM ai_agents ORDER BY id').map((a) => ({ ...a, permissions: parseJson(a.permissions, []), last_result: parseJson(a.last_result, null), proposed: db.get("SELECT COUNT(*) n FROM ai_actions WHERE agent_code=? AND status='PROPOSED'", a.code).n })));
+  r.get('/api/ai/agents', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'AI agentlar va oxirgi natijalari' }, async () => svc.listAgents());
   r.post('/api/ai/agents/:code/run', { perm: ['ai', 'CREATE'], tags: ['ai'], summary: 'Agentni qo‘lda ishga tushirish' }, async (ctx) => ({ result: await svc.runAgent(ctx.params.code, agentCtx(ctx.params.code)) }));
   r.patch('/api/ai/agents/:code', { perm: ['ai', 'EDIT'], tags: ['ai'], summary: 'Agentni yoqish/o‘chirish, API kalit yaratish' }, async (ctx) => {
     const ag = db.get('SELECT * FROM ai_agents WHERE code=?', ctx.params.code);
@@ -433,7 +463,7 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
     audit(ctx, { action: 'AGENT_UPDATED', entity: 'ai_agent', entityId: ag.id, newValue: { is_active: ctx.body?.is_active, key_rotated: !!apiKey } });
     return { ...db.get('SELECT id, code, name, is_active FROM ai_agents WHERE id=?', ag.id), api_key: apiKey };
   });
-  r.get('/api/ai/actions', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'AI takliflari (PROPOSED/EXECUTED/REJECTED)', query: ['status'] }, async (ctx) => db.all(`SELECT a.*, u.name AS decided_by_name FROM ai_actions a LEFT JOIN users u ON u.id=a.decided_by ${ctx.query.status ? 'WHERE a.status=?' : ''} ORDER BY a.id DESC LIMIT 300`, ...(ctx.query.status ? [ctx.query.status] : [])).map((a) => { const p = parseJson(a.payload, {}); delete p.__k; return { ...a, payload: p }; }));
+  r.get('/api/ai/actions', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'AI takliflari (PROPOSED/EXECUTED/REJECTED)', query: ['status'] }, async (ctx) => svc.listActions(ctx.query.status));
   r.post('/api/ai/actions/:id/approve', { perm: ['ai', 'APPROVE'], tags: ['ai'], summary: 'AI taklifini tasdiqlash → tizim bajaradi → audit' }, async (ctx) => svc.decideAction(ctx.params.id, 'APPROVE', ctx));
   r.post('/api/ai/actions/:id/reject', { perm: ['ai', 'REJECT'], tags: ['ai'], summary: 'AI taklifini rad etish' }, async (ctx) => svc.decideAction(ctx.params.id, 'REJECT', ctx));
 }

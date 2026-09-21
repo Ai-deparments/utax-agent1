@@ -7,8 +7,29 @@ export function register(app) {
   const { r, db, audit, rbac } = app;
   const pub = (u) => ({
     id: u.id, email: u.email, name: u.name, role_code: u.role_code, department_id: u.department_id, department: u.department,
-    phone: u.phone, is_active: !!u.is_active, totp_enabled: !!u.totp_enabled, telegram_linked: !!u.telegram_chat_id, last_login_at: u.last_login_at, created_at: u.created_at,
+    phone: u.phone, is_active: !!u.is_active, totp_enabled: !!u.totp_enabled, telegram_linked: !!u.telegram_user_id, telegram_username: u.telegram_username || null, last_login_at: u.last_login_at, created_at: u.created_at,
   });
+
+  app.services.users = {
+    pub,
+    get(id) { return db.get('SELECT u.*, d.name AS department FROM users u LEFT JOIN departments d ON d.id=u.department_id WHERE u.id=?', id); },
+    list({ active } = {}) { return db.all(`SELECT u.*, d.name AS department FROM users u LEFT JOIN departments d ON d.id=u.department_id ${active === undefined ? '' : 'WHERE u.is_active=?'} ORDER BY u.id`, ...(active === undefined ? [] : [active ? 1 : 0])); },
+    byTelegramId(tgId) { return tgId ? db.get('SELECT * FROM users WHERE telegram_user_id=?', String(tgId)) : null; },
+    /** Kill switch: bloklangan foydalanuvchi web'ga kira olmaydi, hech bir bot javob bermaydi */
+    setActive(id, active, ctx) {
+      const u = db.get('SELECT * FROM users WHERE id=?', id);
+      if (!u) throw notFound('Foydalanuvchi topilmadi');
+      if (!active && u.role_code === 'FOUNDER') throw badRequest('Ta’sischini bloklab bo‘lmaydi');
+      if (!active && ctx?.user?.id === u.id) throw badRequest('O‘zingizni bloklay olmaysiz');
+      db.run('UPDATE users SET is_active=? WHERE id=?', active ? 1 : 0, u.id);
+      if (!active) {
+        db.run('UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL', nowIso(), u.id);
+        if (u.telegram_user_id) db.run("DELETE FROM bot_dialogs WHERE key LIKE ?", `%:${u.telegram_user_id}`);
+      }
+      audit(ctx, { action: active ? 'USER_UNBLOCKED' : 'USER_BLOCKED', entity: 'user', entityId: u.id, oldValue: { is_active: !!u.is_active }, newValue: { is_active: !!active } });
+      return pub(db.get('SELECT u.*, d.name AS department FROM users u LEFT JOIN departments d ON d.id=u.department_id WHERE u.id=?', u.id));
+    },
+  };
 
   r.get('/api/users', { perm: ['users', 'VIEW'], tags: ['users'], summary: 'Foydalanuvchilar ro‘yxati' }, async () =>
     db.all('SELECT u.*, d.name AS department FROM users u LEFT JOIN departments d ON d.id=u.department_id ORDER BY u.id').map(pub));

@@ -97,6 +97,44 @@ export function register(app) {
       audit(ctx, { action: 'IMPORT', entity: 'bank_transaction', newValue: { bank_account_id: bankAccountId, rows: rows.length, created, duplicates: dup, auto_matched: auto, suggested: sugg } });
       return { rows: rows.length, created, duplicates: dup, auto_matched: auto, suggested: sugg, unmatched: created - auto - sugg };
     },
+    bankAccounts() { return db.all('SELECT * FROM bank_accounts WHERE is_active=1 ORDER BY id'); },
+    cashAccounts() { return db.all('SELECT * FROM cash_accounts WHERE is_active=1 ORDER BY id'); },
+    /** Bank tranzaksiyalari ro'yxati (web /api/transactions va botlar uchun bitta manba) */
+    listTransactions(q = {}) {
+      const w = ['1=1'], p = [];
+      if (q.status) { w.push('t.matching_status=?'); p.push(q.status); }
+      if (q.statuses) { w.push(`t.matching_status IN (${q.statuses.map(() => '?').join(',')})`); p.push(...q.statuses); }
+      if (q.direction) { w.push('t.direction=?'); p.push(q.direction); }
+      if (q.from) { w.push('t.tx_date>=?'); p.push(q.from); }
+      if (q.to) { w.push('t.tx_date<=?'); p.push(q.to); }
+      if (q.account_id) { w.push('t.bank_account_id=?'); p.push(q.account_id); }
+      if (q.q) { w.push('(t.counterparty_name LIKE ? OR t.purpose LIKE ? OR t.counterparty_inn LIKE ? OR t.contract_number_ref LIKE ?)'); p.push(`%${q.q}%`, `%${q.q}%`, `%${q.q}%`, `%${q.q}%`); }
+      if (!q.include_reversed) w.push('t.reversed_at IS NULL');
+      const limit = Math.min(2000, Math.max(1, Number(q.limit) || 2000));
+      return db.all(`SELECT t.*, ba.bank_name, ba.account_number, c.contract_number AS matched_contract_number, co.name AS matched_company, sc.contract_number AS suggested_contract_number,
+          e.code AS matched_expense_code
+        FROM bank_transactions t JOIN bank_accounts ba ON ba.id=t.bank_account_id
+        LEFT JOIN contracts c ON c.id=t.matched_contract_id LEFT JOIN companies co ON co.id=c.company_id
+        LEFT JOIN contracts sc ON sc.id=t.suggested_contract_id LEFT JOIN expenses e ON e.id=t.matched_expense_id
+        WHERE ${w.join(' AND ')} ORDER BY t.tx_date DESC, t.id DESC LIMIT ${limit}`, ...p);
+    },
+    /** Kassa kirim/chiqim: INCOME + contract_id → to'lov va daromad eventlari; EXPENSE + expense_id → xarajat to'landi */
+    createCashTransaction(b, ctx) {
+      if (!b.cash_account_id || !b.tx_date || !b.amount || !b.direction) throw badRequest('cash_account_id, tx_date, amount, direction majburiy');
+      if (!['INCOME', 'EXPENSE'].includes(b.direction)) throw badRequest('direction INCOME|EXPENSE');
+      const id = db.tx(() => {
+        const id = db.insert('cash_transactions', { cash_account_id: b.cash_account_id, tx_date: b.tx_date, amount: round2(Math.abs(b.amount)), currency: b.currency || 'UZS', direction: b.direction, counterparty_name: b.counterparty_name || null, purpose: b.purpose || null, contract_id: b.contract_id || null, expense_id: b.expense_id || null, cf_class: b.cf_class || 'OPERATING', created_by: ctx.user?.id || null, created_at: nowIso() });
+        if (b.direction === 'INCOME' && b.contract_id) {
+          const pid = db.insert('payments', { contract_id: b.contract_id, amount: round2(Math.abs(b.amount)), paid_at: b.tx_date, source: 'CASH', cash_transaction_id: id, created_by: ctx.user?.id || null, created_at: nowIso() });
+          app.services.revenue.onPaymentRecorded(db.get('SELECT * FROM payments WHERE id=?', pid), ctx);
+          app.services.contracts.recompute(b.contract_id, ctx);
+        }
+        if (b.direction === 'EXPENSE' && b.expense_id) app.services.expenses.markPaid(b.expense_id, { cash_transaction_id: id, paid_at: b.tx_date }, ctx);
+        return id;
+      });
+      audit(ctx, { action: 'CREATE', entity: 'cash_transaction', entityId: id, newValue: b });
+      return db.get('SELECT * FROM cash_transactions WHERE id=?', id);
+    },
   };
   app.services.banking = svc;
 
@@ -116,23 +154,7 @@ export function register(app) {
     return db.get('SELECT * FROM cash_accounts WHERE id=?', id);
   });
 
-  r.get('/api/transactions', { perm: ['transactions', 'VIEW'], tags: ['banking'], summary: 'Bank tranzaksiyalari', query: ['status', 'direction', 'from', 'to', 'q', 'account_id'] }, async (ctx) => {
-    const w = ['1=1'], p = [];
-    const q = ctx.query;
-    if (q.status) { w.push('t.matching_status=?'); p.push(q.status); }
-    if (q.direction) { w.push('t.direction=?'); p.push(q.direction); }
-    if (q.from) { w.push('t.tx_date>=?'); p.push(q.from); }
-    if (q.to) { w.push('t.tx_date<=?'); p.push(q.to); }
-    if (q.account_id) { w.push('t.bank_account_id=?'); p.push(q.account_id); }
-    if (q.q) { w.push('(t.counterparty_name LIKE ? OR t.purpose LIKE ? OR t.counterparty_inn LIKE ? OR t.contract_number_ref LIKE ?)'); p.push(`%${q.q}%`, `%${q.q}%`, `%${q.q}%`, `%${q.q}%`); }
-    if (!q.include_reversed) w.push('t.reversed_at IS NULL');
-    return db.all(`SELECT t.*, ba.bank_name, ba.account_number, c.contract_number AS matched_contract_number, co.name AS matched_company, sc.contract_number AS suggested_contract_number,
-        e.code AS matched_expense_code
-      FROM bank_transactions t JOIN bank_accounts ba ON ba.id=t.bank_account_id
-      LEFT JOIN contracts c ON c.id=t.matched_contract_id LEFT JOIN companies co ON co.id=c.company_id
-      LEFT JOIN contracts sc ON sc.id=t.suggested_contract_id LEFT JOIN expenses e ON e.id=t.matched_expense_id
-      WHERE ${w.join(' AND ')} ORDER BY t.tx_date DESC, t.id DESC LIMIT 2000`, ...p);
-  });
+  r.get('/api/transactions', { perm: ['transactions', 'VIEW'], tags: ['banking'], summary: 'Bank tranzaksiyalari', query: ['status', 'direction', 'from', 'to', 'q', 'account_id'] }, async (ctx) => svc.listTransactions(ctx.query));
   r.post('/api/transactions', { perm: ['transactions', 'CREATE'], tags: ['banking'], summary: 'Tranzaksiya qo‘lda kiritish' }, async (ctx) => {
     const res = svc.createTransaction(ctx.body || {}, ctx);
     if (res.duplicate) throw badRequest('Bunday tranzaksiya allaqachon mavjud');
@@ -170,20 +192,5 @@ export function register(app) {
     if (ctx.query.to) { w.push('t.tx_date<=?'); p.push(ctx.query.to); }
     return db.all(`SELECT t.*, ca.name AS cash_account, c.contract_number FROM cash_transactions t JOIN cash_accounts ca ON ca.id=t.cash_account_id LEFT JOIN contracts c ON c.id=t.contract_id WHERE ${w.join(' AND ')} ORDER BY t.tx_date DESC, t.id DESC`, ...p);
   });
-  r.post('/api/cash-transactions', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassa kirim/chiqim (shartnoma yoki xarajatga bog‘lash)' }, async (ctx) => {
-    const b = ctx.body || {};
-    if (!b.cash_account_id || !b.tx_date || !b.amount || !b.direction) throw badRequest('cash_account_id, tx_date, amount, direction majburiy');
-    const id = db.tx(() => {
-      const id = db.insert('cash_transactions', { cash_account_id: b.cash_account_id, tx_date: b.tx_date, amount: round2(Math.abs(b.amount)), currency: b.currency || 'UZS', direction: b.direction, counterparty_name: b.counterparty_name || null, purpose: b.purpose || null, contract_id: b.contract_id || null, expense_id: b.expense_id || null, cf_class: b.cf_class || 'OPERATING', created_by: ctx.user?.id || null, created_at: nowIso() });
-      if (b.direction === 'INCOME' && b.contract_id) {
-        const pid = db.insert('payments', { contract_id: b.contract_id, amount: round2(b.amount), paid_at: b.tx_date, source: 'CASH', cash_transaction_id: id, created_by: ctx.user?.id || null, created_at: nowIso() });
-        app.services.revenue.onPaymentRecorded(db.get('SELECT * FROM payments WHERE id=?', pid), ctx);
-        app.services.contracts.recompute(b.contract_id, ctx);
-      }
-      if (b.direction === 'EXPENSE' && b.expense_id) app.services.expenses.markPaid(b.expense_id, { cash_transaction_id: id, paid_at: b.tx_date }, ctx);
-      return id;
-    });
-    audit(ctx, { action: 'CREATE', entity: 'cash_transaction', entityId: id, newValue: b });
-    return db.get('SELECT * FROM cash_transactions WHERE id=?', id);
-  });
+  r.post('/api/cash-transactions', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassa kirim/chiqim (shartnoma yoki xarajatga bog‘lash)' }, async (ctx) => svc.createCashTransaction(ctx.body || {}, ctx));
 }
