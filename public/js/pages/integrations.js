@@ -1,21 +1,58 @@
 import { get, post, patch } from '../api.js';
-import { fileDrop, fmt, date, h, card, badge, dt, dataTable, formModal, modal, toast, err, icon, alert, emptyState } from '../ui.js';
+import { fileDrop, kpiCard, fmt, date, h, card, badge, dt, dataTable, formModal, modal, toast, err, icon, alert, emptyState } from '../ui.js';
 
 export default async function render(root, { setTitle, can }) {
   setTitle('Integratsiyalar', 'Bank · ERP · 1C · Google Sheets · Excel · Telegram · Email — adapterlar');
   const adapters = await get('/api/integrations/adapters');
   const body = h('div', {});
-  const AD_ICON = { BANK_API: 'bank', GOOGLE_SHEETS: 'file', EXCEL: 'upload', ONE_C: 'layers', ERP: 'briefcase', TELEGRAM: 'send', EMAIL: 'inbox', GEMINI: 'sparkles', WEBHOOK_IN: 'link' };
+  const AD_ICON = { BANK_API: 'bank', GOOGLE_SHEETS: 'file', EXCEL: 'upload', ONE_C: 'layers', ERP: 'briefcase', TELEGRAM: 'send', EMAIL: 'inbox', GEMINI: 'sparkles', LEDGER: 'layers', WEBHOOK_IN: 'link' };
   async function load() {
     const list = await get('/api/integrations');
     body.replaceChildren(
-      h('div', { class: 'grid g4 mb16' }, ...adapters.map((a) => h('div', { class: 'card', style: { padding: '14px' } }, h('div', { class: 'flex gap8' }, h('div', { class: 'tile green', style: { width: '34px', height: '34px' } }, icon(AD_ICON[a.type] || 'plug', 17)), h('b', {}, a.name)), h('div', { class: 'small muted mt8', style: { minHeight: '34px' } }, a.description), a.type === 'EXCEL' ? (canUpload ? h('button', { class: 'btn xs pri mt8', onClick: () => uploadDlg() }, icon('upload', 13), 'Excel fayl yuklash') : null) : can('integrations', 'CREATE') ? h('button', { class: 'btn xs soft mt8', onClick: () => addForm(a) }, icon('plus', 13), 'Ulash') : null))),
+      h('div', { class: 'grid g4 mb16' }, ...adapters.map((a) => h('div', { class: 'card', style: { padding: '14px' } }, h('div', { class: 'flex gap8' }, h('div', { class: 'tile green', style: { width: '34px', height: '34px' } }, icon(AD_ICON[a.type] || 'plug', 17)), h('b', {}, a.name)), h('div', { class: 'small muted mt8', style: { minHeight: '34px' } }, a.description), a.type === 'EXCEL' ? (canUpload ? h('button', { class: 'btn xs pri mt8', onClick: () => uploadDlg() }, icon('upload', 13), 'Excel fayl yuklash') : null) : a.type === 'LEDGER' ? (canUpload ? h('button', { class: 'btn xs pri mt8', onClick: () => ledgerDlg() }, icon('upload', 13), 'Jurnal yuklash') : null) : can('integrations', 'CREATE') ? h('button', { class: 'btn xs soft mt8', onClick: () => addForm(a) }, icon('plus', 13), 'Ulash') : null))),
       card('Ulangan integratsiyalar', list.length ? dataTable({ columns: [{ key: 'name', label: 'Nomi', render: (r) => h('div', {}, h('b', {}, r.name), h('div', { class: 'xs muted' }, r.adapter?.name || r.type)) }, { key: 'type', label: 'Adapter', render: (r) => r.adapter?.name || r.type }, { key: 'is_active', label: 'Faol', render: (r) => badge(r.is_active ? 'OK' : 'CANCELLED', r.is_active ? 'Ha' : 'Yo‘q') }, { key: 'last_sync_at', label: 'Oxirgi sinxronlash', datetime: true }, { key: 'last_status', label: 'Holat', render: (r) => (r.last_status === 'Manual' ? 'Qo‘lda yuklanadi' : r.last_status || '—') },
         { key: 'id', label: '', render: (r) => h('span', { class: 'flex gap6' }, r.type === 'EXCEL' && canUpload ? h('button', { class: 'btn xs pri', onClick: (e) => { e.stopPropagation(); uploadDlg(r.id); } }, icon('upload', 13), 'Fayl yuklash') : null, can('integrations', 'EDIT') && r.type !== 'EXCEL' ? h('button', { class: 'btn xs', onClick: async (e) => { e.stopPropagation(); try { const t = await post(`/api/integrations/${r.id}/test`); toast((t.ok ? 'Ulanish yaxshi: ' : 'Xato: ') + t.message, t.ok ? 'ok' : 'err'); load(); } catch (x) { err(x); } } }, 'Tekshirish') : null, can('integrations', 'EDIT') && ['BANK_API', 'GOOGLE_SHEETS', 'ONE_C', 'ERP'].includes(r.type) ? h('button', { class: 'btn xs pri', onClick: async (e) => { e.stopPropagation(); try { const s = await post(`/api/integrations/${r.id}/sync`); toast(`Sinxronlash: ${s.created} yangi, ${s.duplicates} takroriy`, 'ok'); load(); } catch (x) { err(x); } } }, 'Sinxronlash') : null, h('button', { class: 'btn xs ghost', onClick: async (e) => { e.stopPropagation(); const logs = await get(`/api/integrations/${r.id}/logs`); modal({ title: 'Sinxronlash jurnali — ' + r.name, body: logs.length ? h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Boshlandi'), h('th', {}, 'Holat'), h('th', {}, 'Qatorlar'), h('th', {}, 'Xabar'))), h('tbody', {}, ...logs.map((l) => h('tr', {}, h('td', {}, dt(l.started_at)), h('td', {}, badge(l.status)), h('td', {}, `${l.rows_in} / ${l.rows_new} yangi`), h('td', { class: 'small' }, l.message || ''))))) : emptyState('Jurnal bo‘sh') }); } }, 'Jurnal')) }], rows: list, search: false, onRow: can('integrations', 'EDIT') ? (r) => editForm(r) : null }).el : emptyState('Integratsiya ulanmagan', 'Yuqoridagi adapterlardan birini ulang', 'plug'), null, { tight: true }),
       h('div', { class: 'mt16' }, alert('info', 'Maxfiy ma’lumotlar (API kalitlari, parollar) shifrlangan holda saqlanadi. Kiruvchi webhook manzili: POST /api/integrations/webhook/{token}. Yangi adapter — dasturchi tomonidan qo‘shiladi.')));
   }
   const canUpload = can('integrations', 'EDIT') && can('transactions', 'CREATE');
   /** Excel (.xlsx) / CSV bank ko'chirmasini yuklash: tanlash → oldindan ko'rish → import → bog'lash natijasi */
+  function ledgerDlg() {
+    const fd = fileDrop({ accept: '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', hint: '.xlsx — yoki shu yerga sudrab tashlang' });
+    const info = h('div', { class: 'mt16' });
+    let payload = null;
+    const readB64 = (f) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(fr.error); fr.readAsDataURL(f); });
+    const issues = (skipped, warnings) => [
+      warnings.length ? alert('warn', h('div', {}, h('b', {}, 'Tekshiring: '), ...warnings.map((w) => h('div', { class: 'small' }, `${w.row}-qator: ${w.text}`)))) : null,
+      skipped.length ? h('details', { class: 'mt8' }, h('summary', { class: 'small' }, `Import qilinmaydigan qatorlar: ${skipped.length} ta`), h('div', { class: 'tbl-wrap mt8' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Qator'), h('th', {}, 'Hisob'), h('th', {}, 'Kontragent'), h('th', { class: 'right' }, 'Summa'), h('th', {}, 'Sabab'))), h('tbody', {}, ...skipped.map((x) => h('tr', {}, h('td', {}, x.row), h('td', {}, x.acc), h('td', {}, x.cp), h('td', { class: 'right tnum' }, fmt(x.amount)), h('td', { class: 'xs' }, x.reason))))))) : null].filter(Boolean);
+    fd.input.addEventListener('change', async () => {
+      const f = fd.input.files[0]; payload = null; info.replaceChildren();
+      if (!f) return;
+      if (!/\.xlsx$/i.test(f.name)) { info.replaceChildren(alert('warn', 'Faqat .xlsx fayl yuklang.')); return; }
+      try {
+        payload = { xlsx_base64: await readB64(f), file_name: f.name };
+        const p = await post('/api/integrations/ledger-upload', { ...payload, preview: true });
+        info.replaceChildren(h('div', { class: 'kpis c4 mb12' },
+          kpiCard({ size: 'sm', icon: 'contract', tone: 'blue', label: 'Sotuvlar (shartnoma)', value: p.sales_amount, sub: `${p.sales} ta` }),
+          kpiCard({ size: 'sm', icon: 'inflow', tone: 'green', label: 'Tushumlar', value: p.receipts_amount, sub: `${p.receipts} ta` }),
+          kpiCard({ size: 'sm', icon: 'receipt', tone: 'red', label: 'Chiqimlar', value: p.payments_amount, sub: `${p.payments} ta` }),
+          kpiCard({ size: 'sm', icon: 'activity', tone: 'teal', label: 'Bank → kassa', value: p.transfers_amount, sub: `${p.transfers} ta` })), ...issues(p.skipped, p.warnings));
+      } catch (e) { payload = null; info.replaceChildren(alert('crit', e.message)); }
+    });
+    const go = h('button', { class: 'btn pri', onClick: async () => {
+      if (!payload) return toast('Avval faylni tanlang', 'err');
+      go.disabled = true;
+      try {
+        const r = await post('/api/integrations/ledger-upload', payload);
+        payload = null; fd.reset();
+        info.replaceChildren(alert('good', h('div', {}, h('b', {}, 'Import qilindi. '), `Shartnoma: ${r.created.contracts} · bank yozuvi: ${r.created.bank} · kassa yozuvi: ${r.created.cash} · xarajat: ${r.created.expenses} · takroriy (o‘tkazib yuborildi): ${r.duplicates}${r.uncategorized ? ` · kategoriyasiz xarajat: ${r.uncategorized} (Xarajatlar sahifasida belgilang)` : ''}`)), ...issues(r.skipped, r.warnings));
+        toast('Jurnal import qilindi', 'ok');
+        load();
+      } catch (e) { err(e); } finally { go.disabled = false; }
+    } }, icon('upload', 15), 'Import qilish');
+    const m = modal({ title: 'Moliya jurnalini yuklash (Excel)', size: 'lg', body: h('div', {}, h('div', { class: 'field' }, h('label', {}, 'Fayl'), fd.el),
+      h('div', { class: 'xs muted mt8' }, 'Ustunlar: Dogovor No · Sana · To‘lov kuni · Valyuta · Summa · Shyot nomi · Kontragent · Napravleniye. Faqat fayldagi ma’lumot olinadi; faylda yo‘q maydonlar bo‘sh qoladi. Qayta yuklansa, takroriy operatsiyalar qo‘shilmaydi.'), info),
+      footer: [h('button', { class: 'btn', onClick: () => m.close() }, 'Yopish'), go] });
+  }
   async function uploadDlg(integrationId) {
     let accounts = [];
     try { accounts = (await get('/api/banking/accounts')).bank.accounts; } catch (e) { return err(e); }

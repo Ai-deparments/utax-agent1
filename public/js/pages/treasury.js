@@ -1,4 +1,4 @@
-import { get, post } from '../api.js';
+import { get, post, patch } from '../api.js';
 import { h, kpiCard, card, fmt, money, short, date, dataTable, kv, formModal, toast, err, today, alert, icon } from '../ui.js';
 
 export default async function render(root, { setTitle, can }) {
@@ -36,7 +36,7 @@ export default async function render(root, { setTitle, can }) {
           h('tr', {}, h('td', {}, '30 kun'), h('td', { class: 'right pos' }, fmt(t.expected_30d_income)), h('td', { class: 'right neg' }, fmt(t.expected_30d_expense)), h('td', { class: 'right tnum' }, fmt(t.expected_30d_income - t.expected_30d_expense))),
           h('tr', { class: 'total' }, h('td', {}, 'Muddati o‘tgan debitorlik'), h('td', { class: 'right', colspan: 3 }, fmt(t.overdue_receivable))))), null, { tight: true, sub: 'to‘lov jadvali va xarajatlar bo‘yicha' }),
         card('Rezerv tarkibi', kv([['Tasdiqlangan, to‘lanmagan xarajatlar', money(r.approved_unpaid_expenses)], ['Tasdiqlangan oylik (to‘lanmagan)', money(r.pending_payroll)], ['Xavfsizlik rezervi (sozlama)', money(r.safety_reserve)], [h('b', {}, 'Jami rezerv'), h('b', {}, money(r.total))]])),
-        card('Hisoblar', h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Hisob'), h('th', {}, 'Raqam'), h('th', { class: 'right' }, 'Qoldiq'))), h('tbody', {}, ...t.accounts.bank.map((a) => h('tr', {}, h('td', {}, a.bank_name), h('td', { class: 'xs muted' }, a.account_number || '—'), h('td', { class: 'right tnum' }, fmt(a.balance)))), ...t.accounts.cash.map((a) => h('tr', {}, h('td', {}, a.name), h('td', { class: 'xs muted' }, 'kassa'), h('td', { class: 'right tnum' }, fmt(a.balance)))), h('tr', { class: 'total' }, h('td', { colspan: 2 }, 'Jami'), h('td', { class: 'right' }, fmt(t.total_cash))))), null, { tight: true })),
+        card('Hisoblar', h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Hisob'), h('th', {}, 'Raqam'), h('th', { class: 'right' }, 'Qoldiq'), h('th', {}))), h('tbody', {}, ...t.accounts.bank.map((a) => h('tr', {}, h('td', {}, a.bank_name, h('div', { class: 'xs muted' }, `boshlang‘ich qoldiq ${fmt(a.opening_balance)}${a.opening_date ? ' · ' + date(a.opening_date) : ''}`)), h('td', { class: 'xs muted' }, a.account_number || '—'), h('td', { class: 'right tnum' }, fmt(a.balance)), h('td', { class: 'right' }, can('treasury', 'CREATE') ? h('button', { class: 'btn xs ghost', title: 'Tahrirlash', onClick: () => editAcc('bank', a) }, icon('edit', 13)) : null))), ...t.accounts.cash.map((a) => h('tr', {}, h('td', {}, a.name, h('div', { class: 'xs muted' }, `boshlang‘ich qoldiq ${fmt(a.opening_balance)}${a.opening_date ? ' · ' + date(a.opening_date) : ''}`)), h('td', { class: 'xs muted' }, 'kassa'), h('td', { class: 'right tnum' }, fmt(a.balance)), h('td', { class: 'right' }, can('treasury', 'CREATE') ? h('button', { class: 'btn xs ghost', title: 'Tahrirlash', onClick: () => editAcc('cash', a) }, icon('edit', 13)) : null))), h('tr', { class: 'total' }, h('td', { colspan: 2 }, 'Jami'), h('td', { class: 'right' }, fmt(t.total_cash)), h('td', {})))), can('treasury', 'CREATE') ? [h('button', { class: 'btn xs ghost', onClick: () => cashAccForm() }, icon('plus', 13), 'Kassa')] : null, { tight: true })),
       card('Kassa operatsiyalari', dataTable({ columns: [{ key: 'tx_date', label: 'Sana', date: true }, { key: 'direction', label: 'Yo‘nalish', badge: true }, { key: 'amount', label: 'Summa', money: true }, { key: 'counterparty_name', label: 'Kontragent' }, { key: 'purpose', label: 'Maqsad' }, { key: 'contract_number', label: 'Shartnoma' }, { key: 'cash_account', label: 'Kassa' }], rows: cash, dateKey: 'tx_date', exportName: 'kassa-operatsiyalari' }).el, null, { tight: true }));
   }
   async function cashForm() {
@@ -48,6 +48,16 @@ export default async function render(root, { setTitle, can }) {
       { name: 'expense_id', label: 'Xarajat (chiqim uchun, tasdiqlangan)', type: 'select', options: [['', '—'], ...exps.map((e) => [e.id, `${e.code} ${e.purpose} (${short(e.amount)})`])] },
       { name: 'purpose', label: 'Maqsad', full: true }], submit: async (v) => { await post('/api/cash-transactions', { ...v, cash_account_id: 1, contract_id: v.contract_id || null, expense_id: v.expense_id || null }); toast('Saqlandi', 'ok'); load(); } });
   }
+  function editAcc(kind, a) {
+    const isBank = kind === 'bank';
+    formModal({ title: (isBank ? 'Bank hisobi: ' : 'Kassa: ') + (isBank ? a.bank_name : a.name), fields: [
+      isBank ? { name: 'bank_name', label: 'Bank nomi', value: a.bank_name, required: true } : { name: 'name', label: 'Kassa nomi', value: a.name, required: true },
+      isBank ? { name: 'account_number', label: 'Hisob raqami', value: a.account_number || '' } : null,
+      { name: 'opening_balance', label: 'Boshlang‘ich qoldiq (so‘m)', type: 'number', value: a.opening_balance ?? 0, hint: 'Boshlang‘ich sanadagi haqiqiy qoldiq (bank ko‘chirmasi / kassa daftaridan)' },
+      { name: 'opening_date', label: 'Boshlang‘ich sana', type: 'date', value: a.opening_date || '' }].filter(Boolean),
+      submit: async (v) => { await patch(`/api/banking/${isBank ? 'accounts' : 'cash-accounts'}/${a.id}`, v); toast('Saqlandi', 'ok'); load(); } });
+  }
+  function cashAccForm() { formModal({ title: 'Kassa qo‘shish', fields: [{ name: 'name', label: 'Kassa nomi', required: true }, { name: 'opening_balance', label: 'Boshlang‘ich qoldiq (so‘m)', type: 'number', value: 0 }, { name: 'opening_date', label: 'Boshlang‘ich sana', type: 'date', value: today() }], submit: async (v) => { await post('/api/banking/cash-accounts', v); toast('Kassa qo‘shildi', 'ok'); load(); } }); }
   function accountForm() { formModal({ title: 'Bank hisobi qo‘shish', fields: [{ name: 'bank_name', label: 'Bank nomi', required: true }, { name: 'account_number', label: 'Hisob raqami' }, { name: 'currency', label: 'Valyuta', value: 'UZS' }, { name: 'opening_balance', label: 'Boshlang‘ich qoldiq', type: 'number', value: 0 }, { name: 'opening_date', label: 'Boshlang‘ich sana', type: 'date', value: today() }], submit: async (v) => { await post('/api/banking/accounts', v); toast('Hisob qo‘shildi', 'ok'); load(); } }); }
   root.append(box);
   await load();

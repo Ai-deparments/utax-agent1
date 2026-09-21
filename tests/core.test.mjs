@@ -1,7 +1,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.mjs';
-import { seed } from '../src/seed/seed.mjs';
+import { seed } from './fixtures/demo-seed.mjs'; // to'qima test ma'lumotlari — faqat testlar uchun
 
 let app, S, db, cfo, acc, founder, sales;
 const ctx = (email) => ({ user: db.get('SELECT * FROM users WHERE email=?', email), ip: '127.0.0.1', source: 'TEST' });
@@ -18,7 +18,7 @@ test('BANKDAGI PUL ≠ DAROMAD ≠ AVAILABLE: available = total − advances −
 test('Revenue recognition: avans → CUSTOMER_ADVANCE, xizmat yakunlanib akt bo‘lsa → RECOGNIZED', () => {
   const co = db.get('SELECT id FROM companies LIMIT 1');
   const st = db.get("SELECT id FROM service_types WHERE code='REVISION'");
-  const c = S.contracts.create({ company_id: co.id, service_type_id: st.id, amount: 30e6, contract_date: '2026-09-01', end_date: '2026-09-20', advance_pct: 50, payment_due_date: '2026-09-30' }, sales);
+  const c = S.contracts.create({ company_id: co.id, service_type_id: st.id, amount: 30e6, contract_date: '2026-09-01', end_date: '2026-09-20', advance_pct: 50, advance_due_date: '2026-09-06', payment_due_date: '2026-09-30' }, sales);
   assert.match(c.contract_number, /^UTAX-R-\d{5}$/);
   const tx = S.banking.createTransaction({ bank_account_id: 1, tx_date: '2026-09-02', amount: 15e6, direction: 'INCOME', counterparty_name: 'X', purpose: `Oplata ${c.contract_number}` }, acc, { skipMatch: true });
   const m = S.reconciliation.autoMatch(tx.id, acc);

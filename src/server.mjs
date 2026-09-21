@@ -151,7 +151,7 @@ export function createServer(app) {
 export async function main() {
   const app = createApp();
   if (config.seedOnEmpty && app.db.get('SELECT COUNT(*) c FROM users').c === 0) {
-    console.log('[seed] Baza bo‘sh — Iyul pilot ma’lumotlari yuklanmoqda…');
+    console.log('[seed] Baza bo‘sh — tizim tuzilmasi yaratilmoqda (biznes ma’lumotlari faqat Excel orqali)…');
     const { seed } = await import('./seed/seed.mjs');
     await seed(app);
   }

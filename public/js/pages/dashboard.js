@@ -16,6 +16,12 @@ export default async function render(outerRoot, { setTitle, navigate }) {
   const flowLbl = R ? 'Oldingi davrga nisbatan' : 'O‘tgan oyga nisbatan', balLbl = R ? 'Davr boshiga nisbatan' : 'O‘tgan oyga nisbatan';
   setTitle('Moliya dashboardi', R ? `Asosiy ko‘rsatkichlar va moliyaviy holat · ${rangeLabel(d.range)}` : `Asosiy ko‘rsatkichlar va moliyaviy holat · ${date(d.as_of)}`, [rng.el]);
   const k = d.kpi, dl = d.deltas, sp = d.sparklines;
+  // Joriy oyda yozuv bo'lmasa — ma'lumot bor oxirgi oyni bir bosishda tanlash taklifi (raqamlar o'zgartirilmaydi)
+  const span = d.data_span;
+  if (!R && span?.last && span.last.slice(0, 7) < d.as_of.slice(0, 7)) {
+    const lm = span.last.slice(0, 7), [yy, mm] = lm.split('-').map(Number), lastDay = new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
+    root.append(h('div', { class: 'alert info mb16', style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } }, icon('info', 16), h('div', { class: 'grow' }, `Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuvlar yo‘q — “joriy oy” ko‘rsatkichlari 0. Oxirgi ma’lumot: ${monthLabel(lm)} (${date(span.last)} gacha).`), h('button', { class: 'btn sm pri', onClick: () => { rng.set(lm + '-01', lastDay); load(); } }, `${monthLabel(lm)} ni ko‘rsatish`)));
+  }
   const mL = (l) => l.map((x) => monthLabel(x.period));
 
   root.append(h('div', { class: 'kpis mb16' },

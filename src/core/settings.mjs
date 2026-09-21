@@ -4,13 +4,13 @@ import { nowIso, parseJson } from './util.mjs';
 export const DEFAULT_SETTINGS = {
   'company.name': 'UTAX',
   'company.base_currency': 'UZS',
-  'fx.rates': { USD: 12700, EUR: 13800, RUB: 140 },
+  'fx.rates': {}, // valyuta kurslari — foydalanuvchi kiritadi (o'zimizdan qiymat qo'yilmaydi)
   // Available cash formulasi: total − advances×restriction% − reserved
   'cash.advance_restriction_pct': 100,
-  'cash.safety_reserve': 50000000,
+  'cash.safety_reserve': 0, // rahbar belgilaydi
   'cash.reserve_approved_unpaid_expenses': true,
   'cash.reserve_pending_payroll': true,
-  'cash.low_liquidity_threshold': 100000000,
+  'cash.low_liquidity_threshold': 0, // rahbar belgilaydi
   // Reconciliation
   'reconciliation.auto_match_threshold': 95,
   'reconciliation.suggest_threshold': 60,
