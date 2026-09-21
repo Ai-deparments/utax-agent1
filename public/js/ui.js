@@ -174,7 +174,7 @@ export function kpiCard({ icon: ic = 'wallet', tone = 'green', label, value, uni
 export const statTile = ({ icon: ic = 'info', tone = 'green', label, value, delta: dl, invert = false }) => h('div', { class: 'stat-tile' }, h('div', { class: 'tile ' + tone, style: { width: '36px', height: '36px' } }, icon(ic, 18)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'flex' }, h('span', { class: 'vl' }, value), dl !== undefined && dl !== null ? h('span', { class: 'dl' }, delta(dl, { invert, suffix: '' })) : null)));
 /** Eski API: kpi(label, value, sub, cls) — sahifalar uchun qisqa karta */
 export const kpi = (label, value, sub, cls = '', ic = 'coins', tone = 'green') => kpiCard({ icon: ic, tone: cls === 'crit' ? 'red' : cls === 'warn' ? 'amber' : tone, label, value, sub, size: 'sm', accent: cls === 'hero', cls: cls === 'crit' || cls === 'warn' ? cls : '' });
-export const card = (title, body, actions, { tight = false, sub } = {}) => h('div', { class: 'card' }, title ? h('div', { class: 'card-h' }, typeof title === 'string' ? h('h3', {}, title, sub ? h('span', { class: 'sub' }, sub) : null) : title, ...(actions || [])) : null, h('div', { class: 'card-b ' + (tight ? 'tight' : '') }, body));
+export const card = (title, body, actions, { tight = false, sub } = {}) => h('div', { class: 'card' }, title ? h('div', { class: 'card-h' }, typeof title === 'string' ? h('h3', {}, title, sub ? h('span', { class: 'sub' }, sub) : null) : title, ...(actions || [])) : null, h('div', { class: 'card-b ' + (tight ? 'tight' : '') }, body instanceof HTMLTableElement ? h('div', { class: 'tbl-wrap' }, body) : body));
 export const kv = (pairs) => h('dl', { class: 'kv' }, ...pairs.filter(Boolean).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v instanceof Node ? v : v ?? '—')]));
 export const mdLite = (text) => { const el = h('div', {}); el.innerHTML = esc(text).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>'); return el; };
 export const emptyState = (title = 'Ma’lumot yo‘q', sub = '', ic = 'inbox') => h('div', { class: 'empty-state' }, icon(ic, 28), h('b', {}, title), sub ? h('div', {}, sub) : null);
@@ -191,3 +191,71 @@ export function periodPicker(onChange, initial = { period: 'month' }) {
 }
 /** Grafik kartasi uchun davr tanlovchi (oylar soni) */
 export const monthsSelect = (value, onChange) => h('select', { class: 'select sm', onChange: (e) => onChange(Number(e.target.value)) }, ...[[3, 'Oxirgi 3 oy'], [6, 'Oxirgi 6 oy'], [12, 'Oxirgi 12 oy']].map(([v, l]) => h('option', { value: v, selected: v === value }, l)));
+
+// ---------- Sana oralig'i (Sanadan — Sanagacha) ----------
+export const addDaysISO = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+export const monthStartISO = (d = today()) => d.slice(0, 8) + '01';
+export const monthEndISO = (d = today()) => { const [y, m] = d.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
+export const rangeLabel = (r) => (r && r.from && r.to ? `${date(r.from)} — ${date(r.to)}` : 'Barcha davr');
+/** dateRange({ from, to, onChange, allowEmpty }) — ikkala sana tanlangach onChange({from,to}); allowEmpty bo'lsa × tugmasi "barcha davr"ga qaytaradi */
+export function dateRange({ from = '', to = '', onChange, allowEmpty = false }) {
+  let cur = { from, to };
+  const fromInp = h('input', { class: 'input sm', type: 'date', value: from, title: 'Boshlanish sanasi' });
+  const toInp = h('input', { class: 'input sm', type: 'date', value: to, title: 'Tugash sanasi' });
+  const fire = () => {
+    const f = fromInp.value, t = toInp.value;
+    if (!f && !t) { if (allowEmpty && (cur.from || cur.to)) { cur = { from: '', to: '' }; onChange(cur); } return; }
+    if (!f || !t) return;
+    if (f > t) return toast('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas', 'err');
+    if (f === cur.from && t === cur.to) return;
+    cur = { from: f, to: t }; onChange(cur);
+  };
+  fromInp.addEventListener('change', fire); toInp.addEventListener('change', fire);
+  const clr = allowEmpty ? h('button', { class: 'btn xs ghost', title: 'Barcha davr (tozalash)', onClick: () => { fromInp.value = ''; toInp.value = ''; fire(); } }, icon('x', 13)) : null;
+  const el = h('span', { class: 'date-range small muted' }, h('span', { class: 'dr-part' }, 'Sanadan:', fromInp), h('span', { class: 'dr-part' }, 'Sanagacha:', toInp), clr);
+  return { el, get value() { return cur; }, get active() { return !!(cur.from && cur.to); }, set(f, t) { fromInp.value = f || ''; toInp.value = t || ''; cur = { from: f || '', to: t || '' }; } };
+}
+
+// ---------- Fayl tanlash maydoni (brauzerning standart "Choose File" tugmasi o'rniga) ----------
+/** fileDrop({ accept, hint }) → { el, input, reset() } — input.files va 'change' hodisasi avvalgidek ishlaydi */
+export function fileDrop({ accept = '', hint = '' } = {}) {
+  const input = h('input', { type: 'file', accept, class: 'filedrop-input', tabindex: '-1' });
+  const name = h('div', { class: 'filedrop-name' }, 'Faylni tanlang');
+  const sub = h('div', { class: 'filedrop-sub' }, hint || 'yoki shu yerga sudrab tashlang');
+  const btn = h('span', { class: 'btn sm' }, 'Tanlash');
+  const el = h('label', { class: 'filedrop', tabindex: '0' }, h('div', { class: 'tile green', style: { width: '36px', height: '36px' } }, icon('upload', 18)), h('div', { class: 'grow' }, name, sub), btn, input);
+  const show = () => {
+    const f = input.files && input.files[0];
+    el.classList.toggle('has-file', !!f);
+    name.textContent = f ? f.name : 'Faylni tanlang';
+    sub.textContent = f ? `${(f.size / 1024).toFixed(f.size < 10240 ? 1 : 0)} KB` : hint || 'yoki shu yerga sudrab tashlang';
+    btn.textContent = f ? 'Almashtirish' : 'Tanlash';
+  };
+  input.addEventListener('change', show);
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
+  ['dragenter', 'dragover'].forEach((t) => el.addEventListener(t, (e) => { e.preventDefault(); el.classList.add('drag'); }));
+  ['dragleave', 'dragend'].forEach((t) => el.addEventListener(t, () => el.classList.remove('drag')));
+  el.addEventListener('drop', (e) => { e.preventDefault(); el.classList.remove('drag'); if (e.dataTransfer?.files?.length) { input.files = e.dataTransfer.files; input.dispatchEvent(new Event('change')); } });
+  return { el, input, reset() { input.value = ''; show(); } };
+}
+
+// ---------- Tizim kodlarining o'zbekcha nomlari (kodlar bazada o'zgarmaydi, faqat ko'rsatiladi) ----------
+export const ROLE_LABEL = { FOUNDER: 'Ta’sischi', CEO: 'Bosh direktor', CFO: 'Moliya direktori', FINANCE_MANAGER: 'Moliya menejeri', ACCOUNTANT: 'Buxgalter', SALES: 'Sotuv menejeri', DEPARTMENT_HEAD: 'Bo‘lim rahbari', EMPLOYEE: 'Xodim', AUDITOR: 'Auditor', ADMIN: 'Administrator', AI_AGENT: 'AI agent', EXECUTIVE_DIRECTOR: 'Ijrochi direktor', SYSTEM: 'Tizim' };
+export const SOURCE_LABEL = { WEB: 'Veb', API: 'API', AI: 'AI', SYSTEM: 'Tizim', TELEGRAM: 'Telegram', SEED: 'Boshlang‘ich ma’lumot', WEBHOOK: 'Webhook', IMPORT: 'Import', MANUAL: 'Qo‘lda', EXCEL: 'Excel fayl', BANK_API: 'Bank API', GOOGLE_SHEETS: 'Google Sheets', ONE_C: '1C', ERP: 'ERP', AI_CHAT: 'AI chat', TEST: 'Sinov' };
+export const IGNORE_LABEL = { LOAN: 'Kredit / ta’sischi mablag‘i', REFUND: 'Qaytarilgan mablag‘', INTEREST: 'Bank foizlari', OTHER_INCOME: 'Boshqa kirim', OTHER: 'Boshqa', REVERSAL: 'Tuzatish yozuvi', NON_CONTRACT: 'Shartnomasiz', PAYROLL: 'Oylik' };
+export const RESOURCE_LABEL = { dashboard: 'Bosh sahifa', treasury: 'Pul boshqaruvi', contracts: 'Shartnomalar', transactions: 'Bank tranzaksiyalari', reconciliation: 'Tranzaksiyalarni bog‘lash', revenue: 'Daromadni tan olish', receivables: 'Debitorlik', collections: 'Undiruv', expenses: 'Xarajatlar', approvals: 'Tasdiqlashlar', pnl: 'Foyda va zarar', cashflow: 'Pul oqimi', balance: 'Balans', planfact: 'Reja / Fakt', forecast: 'Prognoz', payroll: 'KPI va oylik', ai: 'AI moliya', reports: 'Hisobotlar', integrations: 'Integratsiyalar', notifications: 'Bildirishnomalar', audit: 'Audit jurnali', settings: 'Sozlamalar', users: 'Foydalanuvchilar' };
+export const AGENT_LABEL = { CFO: 'CFO agenti', BANK: 'Bank agenti', RECONCILIATION: 'Bog‘lash agenti', REVENUE: 'Daromad agenti', EXPENSE: 'Xarajat agenti', APPROVAL: 'Tasdiqlash agenti', CASH_FLOW: 'Pul oqimi agenti', RECEIVABLE: 'Debitorlik agenti', COLLECTION: 'Undiruv agenti', PAYROLL: 'Oylik agenti', FORECAST: 'Prognoz agenti', FINANCIAL_ANALYST: 'Moliyaviy tahlilchi', DATA_QUALITY: 'Ma’lumot sifati agenti', AUDIT_ANOMALY: 'Audit va anomaliya agenti' };
+export const ACTION_LABEL = {
+  LOGIN: 'Tizimga kirdi', LOGIN_FAILED: 'Kirish rad etildi', LOGIN_2FA: 'Tizimga kirdi (2FA)', LOGOUT: 'Tizimdan chiqdi', CREATE: 'Yaratildi', UPDATE: 'O‘zgartirildi',
+  STATUS_RECOMPUTED: 'Holat qayta hisoblandi', CONTRACT_STATUS: 'Shartnoma holati o‘zgardi', SERVICE_STATUS: 'Xizmat holati o‘zgardi', DOCUMENT_ADDED: 'Hujjat qo‘shildi', SCHEDULE_ADDED: 'To‘lov jadvaliga qator qo‘shildi',
+  AUTO_MATCH: 'Avtomatik bog‘landi', MATCH_CONFIRMED: 'Bog‘lash tasdiqlandi', AUTO_MATCH_EXPENSE: 'Xarajatga avtomatik bog‘landi', MATCH_EXPENSE: 'Xarajatga bog‘landi', UNMATCH: 'Bog‘lanish bekor qilindi', IGNORE: 'E’tiborsiz qoldirildi', REVERSE: 'Tuzatish (reversal)', IMPORT: 'Import qilindi', EXCEL_UPLOAD: 'Excel fayl yuklandi', SYNC: 'Sinxronlandi',
+  REVENUE_RECOGNIZED: 'Daromad tan olindi', REVENUE_RECOGNITION_PROPOSED: 'Daromadni tan olish tasdiqqa yuborildi', REVENUE_RECOGNITION_REJECTED: 'Daromadni tan olish rad etildi', REVENUE_REVERSED: 'Daromad tuzatildi', REVENUE_EVENTS_REVERSED: 'To‘lov yozuvlari qaytarildi', REFUND_REFUNDABLE: 'Qaytarishga belgilandi', REFUND_REFUNDED: 'Qaytarildi',
+  APPROVAL_CREATED: 'Tasdiq so‘rovi yaratildi', APPROVAL_APPROVE: 'Tasdiqlandi', APPROVAL_REJECT: 'Rad etildi', APPROVAL_POSTPONE: 'Kechiktirildi', APPROVAL_RULES_UPDATED: 'Tasdiqlash qoidalari o‘zgardi',
+  EXPENSE_REQUESTED: 'Xarajat so‘raldi', EXPENSE_CREATED: 'Xarajat kiritildi', EXPENSE_APPROVED: 'Xarajat tasdiqlandi', EXPENSE_REJECTED: 'Xarajat rad etildi', EXPENSE_PAID: 'Xarajat to‘landi', EXPENSE_UNPAID: 'To‘lov bekor qilindi', EXPENSE_REVERSED: 'Xarajat tuzatildi',
+  PAYROLL_COMPUTED: 'Oylik hisoblandi', PAYROLL_SUBMITTED: 'Oylik tasdiqqa yuborildi', PAYROLL_PAID: 'Oylik to‘landi', PAYROLL_ROW_EDIT: 'Oylik qatori tahrirlandi', SALARY_CHANGED: 'Maosh o‘zgartirildi', KPI_SET: 'KPI kiritildi',
+  AGENT_RUN: 'Agent ishga tushdi', AGENT_UPDATED: 'Agent sozlandi', AI_PROPOSED: 'AI taklif berdi', AI_ACTION_EXECUTED: 'AI taklifi bajarildi', AI_ACTION_REJECTED: 'AI taklifi rad etildi', AI_CATEGORIZED: 'AI kategoriyaladi',
+  COLLECTION_TASK: 'Undiruv vazifasi yaratildi', COLLECTION_UPDATED: 'Undiruv vazifasi yangilandi', SETTINGS_UPDATED: 'Sozlamalar o‘zgardi', PERMISSIONS_UPDATED: 'Ruxsatlar o‘zgardi',
+  PASSWORD_CHANGED: 'Parol o‘zgartirildi', '2FA_ENABLED': '2FA yoqildi', '2FA_DISABLED': '2FA o‘chirildi', TELEGRAM_LINKED: 'Telegram ulandi', BACKUP: 'Zaxira nusxa olindi', EXPORT: 'Eksport qilindi',
+  PLAN_CREATED: 'Reja kiritildi', PLAN_UPDATED: 'Reja o‘zgartirildi', BUDGET_SET: 'Byudjet kiritildi',
+};
+export const actionLabel = (a) => ACTION_LABEL[a] || a;

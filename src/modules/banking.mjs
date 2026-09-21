@@ -61,13 +61,18 @@ export function register(app) {
     /** CSV/XLSX/JSON qatorlarini normal shaklga keltirish (bank ko'chirmasi) */
     normalizeRows(rows, mapping = {}) {
       if (!rows.length) return [];
-      const header = rows[0].map((h) => String(h || '').trim().toLowerCase());
+      const norm = (r) => Array.from(r || [], (x) => String(x ?? '').trim().toLowerCase());
+      // Bank ko'chirmalarida sarlavhadan oldin sarlavha/rekvizit qatorlari bo'ladi — sana + summa ustunlari bor birinchi qatorni topamiz
+      let hi = 0;
+      for (let i = 0; i < Math.min(rows.length, 25); i++) { const hr = norm(rows[i]); if (hr.some((x) => /sana|date|дата/.test(x)) && hr.some((x) => /summa|amount|сумма|debet|debit|дебет|kredit|credit|кредит|kirim|chiqim|приход|расход/.test(x))) { hi = i; break; } }
+      const header = norm(rows[hi]);
+      rows = rows.slice(hi);
       const find = (...names) => { for (const n of names) { const i = header.findIndex((h) => h.includes(n)); if (i >= 0) return i; } return -1; };
       const col = {
         date: mapping.date ?? find('sana', 'date', 'дата'), amount: mapping.amount ?? find('summa', 'amount', 'сумма'),
         debit: mapping.debit ?? find('debet', 'debit', 'дебет', 'chiqim', 'расход'), credit: mapping.credit ?? find('kredit', 'credit', 'кредит', 'kirim', 'приход'),
         name: mapping.name ?? find('kontragent', 'counterparty', 'контрагент', 'nomi', 'наимен', 'name'), inn: mapping.inn ?? find('inn', 'stir', 'инн'),
-        purpose: mapping.purpose ?? find('maqsad', 'purpose', 'назнач', 'izoh', 'комментарий'), ext: mapping.ext ?? find('id', 'raqam', 'номер', '№'),
+        purpose: mapping.purpose ?? find('maqsad', 'purpose', 'назнач', 'izoh', 'комментарий'), ext: mapping.ext ?? find('hujjat', 'raqam', 'номер', '№', 'doc', 'id'), type: mapping.type ?? find('turi', 'type', 'yo‘nalish', 'yo\'nalish', 'направ', 'вид операц'),
       };
       const out = [];
       for (const row of rows.slice(1)) {
@@ -77,7 +82,7 @@ export function register(app) {
         if (col.debit >= 0 || col.credit >= 0) {
           const d = col.debit >= 0 ? parseAmount(row[col.debit]) : 0, c = col.credit >= 0 ? parseAmount(row[col.credit]) : 0;
           if (c > 0) { amount = c; direction = 'INCOME'; } else if (d > 0) { amount = d; direction = 'EXPENSE'; } else continue;
-        } else if (col.amount >= 0) { const a = parseAmount(row[col.amount]); if (!a) continue; amount = Math.abs(a); direction = a < 0 ? 'EXPENSE' : 'INCOME'; }
+        } else if (col.amount >= 0) { const a = parseAmount(row[col.amount]); if (!a) continue; amount = Math.abs(a); direction = a < 0 ? 'EXPENSE' : 'INCOME'; if (col.type >= 0 && /chiq|расход|debet|дебет|expense|out|списан/i.test(String(row[col.type] || ''))) direction = 'EXPENSE'; }
         else continue;
         out.push({ tx_date: date, amount, direction, counterparty_name: col.name >= 0 ? row[col.name] : null, counterparty_inn: col.inn >= 0 ? row[col.inn] : null, purpose: col.purpose >= 0 ? row[col.purpose] : null, external_id: col.ext >= 0 && row[col.ext] ? String(row[col.ext]) : null });
       }

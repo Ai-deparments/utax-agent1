@@ -1,9 +1,12 @@
 import { get, post, patch, qs } from '../api.js';
-import { h, kpiCard, card, fmt, money, short, date, badge, dataTable, toast, err, promptDlg, icon, emptyState } from '../ui.js';
+import { dateRange, rangeLabel, h, kpiCard, card, fmt, money, short, date, badge, dataTable, toast, err, promptDlg, icon, emptyState } from '../ui.js';
 import { hBarChart } from '../charts.js';
 
 export default async function render(root, { setTitle, can, navigate }) {
   let filter = '', minAmt = '';
+  const rng = dateRange({ allowEmpty: true, onChange: () => load() });
+  const tableCard = h('div', { class: 'card' });
+  let table = null, tableMode = null;
   const stats = h('div', { class: 'kpis mb16' });
   const agingBox = h('div', {}), tasksBox = h('div', {});
   const cols = [
@@ -11,19 +14,22 @@ export default async function render(root, { setTitle, can, navigate }) {
     { key: 'total', label: 'Jami', money: true }, { key: 'paid', label: 'To‘langan', money: true }, { key: 'debt', label: 'Qarz', money: true }, { key: 'overdue_amount', label: 'Muddati o‘tgan', money: true }, { key: 'due_date', label: 'Muddat', render: (r) => h('span', { class: r.days_overdue > 0 ? 'neg' : '' }, date(r.due_date), r.due_amount ? h('div', { class: 'xs muted' }, short(r.due_amount)) : null) },
     { key: 'days_overdue', label: 'Kechikish', render: (r) => r.days_overdue > 0 ? h('b', { class: 'neg' }, r.days_overdue + ' kun') : h('span', { class: 'muted' }, r.days_to_due !== null ? `${r.days_to_due} kun qoldi` : '—') }, { key: 'bucket', label: 'Yoshi', render: (r) => badge(r.bucket === 'CURRENT' ? 'OK' : r.days_overdue > 15 ? 'CRITICAL' : 'WARNING', r.bucket === 'CURRENT' ? 'Muddati kelmagan' : r.bucket + ' kun') }, { key: 'contract_status', label: 'Holat', badge: true },
   ];
-  const table = dataTable({ columns: cols, rows: [], onRow: (r) => navigate('contracts/' + r.contract_id), exportName: 'debitorlik', filters: [{ key: 'service_name', label: 'Xizmat', options: [] }, { key: 'manager', label: 'Menejer', options: [] }], toolbarExtra: [h('input', { class: 'input sm', type: 'number', placeholder: 'Minimal summa', onChange: (e) => { minAmt = e.target.value; load(); } })] });
+  const mkTable = (withRange) => dataTable({ columns: withRange ? [...cols.slice(0, 6), { key: 'range_amount', label: 'Davrdagi to‘lov', money: true }, ...cols.slice(6)] : cols, rows: [], onRow: (r) => navigate('contracts/' + r.contract_id), exportName: 'debitorlik', filters: [{ key: 'service_name', label: 'Xizmat', options: [] }, { key: 'manager', label: 'Menejer', options: [] }], toolbarExtra: [h('input', { class: 'input sm', type: 'number', placeholder: 'Minimal summa', onChange: (e) => { minAmt = e.target.value; load(); } })] });
   const chips = h('div', { class: 'chips' });
   const drawChips = () => chips.replaceChildren(...[['', 'Barchasi'], ['today', 'Bugun'], ['overdue', 'Muddati o‘tgan'], ['7', '7 kun ichida'], ['30', '30 kun ichida'], ['60+', '60+ kun'], ['critical', 'Kritik']].map(([v, l]) => h('button', { class: 'chip ' + (filter === v ? 'active' : ''), onClick: () => { filter = v; drawChips(); load(); } }, l)));
   async function load() {
-    const [rows, s, ag, tasks] = await Promise.all([get('/api/receivables' + qs({ filter, min_amount: minAmt })), get('/api/receivables/summary'), get('/api/receivables/aging'), can('collections') ? get('/api/collections?status=OPEN') : []]);
+    const { from, to } = rng.value;
+    const [rows, s, ag, tasksAll] = await Promise.all([get('/api/receivables' + qs({ filter, min_amount: minAmt, due_from: from, due_to: to })), get('/api/receivables/summary' + qs({ from, to })), get('/api/receivables/aging' + qs({ from, to })), can('collections') ? get('/api/collections?status=OPEN') : []]);
+    const tasks = rng.active ? tasksAll.filter((t) => t.due_date && t.due_date >= from && t.due_date <= to) : tasksAll;
+    if (tableMode !== rng.active) { tableMode = rng.active; table = mkTable(rng.active); tableCard.replaceChildren(table.el); }
     table.setRows(rows);
-    setTitle('Debitorlik', `Kim bizdan qancha qarzdor · ${s.count} ta shartnoma`, [can('collections', 'CREATE') ? h('button', { class: 'btn', onClick: async () => { try { const r = await post('/api/collections/run'); toast(`${r.created} ta yangi undiruv vazifasi`, 'ok'); load(); } catch (e) { err(e); } } }, icon('zap', 15), 'Undiruv agentini ishga tushirish') : null]);
+    setTitle('Debitorlik', `Kim bizdan qancha qarzdor · ${s.count} ta shartnoma${rng.active ? ' · to‘lov muddati: ' + rangeLabel(rng.value) : ''}`, [rng.el, can('collections', 'CREATE') ? h('button', { class: 'btn', onClick: async () => { try { const r = await post('/api/collections/run'); toast(`${r.created} ta yangi undiruv vazifasi`, 'ok'); load(); } catch (e) { err(e); } } }, icon('zap', 15), 'Undiruv agentini ishga tushirish') : null]);
     stats.replaceChildren(kpiCard({ size: 'sm', icon: 'users', tone: 'blue', label: 'Jami debitorlik', value: s.total_receivable, sub: `${s.count} ta shartnoma` }), kpiCard({ size: 'sm', icon: 'alert', tone: s.overdue > 0 ? 'amber' : 'green', label: 'Muddati o‘tgan', value: s.overdue, sub: `${s.overdue_count} ta shartnoma` }), kpiCard({ size: 'sm', icon: 'alert', tone: s.critical > 0 ? 'red' : 'green', label: 'Kritik (15+ kun)', value: s.critical, sub: `${s.critical_count} ta shartnoma` }), kpiCard({ size: 'sm', icon: 'calendar', tone: 'teal', label: 'Kutilmoqda 7 kun', value: s.expected_7d }), kpiCard({ size: 'sm', icon: 'calendar', tone: 'green', label: 'Kutilmoqda 30 kun', value: s.expected_30d }));
     agingBox.replaceChildren(card('Debitorlik yoshi (aging)', hBarChart({ items: ag.buckets.map((b) => ({ label: b.label, value: b.amount, sub: b.count + ' ta', color: b.bucket === 'CURRENT' ? 'var(--s1)' : b.bucket === '0-7' ? 'var(--warn)' : b.bucket === '8-15' ? 'var(--orange)' : 'var(--crit)' })) })));
     const stageLabel = { 'T-7': 'Muddat yaqinlashmoqda', 'T-3': 'Eslatma', 'T-0': 'To‘lov kuni', 'T+1': 'Muddati o‘tdi', 'T+3': 'Undiruv vazifasi', 'T+7': 'Eskalatsiya', 'T+15': 'Kritik qarz' };
     tasksBox.replaceChildren(card('Undiruv agenti vazifalari', tasks.length ? h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Bosqich'), h('th', {}, 'Mijoz'), h('th', {}, 'Shartnoma'), h('th', {}, 'Muddat'), h('th', { class: 'right' }, 'Summa'), h('th', {}, 'Mas’ul'), h('th', {}))), h('tbody', {}, ...tasks.map((t) => h('tr', {}, h('td', {}, badge(/\+/.test(t.stage) ? (t.stage === 'T+15' ? 'CRITICAL' : 'WARNING') : 'INFO', `${t.stage} · ${stageLabel[t.stage] || ''}`)), h('td', {}, t.client), h('td', {}, h('a', { href: '#/contracts/' + t.contract_id }, t.contract_number)), h('td', {}, date(t.due_date)), h('td', { class: 'right' }, fmt(t.debt)), h('td', {}, t.assigned_name || '—'), h('td', {}, can('collections', 'EDIT') ? h('span', { class: 'flex gap6' }, h('button', { class: 'btn xs good', title: 'Bajarildi', onClick: async () => { try { await patch('/api/collections/' + t.id, { status: 'DONE' }); toast('Bajarildi', 'ok'); load(); } catch (e) { err(e); } } }, icon('check', 13)), h('button', { class: 'btn xs ghost', title: 'Izoh', onClick: async () => { const n = await promptDlg('Izoh', { value: t.note || '' }); if (n !== null) { await patch('/api/collections/' + t.id, { note: n }); load(); } } }, icon('edit', 13))) : null)))))) : emptyState('Ochiq vazifa yo‘q', 'Undiruv agenti T-7 … T+15 bosqichlarida vazifa yaratadi', 'checkSquare'), null, { tight: true, sub: 'T-7 → T+15' }));
   }
   drawChips();
-  root.append(stats, h('div', { class: 'grid g-1-2 mb16' }, agingBox, tasksBox), h('div', { class: 'mb12' }, chips), h('div', { class: 'card' }, table.el));
+  root.append(stats, h('div', { class: 'grid g-1-2 mb16' }, agingBox, tasksBox), h('div', { class: 'mb12' }, chips), tableCard);
   await load();
 }

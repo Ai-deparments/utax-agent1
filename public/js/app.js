@@ -21,7 +21,7 @@ const logoMark = () => h('div', { class: 'mark' }, icon('x_mark', 20));
 // ---------- LOGIN ----------
 /** notice — login ustida ko'rsatiladigan ogohlantirish (masalan Telegram Mini App orqali kirish muvaffaqiyatsiz bo'lsa) */
 function renderLogin(notice) {
-  const email = h('input', { class: 'input', type: 'email', placeholder: 'Elektron pochta', autocomplete: 'username', value: 'founder@utax.uz' });
+  const email = h('input', { class: 'input', type: 'email', placeholder: 'Elektron pochta', autocomplete: 'username' });
   const pass = h('input', { class: 'input', type: 'password', placeholder: 'Parol', autocomplete: 'current-password' });
   const code = h('input', { class: 'input', placeholder: '2FA kodi (6 raqam)', inputmode: 'numeric', style: { display: 'none' } });
   const msg = h('div', { class: 'small neg mt8' });
@@ -39,8 +39,7 @@ function renderLogin(notice) {
   clear(root).append(h('div', { class: 'login' }, h('form', { class: 'card box', onSubmit: submit, style: { padding: '28px' } },
     h('div', { class: 'brand' }, logoMark(), h('div', {}, h('div', { class: 'nm' }, 'UTAX Finance'), h('small', {}, 'Moliya boshqaruv tizimi'))),
     notice ? h('div', { class: 'mb12' }, alert('warn', notice, 'send')) : null,
-    h('div', { class: 'field mt8' }, h('label', {}, 'Elektron pochta'), email), h('div', { class: 'field mt12' }, h('label', {}, 'Parol'), pass), h('div', { class: 'field mt8' }, code), msg, btn,
-    h('div', { class: 'xs muted mt16' }, 'Pilot foydalanuvchilar: founder@ · ceo@ · cfo@ · finance@ · accountant@ · sales@ · head.marketing@ · employee@ · auditor@ · admin@ (utax.uz). Parol: ', h('code', {}, 'Utax2026!')))));
+    h('div', { class: 'field mt8' }, h('label', {}, 'Elektron pochta'), email), h('div', { class: 'field mt12' }, h('label', {}, 'Parol'), pass), h('div', { class: 'field mt8' }, code), msg, btn)));
   setTimeout(() => pass.focus(), 50);
 }
 
@@ -123,9 +122,27 @@ async function route() {
       setActions: (actions) => clear(head.querySelector('.acts')).append(...actions.filter(Boolean)) };
     await mod.default(fresh, ctx);
     clear(cont).append(fresh);
-  } catch (e) { console.error(e); clear(cont).append(h('div', { class: 'alert crit' }, icon('alert', 16), h('div', {}, 'Sahifa xatosi: ' + e.message))); }
+  } catch (e) {
+    console.error(e);
+    // Tab eski versiyada ochiq qolgan bo‘lsa (server yangilangan), modullar mos kelmaydi — bir marta qayta yuklaymiz.
+    const stale = e instanceof SyntaxError || /dynamically imported module|Importing a module script failed|does not provide an export/i.test(e?.message || '');
+    let last = 0; try { last = Number(sessionStorage.getItem('utax.reload') || 0); } catch {}
+    if (stale && Date.now() - last > 30_000) { try { sessionStorage.setItem('utax.reload', String(Date.now())); } catch {} location.reload(); return; }
+    clear(cont).append(h('div', { class: 'alert crit' }, icon('alert', 16), h('div', {}, 'Sahifa xatosi: ' + e.message)));
+  }
 }
 window.addEventListener('hashchange', route);
+
+// Server yangilangan bo‘lsa (build o‘zgargan), ochiq tabni yangi versiyaga o‘tkazamiz.
+const BUILD = document.querySelector('meta[name="app-build"]')?.content;
+let buildCheckedAt = 0;
+async function checkBuild() {
+  if (!BUILD || Date.now() - buildCheckedAt < 60_000) return;
+  buildCheckedAt = Date.now();
+  try { const j = await (await fetch('/api/health', { cache: 'no-store' })).json(); if (j.build && j.build !== BUILD) location.reload(); } catch {}
+}
+window.addEventListener('hashchange', checkBuild);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkBuild(); });
 
 export async function boot(notice) {
   if (!isLoggedIn()) return renderLogin(notice);

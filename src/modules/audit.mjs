@@ -6,7 +6,7 @@ export function register(app) {
     if (q.entity) { w.push('a.entity=?'); p.push(q.entity); }
     if (q.entity_id) { w.push('a.entity_id=?'); p.push(q.entity_id); }
     if (q.user_id) { w.push('a.user_id=?'); p.push(q.user_id); }
-    if (q.action) { w.push('a.action LIKE ?'); p.push(`%${q.action}%`); }
+    if (q.action) { w.push('a.action = ?'); p.push(q.action); }
     if (q.from) { w.push('a.ts>=?'); p.push(q.from); }
     if (q.to) { w.push('a.ts<=?'); p.push(q.to + 'T23:59:59'); }
     if (q.q) { w.push('(a.action LIKE ? OR a.entity LIKE ? OR a.new_value LIKE ? OR a.old_value LIKE ?)'); p.push(`%${q.q}%`, `%${q.q}%`, `%${q.q}%`, `%${q.q}%`); }

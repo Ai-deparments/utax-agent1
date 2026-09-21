@@ -149,8 +149,20 @@ export function register(app) {
       }
       return out;
     },
+    /** Sana holatiga pozitsiya: har shartnoma bo'yicha shu sanagacha kelgan to'lov va tan olingan daromad.
+     *  avans = Σ max(0, to'langan − tan olingan − qaytarilgan); debitorlik (tan olingan, puli kelmagan) = Σ max(0, tan olingan − to'langan) */
+    positionAsOf(asOf) {
+      return db.get(`SELECT COALESCE(SUM(MAX(0, paid - rec - refunded)),0) advances, COALESCE(SUM(MAX(0, rec - paid)),0) ar FROM (
+        SELECT c.id,
+          COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.contract_id=c.id AND p.reversed_at IS NULL AND p.paid_at<=?),0) AS paid,
+          COALESCE((SELECT SUM(rr.amount) FROM revenue_recognition rr WHERE rr.contract_id=c.id AND rr.status='RECOGNIZED' AND rr.recognized_at<=?),0) AS rec,
+          COALESCE((SELECT SUM(re.amount) FROM revenue_events re WHERE re.contract_id=c.id AND re.state='REFUNDED' AND substr(COALESCE(re.state_changed_at, re.event_date),1,10)<=?),0) AS refunded
+        FROM contracts c)`, asOf, asOf, asOf);
+    },
+    /** asOf berilmasa — joriy holat (revenue_events); berilsa — o'sha sanadagi holat */
     advancesBalance(asOf) {
-      return db.get("SELECT COALESCE(SUM(amount),0) s FROM revenue_events WHERE state='CUSTOMER_ADVANCE'" + (asOf ? ' AND event_date<=?' : ''), ...(asOf ? [asOf] : [])).s;
+      if (!asOf) return db.get("SELECT COALESCE(SUM(amount),0) s FROM revenue_events WHERE state='CUSTOMER_ADVANCE'").s;
+      return round2(svc.positionAsOf(asOf).advances);
     },
     recognizedInPeriod(from, to, serviceTypeId) {
       return db.get(`SELECT COALESCE(SUM(rr.amount),0) s FROM revenue_recognition rr JOIN contracts c ON c.id=rr.contract_id WHERE rr.status='RECOGNIZED' AND rr.recognized_at BETWEEN ? AND ?` + (serviceTypeId ? ' AND c.service_type_id=?' : ''), from, to, ...(serviceTypeId ? [serviceTypeId] : [])).s;

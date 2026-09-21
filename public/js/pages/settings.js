@@ -1,5 +1,5 @@
 import { get, post, put, patch } from '../api.js';
-import { h, card, badge, dt, dataTable, formModal, modal, toast, err, kv, icon, alert, confirmDlg, emptyState } from '../ui.js';
+import { RESOURCE_LABEL, h, card, badge, dt, dataTable, formModal, modal, toast, err, kv, icon, alert, confirmDlg, emptyState } from '../ui.js';
 
 export default async function render(root, { setTitle, can, params, me, roleLabel }) {
   const TABS = [['rules', 'Biznes qoidalari', 'settings'], ['services', 'Xizmat turlari', 'settings'], ['categories', 'Xarajat kategoriyalari', 'settings'], ['users', 'Foydalanuvchilar', 'users'], ['roles', 'Rollar va ruxsatlar', 'users'], ['departments', 'Bo‘limlar', 'settings'], ['recurring', 'Doimiy xarajatlar', 'expenses'], ['scheduler', 'Fon vazifalari va zaxira', 'settings'], ['bots', 'Telegram botlar', 'settings'], ['profile', 'Profil', null]];
@@ -60,7 +60,7 @@ export default async function render(root, { setTitle, can, params, me, roleLabe
         const m = { ...(r.matrix[role] || {}) };
         const sel = h('select', { class: 'select sm', onChange: (e) => { role = e.target.value; draw(); } }, ...r.roles.map((x) => h('option', { value: x.code, selected: x.code === role }, `${roleLabel(x.code)} (${x.code})`)));
         const save = can('settings', 'EDIT') && role !== 'FOUNDER' ? h('button', { class: 'btn sm pri', onClick: async () => { try { await put(`/api/roles/${role}/permissions`, { matrix: m }); toast('Saqlandi', 'ok'); const nr = await get('/api/roles'); r.matrix = nr.matrix; } catch (e) { err(e); } } }, 'Saqlash') : null;
-        const rowsEl = r.resources.map((res) => h('tr', {}, h('td', {}, res), ...r.actions.map((a) => h('td', { class: 'center' }, h('input', { type: 'checkbox', checked: (m[res] || []).includes(a), disabled: role === 'FOUNDER' || !can('settings', 'EDIT'), onChange: (e) => { m[res] ??= []; if (e.target.checked) m[res].push(a); else m[res] = m[res].filter((x) => x !== a); } })))));
+        const rowsEl = r.resources.map((res) => h('tr', {}, h('td', {}, RESOURCE_LABEL[res] || res), ...r.actions.map((a) => h('td', { class: 'center' }, h('input', { type: 'checkbox', checked: (m[res] || []).includes(a), disabled: role === 'FOUNDER' || !can('settings', 'EDIT'), onChange: (e) => { m[res] ??= []; if (e.target.checked) m[res].push(a); else m[res] = m[res].filter((x) => x !== a); } })))));
         const table = h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Bo‘lim (resurs)'), ...r.actions.map((a) => h('th', { class: 'center' }, ACT[a] || a)))), h('tbody', {}, ...rowsEl));
         body.replaceChildren(card('Ruxsatlar matritsasi', h('div', {}, h('div', { class: 'flex gap8 mb12' }, sel, save), h('div', { class: 'tbl-wrap' }, table))));
       };

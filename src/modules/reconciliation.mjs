@@ -155,14 +155,15 @@ export function register(app) {
       for (const id of ids) { const m = svc.autoMatch(id, ctx); if (m?.status === 'MATCHED') res.matched++; else if (m?.status === 'SUGGESTED') res.suggested++; else res.unmatched++; }
       return res;
     },
-    stats() {
+    stats(from, to) {
+      const rng = from && to ? ' AND tx_date BETWEEN ? AND ?' : '';
       return db.get(`SELECT SUM(matching_status='UNMATCHED') unmatched, SUM(matching_status='SUGGESTED') suggested, SUM(matching_status='MATCHED') matched, SUM(matching_status='IGNORED') ignored,
-        COALESCE(SUM(CASE WHEN matching_status IN ('UNMATCHED','SUGGESTED') AND direction='INCOME' THEN amount END),0) unmatched_income_amount FROM bank_transactions WHERE reversed_at IS NULL`);
+        COALESCE(SUM(CASE WHEN matching_status IN ('UNMATCHED','SUGGESTED') AND direction='INCOME' THEN amount END),0) unmatched_income_amount FROM bank_transactions WHERE reversed_at IS NULL${rng}`, ...(rng ? [from, to] : []));
     },
   };
   app.services.reconciliation = svc;
 
-  r.get('/api/reconciliation/stats', { perm: ['reconciliation', 'VIEW'], tags: ['reconciliation'], summary: 'Matching statistikasi' }, async () => svc.stats());
+  r.get('/api/reconciliation/stats', { perm: ['reconciliation', 'VIEW'], tags: ['reconciliation'], summary: 'Matching statistikasi (from/to — tranzaksiya sanasi oralig‘i)', query: ['from', 'to'] }, async (ctx) => svc.stats(ctx.query.from, ctx.query.to));
   r.get('/api/reconciliation/:txId/suggest', { perm: ['reconciliation', 'VIEW'], tags: ['reconciliation'], summary: 'Nomzodlar va confidence' }, async (ctx) => svc.suggest(ctx.params.txId));
   r.post('/api/reconciliation/match', { perm: ['reconciliation', 'APPROVE'], tags: ['reconciliation'], summary: 'Bog‘lashni tasdiqlash {transaction_id, contract_id | expense_id}' }, async (ctx) => {
     const b = ctx.body || {};

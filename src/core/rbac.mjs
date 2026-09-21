@@ -41,12 +41,12 @@ export const DEFAULT_MATRIX = {
     notifications: ['VIEW', 'EDIT'], audit: RO, settings: ['VIEW', 'EDIT'], users: ['VIEW'],
   },
   FINANCE_MANAGER: {
-    dashboard: RO, treasury: RO, contracts: VCE, transactions: VCE, reconciliation: VCEA, revenue: VCE, receivables: VCE,
+    dashboard: RO, treasury: ['VIEW', 'CREATE', 'EXPORT'], contracts: VCE, transactions: VCE, reconciliation: VCEA, revenue: VCE, receivables: VCE,
     collections: VCE, expenses: VCEA, approvals: ['VIEW', 'APPROVE', 'REJECT'], pnl: RO, cashflow: RO, balance: RO, planfact: VCE,
     forecast: RO, payroll: VCE, ai: ['VIEW', 'CREATE'], reports: RO, integrations: VCE, notifications: ['VIEW', 'EDIT'], audit: ['VIEW'], settings: ['VIEW'], users: ['VIEW'],
   },
   ACCOUNTANT: {
-    dashboard: ['VIEW'], treasury: RO, contracts: RO, transactions: VCE, reconciliation: VCEA, revenue: RO, receivables: RO,
+    dashboard: ['VIEW'], treasury: ['VIEW', 'CREATE', 'EXPORT'], contracts: RO, transactions: VCE, reconciliation: VCEA, revenue: RO, receivables: RO,
     collections: ['VIEW'], expenses: VCE, approvals: ['VIEW'], pnl: RO, cashflow: RO, balance: RO, planfact: RO, forecast: ['VIEW'],
     payroll: VCE, ai: ['VIEW', 'CREATE'], reports: RO, integrations: ['VIEW', 'EDIT'], notifications: ['VIEW', 'EDIT'], audit: ['VIEW'], settings: ['VIEW'], users: ['VIEW'],
   },
