@@ -42,11 +42,21 @@ export function register(app) {
       if (f.to) { w.push('e.expense_date<=?'); p.push(f.to); }
       if (f.contract_id) { w.push('e.contract_id=?'); p.push(f.contract_id); }
       if (f.q) { w.push('(e.purpose LIKE ? OR e.code LIKE ? OR e.counterparty LIKE ?)'); p.push(`%${f.q}%`, `%${f.q}%`, `%${f.q}%`); }
+      // Scope — svc.visibleTo bilan bir xil (bitta xarajat kartasi ham shu qoida bilan ochiladi)
       if (user?.role_code === 'EMPLOYEE') { w.push('e.requested_by=?'); p.push(user.id); }
       if (user?.role_code === 'DEPARTMENT_HEAD' && user.department_id) { w.push('(e.department_id=? OR e.requested_by=?)'); p.push(user.department_id, user.id); }
       return db.all(`${SELECT} WHERE ${w.join(' AND ')} ORDER BY e.expense_date DESC, e.id DESC LIMIT 2000`, ...p).map((e) => ({ ...e, approval_steps: parseJson(e.approval_steps, null) }));
     },
     get(id) { const e = db.get(`${SELECT} WHERE e.id=?`, id); return e ? { ...e, approval_steps: parseJson(e.approval_steps, null) } : null; },
+    /** Xarajatni shu foydalanuvchi ko'ra oladimi — list() dagi scope: EMPLOYEE → o'z so'rovi, DEPARTMENT_HEAD → o'z bo'limi yoki o'zi */
+    visibleTo(e, user) {
+      if (!e || !user) return false;
+      if (user.role_code === 'EMPLOYEE') return e.requested_by === user.id;
+      if (user.role_code === 'DEPARTMENT_HEAD' && user.department_id) return e.department_id === user.department_id || e.requested_by === user.id;
+      return true;
+    },
+    /** Bitta xarajat (scope bilan): ko'rinmasa null — "topilmadi" */
+    getFor(id, user) { const e = svc.get(id); return svc.visibleTo(e, user) ? e : null; },
     /** Xodim so'rovi → approval engine */
     request(b, ctx) {
       if (!b.amount || !b.purpose) throw badRequest('amount va purpose majburiy');
@@ -205,7 +215,7 @@ export function register(app) {
   r.post('/api/expenses/categorize', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'AI kategoriya taklifi {text}' }, async (ctx) => suggestCategory(ctx.body?.text));
   r.post('/api/expenses/request', { perm: ['expenses', 'CREATE'], tags: ['expenses'], summary: 'Xarajat so‘rovi (approval engine ishga tushadi)' }, async (ctx) => svc.request(ctx.body || {}, ctx));
   r.post('/api/expenses', { perm: ['expenses', 'EDIT'], tags: ['expenses'], summary: 'Buxgalter: xarajatni to‘g‘ridan-to‘g‘ri kiritish (APPROVED/PAID)' }, async (ctx) => svc.createDirect(ctx.body || {}, ctx));
-  r.get('/api/expenses/:id', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'Xarajat kartasi' }, async (ctx) => { const e = svc.get(ctx.params.id); if (!e) throw notFound(); return { ...e, audit: db.all("SELECT a.*, u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity='expense' AND a.entity_id=? ORDER BY a.ts DESC", e.id) }; });
+  r.get('/api/expenses/:id', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'Xarajat kartasi (ro‘yxat bilan bir xil scope: xodim — o‘ziniki, bo‘lim rahbari — bo‘limi)' }, async (ctx) => { const e = svc.getFor(ctx.params.id, ctx.user); if (!e) throw notFound('Xarajat topilmadi'); return { ...e, audit: db.all("SELECT a.*, u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity='expense' AND a.entity_id=? ORDER BY a.ts DESC", e.id) }; });
   r.patch('/api/expenses/:id', { perm: ['expenses', 'EDIT'], tags: ['expenses'], summary: 'Xarajatni tahrirlash' }, async (ctx) => svc.update(ctx.params.id, ctx.body || {}, ctx));
   r.post('/api/expenses/:id/pay', { perm: ['expenses', 'EDIT'], tags: ['expenses'], summary: 'To‘langan deb belgilash (kassa/bank)' }, async (ctx) => { svc.markPaid(ctx.params.id, ctx.body || {}, ctx); return svc.get(ctx.params.id); });
   r.post('/api/expenses/:id/reverse', { perm: ['expenses', 'DELETE'], tags: ['expenses'], summary: 'Xarajatni reversal qilish (o‘chirish o‘rniga)' }, async (ctx) => svc.reverse(ctx.params.id, ctx, ctx.body?.reason));

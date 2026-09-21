@@ -10,10 +10,10 @@ import { T } from './texts.mjs';
 const OPEN = ['PENDING', 'POSTPONED'];
 const REJECT_REASONS = { 1: 'Byudjetda ko‘zda tutilmagan', 2: 'Hujjatlar yetarli emas', 3: 'Summa asoslanmagan', 4: 'Keyinroq qayta ko‘rib chiqiladi' };
 
-/** Xarajat so'rovi bo'lsa — qo'shimcha tafsilotlar (kategoriya, muddat, to'lov usuli) */
-function expenseLines(S, a) {
+/** Xarajat so'rovi bo'lsa — qo'shimcha tafsilotlar (kategoriya, muddat, to'lov usuli); `user` berilsa — faqat web'da ham ko'ra oladigan xarajat (expenses scope) */
+function expenseLines(S, a, user) {
   if (a.entity_type !== 'EXPENSE' || !a.entity_id) return [];
-  const e = S.expenses.get(a.entity_id);
+  const e = user ? S.expenses.getFor(a.entity_id, user) : S.expenses.get(a.entity_id);
   if (!e) return [];
   return [
     e.category_name ? line('Kategoriya', e.category_name) : null,
@@ -24,8 +24,8 @@ function expenseLines(S, a) {
   ];
 }
 
-/** Approval kartasi: { html, buttons } — `a` = approvals.getFor(id, user) yoki list() qatori (can_act bilan) */
-export function approvalCard(S, a) {
+/** Approval kartasi: { html, buttons } — `a` = approvals.getFor(id, user) yoki list() qatori (can_act bilan); `user` — xarajat tafsilotlari scope'i uchun */
+export function approvalCard(S, a, user) {
   const step = a.steps?.[a.current_step];
   const open = OPEN.includes(a.status);
   const chain = (a.steps || []).map((s, idx) => {
@@ -38,13 +38,13 @@ export function approvalCard(S, a) {
     `<b>${esc(clip(a.title, 140))}</b>`,
     a.amount !== null && a.amount !== undefined ? line('Summa', money(a.amount)) : null,
     a.requested_by_name ? line('So‘ragan', `${a.requested_by_name}${a.department_name ? ` (${a.department_name})` : ''}`) : null,
-    ...expenseLines(S, a),
+    ...expenseLines(S, a, user),
     `${line('Holat', statusLabel(a.status))}${a.status === 'POSTPONED' && a.postponed_until ? ` · ${esc(date(a.postponed_until))} gacha` : ''}`,
     muted(`Yaratilgan: ${dt(a.created_at)}`),
     '',
     '<b>Tasdiqlash zanjiri:</b>',
     ...chain,
-    a.can_act ? '\n👉 <b>Sizning navbatingiz</b>' : open && step ? `\n${muted(`Bu qadamni ${stepLabel(step.role)} tasdiqlaydi`)}` : null,
+    a.can_act ? '\n👉 <b>Sizning navbatingiz</b>' : open && step ? `\n${muted(a.is_mine ? `Bu sizning so‘rovingiz — uni ${stepLabel(step.role)} (boshqa vakolatli shaxs) tasdiqlaydi` : `Bu qadamni ${stepLabel(step.role)} tasdiqlaydi`)}` : null,
   );
   const buttons = [];
   if (a.can_act) {
@@ -59,8 +59,7 @@ export function approvalCard(S, a) {
 export function pendingApprovals(ctx, { entityType } = {}) {
   let rows = [...ctx.S.approvals.list({ status: 'PENDING' }, ctx.user), ...ctx.S.approvals.list({ status: 'POSTPONED' }, ctx.user)];
   if (entityType) rows = rows.filter((a) => (Array.isArray(entityType) ? entityType.includes(a.entity_type) : a.entity_type === entityType));
-  if (['EMPLOYEE', 'SALES'].includes(ctx.user.role_code)) rows = rows.filter((a) => a.is_mine);
-  return rows;
+  return rows.filter((a) => ctx.S.approvals.visibleTo(a, ctx.user)); // EMPLOYEE/SALES — faqat o'ziniki
 }
 
 /**
@@ -81,7 +80,7 @@ export async function showApprovals(ctx, { entityType, limit = 6, title = 'Tasdi
   if (!mine.length) return ctx.reply(`${head}\n\nSizda tasdiq kutayotgan so‘rov yo‘q ✅`, { buttons: [[btn.web('🌐 Tasdiqlashlar', 'approvals')]] });
   await ctx.reply(head);
   for (const a of mine.slice(0, limit)) {
-    const c = approvalCard(ctx.S, a);
+    const c = approvalCard(ctx.S, a, ctx.user);
     await ctx.reply(c.html, { buttons: c.buttons });
   }
   if (mine.length > limit) await ctx.reply(`Yana <b>${mine.length - limit}</b> ta so‘rov — web panelda.`, { buttons: [[btn.web('🌐 Barchasi', 'approvals')]] });
@@ -91,7 +90,7 @@ export async function showApprovals(ctx, { entityType, limit = 6, title = 'Tasdi
 async function refreshCard(ctx, id) {
   const a = ctx.S.approvals.getFor(id, ctx.user);
   if (!a) return null;
-  const c = approvalCard(ctx.S, a);
+  const c = approvalCard(ctx.S, a, ctx.user);
   await ctx.edit(c.html, { buttons: c.buttons });
   return a;
 }
@@ -109,11 +108,12 @@ export const approvalCallbacks = {
       const [action, idStr] = ctx.cbArgs;
       const id = Number(idStr);
       ctx.need('approvals', 'VIEW');
-      const a = ctx.S.approvals.getFor(id, ctx.user);
+      const a = ctx.S.approvals.getFor(id, ctx.user); // scope: EMPLOYEE/SALES — faqat o'ziniki (web /api/approvals/:id bilan bir xil)
       if (!a) return ctx.answer('So‘rov topilmadi', true);
       if (action === 'view') { await refreshCard(ctx, id); return ctx.answer(); }
       if (!a.can_act) {
         await refreshCard(ctx, id);
+        if (OPEN.includes(a.status) && a.is_mine) return ctx.answer('O‘z so‘rovingizni o‘zingiz tasdiqlay olmaysiz — uni boshqa vakolatli shaxs ko‘rib chiqadi', true);
         return ctx.answer(OPEN.includes(a.status) ? `Bu qadamni ${stepLabel(a.steps[a.current_step]?.role)} tasdiqlaydi` : `Allaqachon hal qilingan: ${statusLabel(a.status)}`, true);
       }
       if (action === 'ok') {
@@ -167,7 +167,7 @@ export const approvalDialogs = {
       ctx.dialog.clear();
       if (st.data.message_id) {
         const a = ctx.S.approvals.getFor(id, ctx.user);
-        if (a) { const c = approvalCard(ctx.S, a); await ctx.bot.api.editMessageText(ctx.chatId, st.data.message_id, c.html, { reply_markup: undefined }).catch(() => {}); }
+        if (a) { const c = approvalCard(ctx.S, a, ctx.user); await ctx.bot.api.editMessageText(ctx.chatId, st.data.message_id, c.html, { reply_markup: undefined }).catch(() => {}); }
       }
       return ctx.reply(`❌ <b>#${id}</b> rad etildi.\nSabab: «${esc(clip(reason, 200))}»\nSo‘rovchiga xabar yuborildi.`);
     },

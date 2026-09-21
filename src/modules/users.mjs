@@ -3,6 +3,9 @@ import { badRequest, notFound, conflict } from '../core/http.mjs';
 import { ACTIONS, RESOURCES, ROLES } from '../core/rbac.mjs';
 import { nowIso } from '../core/util.mjs';
 
+/** Forma/JSON qiymati → boolean (true, 1, '1', 'true') */
+const toBool = (v) => v === true || v === 1 || v === '1' || v === 'true';
+
 export function register(app) {
   const { r, db, audit, rbac } = app;
   const pub = (u) => ({
@@ -44,15 +47,28 @@ export function register(app) {
     return pub(db.get('SELECT * FROM users WHERE id=?', id));
   });
 
+  /**
+   * Tahrirlash. is_active — faqat setActive orqali (bot /xodimlar bilan bir xil qoida: sessiyalar yopiladi, ta'sischi/o'zini bloklash taqiqlangan,
+   * bot dialoglari o'chadi, USER_BLOCKED/USER_UNBLOCKED audit). Rol o'zgarsa — ochiq bot dialoglari tozalanadi (eski rol bilan boshlangan amallar).
+   */
   r.patch('/api/users/:id', { perm: ['users', 'EDIT'], tags: ['users'], summary: 'Foydalanuvchini tahrirlash' }, async (ctx) => {
     const u = db.get('SELECT * FROM users WHERE id=?', ctx.params.id);
     if (!u) throw notFound();
     const b = ctx.body || {};
+    if (b.role_code !== undefined && !ROLES.some((x) => x.code === b.role_code)) throw badRequest('Noma’lum rol');
     const upd = {};
-    for (const k of ['name', 'role_code', 'department_id', 'phone', 'is_active']) if (b[k] !== undefined) upd[k] = b[k];
+    for (const k of ['name', 'role_code', 'department_id', 'phone']) if (b[k] !== undefined) upd[k] = b[k];
     if (b.password) upd.password_hash = hashPassword(b.password);
-    db.update('users', u.id, upd);
-    audit(ctx, { action: 'UPDATE', entity: 'user', entityId: u.id, oldValue: { role: u.role_code, active: u.is_active }, newValue: b });
+    const active = b.is_active === undefined ? null : toBool(b.is_active);
+    // Avval blok holati (taqiqlar joriy rol bo'yicha tekshiriladi — ta'sischini bitta so'rovda «tushirib-bloklab» bo'lmaydi)
+    const roleChanged = upd.role_code !== undefined && upd.role_code !== u.role_code;
+    db.tx(() => {
+      if (active !== null && active !== !!u.is_active) app.services.users.setActive(u.id, active, ctx);
+      db.update('users', u.id, upd);
+      if (roleChanged && u.telegram_user_id) db.run('DELETE FROM bot_dialogs WHERE key LIKE ?', `%:${u.telegram_user_id}`);
+    });
+    const { password, ...safe } = b; // parol audit jurnaliga yozilmaydi
+    audit(ctx, { action: 'UPDATE', entity: 'user', entityId: u.id, oldValue: { role: u.role_code, active: u.is_active }, newValue: { ...safe, ...(password ? { password_changed: true } : {}) } });
     return pub(db.get('SELECT * FROM users WHERE id=?', u.id));
   });
 

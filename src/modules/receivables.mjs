@@ -14,6 +14,14 @@ export function register(app) {
   }
   const svc = {
     bucketOf,
+    /**
+     * Foydalanuvchi scope'i (web /api/contracts bilan bir xil): SALES — faqat o'zi menejer bo'lgan shartnomalar qarzi.
+     * So'rovdagi manager_user_id SALES uchun e'tiborga olinmaydi (boshqa sotuvchini so'rab bo'lmaydi).
+     */
+    scopeFor(user, f = {}) {
+      if (user?.role_code === 'SALES') return { ...f, manager_user_id: user.id };
+      return f;
+    },
     list(f = {}, asOf = today()) {
       const critDays = Number(settings.get('collection.critical_days') || 15);
       let rows = app.services.contracts.list({ active: true, service_code: f.service, manager_user_id: f.manager_user_id, company_id: f.company_id });
@@ -56,36 +64,39 @@ export function register(app) {
       return rows.sort((a, b) => b.days_overdue - a.days_overdue || b.overdue_amount - a.overdue_amount || b.debt - a.debt);
     },
     /** To'lov muddati [from; to] oralig'iga tushgan to'lanmagan qismlar */
-    portionsInRange(from, to, asOf = today()) {
-      return svc.list({}, asOf).flatMap((r) => r.portions.filter((p) => p.due && p.due >= from && p.due <= to).map((p) => ({ ...p, contract_id: r.contract_id, days: p.due < asOf ? daysBetween(p.due, asOf) : 0 })));
+    portionsInRange(from, to, asOf = today(), f = {}) {
+      return svc.list({ manager_user_id: f.manager_user_id }, asOf).flatMap((r) => r.portions.filter((p) => p.due && p.due >= from && p.due <= to).map((p) => ({ ...p, contract_id: r.contract_id, days: p.due < asOf ? daysBetween(p.due, asOf) : 0 })));
     },
-    agingRange(from, to, asOf = today()) {
-      const ps = svc.portionsInRange(from, to, asOf);
+    agingRange(from, to, asOf = today(), f = {}) {
+      const ps = svc.portionsInRange(from, to, asOf, f);
       const bk = (p) => (p.days > 0 ? bucketOf(p.days) : 'CURRENT');
       const buckets = ['CURRENT', '0-7', '8-15', '16-30', '31-60', '60+'].map((b) => { const xs = ps.filter((p) => bk(p) === b); return { bucket: b, label: b === 'CURRENT' ? 'Muddati kelmagan' : b + ' kun', amount: round2(sum(xs, (p) => p.amount)), count: new Set(xs.map((p) => p.contract_id)).size }; });
       return { as_of: asOf, from, to, buckets, total: round2(sum(ps, (p) => p.amount)), overdue: round2(sum(ps.filter((p) => p.days > 0), (p) => p.amount)) };
     },
-    summaryRange(from, to, asOf = today()) {
+    summaryRange(from, to, asOf = today(), f = {}) {
       const crit = Number(settings.get('collection.critical_days') || 15);
-      const ps = svc.portionsInRange(from, to, asOf);
+      const ps = svc.portionsInRange(from, to, asOf, f);
       const od = ps.filter((p) => p.days > 0), cr = ps.filter((p) => p.days >= crit);
       const win = (n) => round2(sum(ps.filter((p) => p.due >= asOf && p.due <= addDays(asOf, n)), (p) => p.amount));
       const cnt = (xs) => new Set(xs.map((p) => p.contract_id)).size;
       return { from, to, total_receivable: round2(sum(ps, (p) => p.amount)), overdue: round2(sum(od, (p) => p.amount)), critical: round2(sum(cr, (p) => p.amount)), expected_7d: win(7), expected_30d: win(30), count: cnt(ps), overdue_count: cnt(od), critical_count: cnt(cr) };
     },
-    aging(asOf = today()) {
-      const rows = svc.list({}, asOf);
+    /** @param f  {manager_user_id} — scope (scopeFor) */
+    aging(asOf = today(), f = {}) {
+      const rows = svc.list({ manager_user_id: f.manager_user_id }, asOf);
       const buckets = ['CURRENT', '0-7', '8-15', '16-30', '31-60', '60+'].map((b) => ({ bucket: b, label: b === 'CURRENT' ? 'Muddati kelmagan' : b + ' kun',
         amount: round2(b === 'CURRENT' ? sum(rows, (x) => x.current_amount) : sum(rows.filter((x) => x.bucket === b), (x) => x.overdue_amount)), count: b === 'CURRENT' ? rows.filter((x) => x.current_amount > 0).length : rows.filter((x) => x.bucket === b).length }));
       return { as_of: asOf, buckets, total: round2(sum(rows, (x) => x.debt)), overdue: round2(sum(rows, (x) => x.overdue_amount)) };
     },
-    summary(asOf = today()) {
-      const rows = svc.list({}, asOf);
+    /** @param f  {manager_user_id} — scope (scopeFor): jami, top qarzdorlar va ochiq vazifalar shu menejer shartnomalari bo'yicha */
+    summary(asOf = today(), f = {}) {
+      const rows = svc.list({ manager_user_id: f.manager_user_id }, asOf);
       const overdue = rows.filter((x) => x.overdue_amount > 0), critical = rows.filter((x) => x.is_critical);
       return {
         total_receivable: round2(sum(rows, (x) => x.debt)), overdue: round2(sum(overdue, (x) => x.overdue_amount)), critical: round2(sum(critical, (x) => x.overdue_amount)),
         expected_7d: round2(sum(rows, (x) => x.due_7d)), expected_30d: round2(sum(rows, (x) => x.due_30d)), count: rows.length, overdue_count: overdue.length, critical_count: critical.length,
-        top_debtors: rows.slice(0, 10).map(({ portions, ...x }) => x), open_tasks: db.get("SELECT COUNT(*) n FROM collections WHERE status='OPEN'").n,
+        top_debtors: rows.slice(0, 10).map(({ portions, ...x }) => x),
+        open_tasks: f.manager_user_id ? db.get("SELECT COUNT(*) n FROM collections k JOIN contracts c ON c.id=k.contract_id WHERE k.status='OPEN' AND c.manager_user_id=?", f.manager_user_id).n : db.get("SELECT COUNT(*) n FROM collections WHERE status='OPEN'").n,
       };
     },
     /** COLLECTION AI AGENT — T-7 … T+15 bosqichlar, vazifa + bildirishnoma */
@@ -110,15 +121,19 @@ export function register(app) {
       }
       return { as_of: asOf, created: created.length, tasks: created };
     },
-    /** Undiruv vazifalari: {status, assigned_to} — status berilmasa SUPERSEDED'dan boshqasi */
+    /** Undiruv vazifalari: {status, assigned_to, manager_user_id} — status berilmasa SUPERSEDED'dan boshqasi; manager_user_id — scope (o'z shartnomasi yoki o'ziga biriktirilgan) */
     listCollections(f = {}) {
       const w = [f.status ? 'k.status=?' : "k.status<>'SUPERSEDED'"], p = f.status ? [f.status] : [];
       if (f.assigned_to) { w.push('k.assigned_to=?'); p.push(f.assigned_to); }
+      if (f.manager_user_id) { w.push('(c.manager_user_id=? OR k.assigned_to=?)'); p.push(f.manager_user_id, f.manager_user_id); }
       return db.all(`SELECT k.*, c.contract_number, c.company_id, co.name AS client, co.phone AS client_phone, u.name AS assigned_name FROM collections k JOIN contracts c ON c.id=k.contract_id JOIN companies co ON co.id=c.company_id LEFT JOIN users u ON u.id=k.assigned_to WHERE ${w.join(' AND ')} ORDER BY k.task_date DESC, k.id DESC LIMIT 500`, ...p);
     },
     updateCollection(id, b, ctx) {
       const k = db.get('SELECT * FROM collections WHERE id=?', id);
       if (!k) throw notFound('Vazifa topilmadi');
+      // SALES — faqat o'z shartnomasi yoki o'ziga biriktirilgan vazifa (listCollections scope'i bilan bir xil)
+      const sc = svc.scopeFor(ctx?.user);
+      if (sc.manager_user_id && k.assigned_to !== sc.manager_user_id && db.get('SELECT manager_user_id m FROM contracts WHERE id=?', k.contract_id)?.m !== sc.manager_user_id) throw notFound('Vazifa topilmadi');
       const upd = {};
       if (b.status) { upd.status = b.status; if (b.status === 'DONE') upd.done_at = nowIso(); }
       if (b.note !== undefined) upd.note = b.note;
@@ -130,10 +145,10 @@ export function register(app) {
   };
   app.services.receivables = svc;
 
-  r.get('/api/receivables', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Debitorlik jadvali (due_from/due_to — to‘lov muddati oralig‘i)', query: ['filter', 'service', 'manager_user_id', 'company_id', 'min_amount', 'max_amount', 'q', 'as_of', 'due_from', 'due_to'] }, async (ctx) => svc.list(ctx.query, ctx.query.as_of || today()).map(({ portions, ...x }) => x));
-  r.get('/api/receivables/aging', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Aging: 0–7, 8–15, 16–30, 31–60, 60+ (from/to — to‘lov muddati oralig‘i)', query: ['as_of', 'from', 'to'] }, async (ctx) => (ctx.query.from && ctx.query.to ? svc.agingRange(ctx.query.from, ctx.query.to, ctx.query.as_of || today()) : svc.aging(ctx.query.as_of || today())));
-  r.get('/api/receivables/summary', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'TOTAL / OVERDUE / CRITICAL + kutilayotgan 7/30 kun (from/to — to‘lov muddati oralig‘i)', query: ['as_of', 'from', 'to'] }, async (ctx) => (ctx.query.from && ctx.query.to ? svc.summaryRange(ctx.query.from, ctx.query.to, ctx.query.as_of || today()) : svc.summary(ctx.query.as_of || today())));
-  r.get('/api/collections', { perm: ['collections', 'VIEW'], tags: ['receivables'], summary: 'Undiruv vazifalari', query: ['status'] }, async (ctx) => svc.listCollections({ status: ctx.query.status }));
+  r.get('/api/receivables', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Debitorlik jadvali (due_from/due_to — to‘lov muddati oralig‘i)', query: ['filter', 'service', 'manager_user_id', 'company_id', 'min_amount', 'max_amount', 'q', 'as_of', 'due_from', 'due_to'] }, async (ctx) => svc.list(svc.scopeFor(ctx.user, ctx.query), ctx.query.as_of || today()).map(({ portions, ...x }) => x));
+  r.get('/api/receivables/aging', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Aging: 0–7, 8–15, 16–30, 31–60, 60+ (from/to — to‘lov muddati oralig‘i)', query: ['as_of', 'from', 'to'] }, async (ctx) => (ctx.query.from && ctx.query.to ? svc.agingRange(ctx.query.from, ctx.query.to, ctx.query.as_of || today(), svc.scopeFor(ctx.user)) : svc.aging(ctx.query.as_of || today(), svc.scopeFor(ctx.user))));
+  r.get('/api/receivables/summary', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'TOTAL / OVERDUE / CRITICAL + kutilayotgan 7/30 kun (from/to — to‘lov muddati oralig‘i)', query: ['as_of', 'from', 'to'] }, async (ctx) => (ctx.query.from && ctx.query.to ? svc.summaryRange(ctx.query.from, ctx.query.to, ctx.query.as_of || today(), svc.scopeFor(ctx.user)) : svc.summary(ctx.query.as_of || today(), svc.scopeFor(ctx.user))));
+  r.get('/api/collections', { perm: ['collections', 'VIEW'], tags: ['receivables'], summary: 'Undiruv vazifalari', query: ['status'] }, async (ctx) => svc.listCollections(svc.scopeFor(ctx.user, { status: ctx.query.status })));
   r.patch('/api/collections/:id', { perm: ['collections', 'EDIT'], tags: ['receivables'], summary: 'Vazifa holati/izoh' }, async (ctx) => svc.updateCollection(ctx.params.id, ctx.body || {}, ctx));
   r.post('/api/collections/run', { perm: ['collections', 'CREATE'], tags: ['receivables'], summary: 'Collection agentni ishga tushirish' }, async (ctx) => svc.runCollectionAgent(ctx.body?.as_of || today(), ctx));
 }

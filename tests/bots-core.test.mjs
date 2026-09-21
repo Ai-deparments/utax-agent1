@@ -211,7 +211,7 @@ test('auth: bog‘lanmagan → yo‘riqnoma + audit; noto‘g‘ri bot → mos b
   H.db.run('UPDATE users SET is_active=1 WHERE email=?', 'sales@utax.uz');
 });
 
-test('egalar (BOT_OWNER_IDS): yangi id → FOUNDER yaratiladi, bog‘langan boshqa rol → FOUNDER ga ko‘tariladi', () => {
+test('egalar (BOT_OWNER_IDS): yangi id → FOUNDER yaratiladi, bog‘langan boshqa rol ko‘tarilmaydi — ega o‘z hisobiga ko‘chadi', () => {
   const u = ensureOwner(H.app, '9123456789', { first_name: 'Ega', last_name: 'Bir', username: 'ega1' });
   assert.equal(u.role_code, 'FOUNDER');
   assert.equal(u.name, 'Ega Bir');
@@ -220,7 +220,9 @@ test('egalar (BOT_OWNER_IDS): yangi id → FOUNDER yaratiladi, bog‘langan bosh
   const tg = H.link('head.it@utax.uz', 9123456790);
   const up = ensureOwner(H.app, String(tg));
   assert.equal(up.role_code, 'FOUNDER');
-  assert.ok(H.db.get("SELECT id FROM audit_logs WHERE action='OWNER_ROLE_ENFORCED' AND entity_id=?", up.id));
+  assert.equal(up.email, `tg${tg}@owner.utax.uz`, 'ega alohida hisobiga ko‘chirildi');
+  assert.equal(H.user('head.it@utax.uz').role_code, 'DEPARTMENT_HEAD', 'boshqa rolli hisob FOUNDER ga ko‘tarilmaydi');
+  assert.ok(H.db.get("SELECT id FROM audit_logs WHERE action='OWNER_RELINKED' AND entity_id=?", up.id));
 });
 
 test('egalar: ro‘yxatdagi id botga birinchi yozganda kodsiz FOUNDER bo‘lib kiradi', async () => {
@@ -373,7 +375,7 @@ test('web API: bog‘lash kodi faqat rolga mos botlar havolasini beradi; /start 
   const token = await login('sales2@utax.uz');
   const r = await api(token, '/api/auth/telegram-link', { method: 'POST' });
   assert.equal(r.status, 200);
-  assert.match(r.body.code, /^[A-F0-9]{8}$/);
+  assert.match(r.body.code, /^[A-F0-9]{12}$/);
   assert.deepEqual(r.body.links.map((l) => l.key).sort(), ['signal', 'sorov']);
   assert.ok(r.body.links[0].url.endsWith(`?start=${r.body.code}`));
   const out = await H.send('sorov', 8300001, `/start ${r.body.code}`);

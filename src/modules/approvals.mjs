@@ -15,8 +15,11 @@ export function register(app) {
     const rule = rules.find((x) => amount >= x.min_amount && (x.max_amount === null || amount < x.max_amount));
     return rule || rules[rules.length - 1] || null;
   }
+  /** Vazifalar ajratilishi: so'rovchi o'z so'rovini o'zi tasdiqlay/rad eta olmaydi (FOUNDER ham) — web va botlar uchun bitta qoida */
+  const isRequester = (user, approval) => !!user?.id && approval?.requested_by != null && Number(approval.requested_by) === Number(user.id);
   function canAct(user, step, approval) {
     if (!user || user.role_code === 'AI_AGENT') return false; // AI hech qachon tasdiqlamaydi
+    if (isRequester(user, approval)) return false;
     if (user.role_code === step.role) {
       if (step.role === 'DEPARTMENT_HEAD' && approval.department_id) {
         const d = db.get('SELECT head_user_id FROM departments WHERE id=?', approval.department_id);
@@ -25,6 +28,19 @@ export function register(app) {
       return true;
     }
     return (ACT_AS[user.role_code] || []).includes(step.role);
+  }
+  /**
+   * Qadam navbati bildirishnomasi. Qadam egasi(lari) faqat so'rovchining o'zi bo'lsa (masalan, bo'lim rahbari o'z so'rovini yubordi) —
+   * u tasdiqlay olmaydi, shuning uchun shu qadamni bajara oladigan yuqori rollar (ACT_AS) ham xabardor qilinadi: zanjir jim to'xtab qolmaydi.
+   */
+  function notifyRoles(role, departmentId, requestedBy) {
+    const roles = [role];
+    if (!requestedBy) return roles;
+    const owners = role === 'DEPARTMENT_HEAD' && departmentId
+      ? db.all('SELECT u.id FROM users u JOIN departments d ON d.head_user_id=u.id WHERE d.id=? AND u.is_active=1', departmentId)
+      : db.all('SELECT id FROM users WHERE role_code=? AND is_active=1', role);
+    if (owners.length && owners.every((u) => Number(u.id) === Number(requestedBy))) roles.push(...Object.keys(ACT_AS).filter((r) => ACT_AS[r].includes(role)));
+    return roles;
   }
 
   const svc = {
@@ -35,7 +51,8 @@ export function register(app) {
       const steps = stepRoles.map((role) => ({ role, status: 'PENDING', user_id: null, user_name: null, decided_at: null, comment: null }));
       const id = db.insert('approvals', { entity_type, entity_id, amount: amount ?? null, title: title || `${entity_type} #${entity_id}`, requested_by: requested_by ?? ctx?.user?.id ?? null, department_id: department_id || null, steps: JSON.stringify(steps), current_step: 0, status: 'PENDING', created_at: nowIso(), updated_at: nowIso() });
       audit(ctx, { action: 'APPROVAL_CREATED', entity: 'approval', entityId: id, newValue: { entity_type, entity_id, amount, rule: rule?.name, steps: stepRoles }, approvalId: id });
-      app.services.notifications?.notify({ roles: [stepRoles[0]], department_id: stepRoles[0] === 'DEPARTMENT_HEAD' ? department_id : null, type: 'APPROVAL_WAITING', title: `Tasdiq kutilmoqda: ${title}`, body: `Summa: ${Number(amount || 0).toLocaleString('ru-RU')}`, entity_type: 'approval', entity_id: id, dedupe_key: `apr-wait:${id}:0` });
+      const reqBy = requested_by ?? ctx?.user?.id ?? null;
+      app.services.notifications?.notify({ roles: notifyRoles(stepRoles[0], department_id, reqBy), department_id: stepRoles[0] === 'DEPARTMENT_HEAD' ? department_id : null, type: 'APPROVAL_WAITING', title: `Tasdiq kutilmoqda: ${title}`, body: `Summa: ${Number(amount || 0).toLocaleString('ru-RU')}`, entity_type: 'approval', entity_id: id, dedupe_key: `apr-wait:${id}:0` });
       return db.get('SELECT * FROM approvals WHERE id=?', id);
     },
     decide(id, decision, ctx, comment, opts = {}) {
@@ -46,6 +63,7 @@ export function register(app) {
       const steps = parseJson(a.steps, []);
       const step = steps[a.current_step];
       if (!step) throw badRequest('Qadam topilmadi');
+      if (isRequester(ctx.user, a)) throw forbidden('O‘z so‘rovingizni o‘zingiz tasdiqlay yoki rad eta olmaysiz — uni boshqa vakolatli shaxs ko‘rib chiqadi');
       if (!canAct(ctx.user, step, a)) throw forbidden(`Bu qadamni ${step.role} tasdiqlaydi (siz: ${ctx.user.role_code})`);
       step.user_id = ctx.user.id; step.user_name = ctx.user.name; step.decided_at = nowIso(); step.comment = comment || null; step.source = ctx.source || 'WEB';
       let status = a.status, current = a.current_step, postponed_until = null;
@@ -59,7 +77,7 @@ export function register(app) {
       audit(ctx, { action: 'APPROVAL_' + decision, entity: 'approval', entityId: id, oldValue: { step: a.current_step, status: a.status }, newValue: { step: current, status, comment }, approvalId: id });
       const updated = db.get('SELECT * FROM approvals WHERE id=?', id);
       if (status === 'PENDING' && current !== a.current_step) {
-        app.services.notifications?.notify({ roles: [steps[current].role], department_id: steps[current].role === 'DEPARTMENT_HEAD' ? a.department_id : null, type: 'APPROVAL_WAITING', title: `Tasdiq kutilmoqda: ${a.title}`, body: `Qadam ${current + 1}/${steps.length}`, entity_type: 'approval', entity_id: id, dedupe_key: `apr-wait:${id}:${current}` });
+        app.services.notifications?.notify({ roles: notifyRoles(steps[current].role, a.department_id, a.requested_by), department_id: steps[current].role === 'DEPARTMENT_HEAD' ? a.department_id : null, type: 'APPROVAL_WAITING', title: `Tasdiq kutilmoqda: ${a.title}`, body: `Qadam ${current + 1}/${steps.length}`, entity_type: 'approval', entity_id: id, dedupe_key: `apr-wait:${id}:${current}` });
       }
       if (status === 'APPROVED' || status === 'REJECTED') {
         handlers[a.entity_type]?.(updated, status === 'APPROVED' ? 'APPROVE' : 'REJECT', ctx);
@@ -79,14 +97,24 @@ export function register(app) {
       if (f.to) { w.push('substr(a.created_at,1,10)<=?'); p.push(f.to); }
       const rows = db.all(`SELECT a.*, u.name AS requested_by_name, d.name AS department_name FROM approvals a LEFT JOIN users u ON u.id=a.requested_by LEFT JOIN departments d ON d.id=a.department_id WHERE ${w.join(' AND ')} ORDER BY a.created_at DESC LIMIT 500`, ...p)
         .map((a) => ({ ...a, steps: parseJson(a.steps, []) }));
-      return rows.map((a) => ({ ...a, can_act: ['PENDING', 'POSTPONED'].includes(a.status) && !!a.steps[a.current_step] && canAct(user, a.steps[a.current_step], a), is_mine: a.requested_by === user?.id }));
+      return rows.map((a) => ({ ...a, can_act: ['PENDING', 'POSTPONED'].includes(a.status) && !!a.steps[a.current_step] && canAct(user, a.steps[a.current_step], a), is_mine: isRequester(user, a) }));
     },
     pendingFor(user) { return svc.list({ status: 'PENDING' }, user).filter((a) => a.can_act); },
-    /** Bitta approval + joriy foydalanuvchi uchun can_act / is_mine */
+    /**
+     * Bitta approval + joriy foydalanuvchi uchun can_act / is_mine.
+     * Scope (web /api/approvals ro'yxati bilan bir xil): EMPLOYEE/SALES faqat o'z so'rovini yoki o'zi tasdiqlashi kerak bo'lganini ko'radi — aks holda null ("topilmadi").
+     */
     getFor(id, user) {
       const a = svc.get(id);
       if (!a) return null;
-      return { ...a, can_act: ['PENDING', 'POSTPONED'].includes(a.status) && !!a.steps[a.current_step] && canAct(user, a.steps[a.current_step], a), is_mine: a.requested_by === user?.id };
+      const x = { ...a, can_act: ['PENDING', 'POSTPONED'].includes(a.status) && !!a.steps[a.current_step] && canAct(user, a.steps[a.current_step], a), is_mine: isRequester(user, a) };
+      return svc.visibleTo(x, user) ? x : null;
+    },
+    /** Ro'yxat/karta scope: EMPLOYEE va SALES — faqat is_mine || can_act; qolgan rollar (approvals VIEW bilan) — hammasi */
+    visibleTo(a, user) {
+      if (!a || !user) return false;
+      if (['EMPLOYEE', 'SALES'].includes(user.role_code)) return !!(a.is_mine || a.can_act);
+      return true;
     },
   };
   app.services.approvals = svc;
@@ -94,7 +122,7 @@ export function register(app) {
   r.get('/api/approvals', { perm: ['approvals', 'VIEW'], tags: ['approvals'], summary: 'Tasdiqlashlar (can_act — men tasdiqlay olamanmi)', query: ['status', 'entity_type', 'mine', 'from', 'to'] }, async (ctx) => {
     let rows = svc.list(ctx.query, ctx.user);
     if (ctx.query.mine === '1') rows = rows.filter((a) => a.can_act);
-    if (['EMPLOYEE', 'SALES'].includes(ctx.user.role_code)) rows = rows.filter((a) => a.is_mine);
+    rows = rows.filter((a) => svc.visibleTo(a, ctx.user)); // EMPLOYEE/SALES — faqat o'ziniki
     return rows;
   });
   r.get('/api/approvals/rules', { perm: ['approvals', 'VIEW'], tags: ['approvals'], summary: 'Approval qoidalari (limitlar)' }, async () => db.all('SELECT * FROM approval_rules ORDER BY entity_type, sort, min_amount').map((x) => ({ ...x, steps: parseJson(x.steps, []) })));
@@ -109,7 +137,7 @@ export function register(app) {
     audit(ctx, { action: 'APPROVAL_RULES_UPDATED', entity: 'approval_rules', oldValue: old, newValue: rules });
     return db.all('SELECT * FROM approval_rules ORDER BY entity_type, sort').map((x) => ({ ...x, steps: parseJson(x.steps, []) }));
   });
-  r.get('/api/approvals/:id', { perm: ['approvals', 'VIEW'], tags: ['approvals'], summary: 'Approval detali' }, async (ctx) => { const a = svc.get(ctx.params.id); if (!a) throw notFound(); return a; });
+  r.get('/api/approvals/:id', { perm: ['approvals', 'VIEW'], tags: ['approvals'], summary: 'Approval detali (can_act, is_mine; EMPLOYEE/SALES — faqat o‘ziniki yoki navbati)' }, async (ctx) => { const a = svc.getFor(ctx.params.id, ctx.user); if (!a) throw notFound('Approval topilmadi'); return a; });
   r.post('/api/approvals/:id/approve', { perm: ['approvals', 'APPROVE'], tags: ['approvals'], summary: 'Tasdiqlash' }, async (ctx) => svc.decide(ctx.params.id, 'APPROVE', ctx, ctx.body?.comment));
   r.post('/api/approvals/:id/reject', { perm: ['approvals', 'REJECT'], tags: ['approvals'], summary: 'Rad etish' }, async (ctx) => svc.decide(ctx.params.id, 'REJECT', ctx, ctx.body?.comment));
   r.post('/api/approvals/:id/postpone', { perm: ['approvals', 'APPROVE'], tags: ['approvals'], summary: 'Kechiktirish' }, async (ctx) => svc.decide(ctx.params.id, 'POSTPONE', ctx, ctx.body?.comment, { until: ctx.body?.until }));

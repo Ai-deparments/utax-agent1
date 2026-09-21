@@ -242,6 +242,18 @@ ALTER TABLE ai_conversations ADD COLUMN tools TEXT;
 CREATE INDEX IF NOT EXISTS ix_aiconv_user_channel ON ai_conversations(user_id, channel, id);
 `,
   },
+  {
+    version: 4,
+    name: 'telegram_auth_hardening',
+    sql: `
+-- Sessiya qayerdan ochilgan: WEB (parol/2FA) | TELEGRAM (Mini App, tg_user_id bilan) — Telegram uzilsa/boshqa hisobga o'tsa shu sessiyalar yopiladi
+ALTER TABLE sessions ADD COLUMN source TEXT;
+ALTER TABLE sessions ADD COLUMN tg_user_id TEXT;
+CREATE INDEX IF NOT EXISTS ix_sessions_user_source ON sessions(user_id, source);
+-- main'dagi muddatsiz eski bog'lash kodlari (telegram_link_expires yo'q) — bekor qilinadi
+UPDATE users SET telegram_link_code=NULL WHERE telegram_link_code IS NOT NULL AND telegram_link_expires IS NULL;
+`,
+  },
 ];
 
 export function migrate(db) {

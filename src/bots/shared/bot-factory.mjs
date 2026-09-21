@@ -13,7 +13,7 @@ import { esc, splitHtml, stripTags } from './html.mjs';
 import { toReplyMarkup, chunk } from './keyboards.mjs';
 import { T } from './texts.mjs';
 import { roleLabel, lines } from './format.mjs';
-import { linkByCode, userByTelegram, touchChat, markChatBlocked } from './auth.mjs';
+import { linkByCode, confirmPendingLink, cancelPendingLink, userByTelegram, touchChat, markChatBlocked, LINK_CODE_RE } from './auth.mjs';
 import { isOwnerId, ensureOwner } from './owners.mjs';
 import { TelegramError } from './telegram-api.mjs';
 import { BotError } from './errors.mjs';
@@ -24,7 +24,6 @@ import { personaFor, exampleText } from '../../modules/ai-context.mjs';
 export { BotError };
 
 const CMD_RE = /^\/([a-z0-9_]+)(?:@([a-z0-9_]+))?(?:\s+([\s\S]*))?$/i;
-const LINK_CODE_RE = /^[A-F0-9]{6,16}$/i;
 const MAX_FILE = 10 * 1024 * 1024;
 export const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
 
@@ -217,15 +216,29 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
   async function pipeline(ctx) {
     const cmd = ctx.message && !ctx.file ? parseCommand(ctx.text) : null;
 
-    // 1) /start KOD — web'dan olingan kod bilan bog'lash (auth'dan oldin)
+    const owner = isOwnerId(ownerIds, ctx.from.id);
+    let justLinked = false;
+    // 1) /start KOD — web'dan olingan kod bilan bog'lash (auth'dan oldin). Ega — faqat FOUNDER hisob kodi; boshqa hisobga bog'langan tg id — tasdiq kartasi
     if (cmd?.name === 'start' && cmd.args && LINK_CODE_RE.test(cmd.args.trim())) {
-      const res = linkByCode(app, cmd.args.trim(), ctx.from, def.key);
-      if (!res.ok) return ctx.reply(res.reason === 'expired' ? T.linkExpired : T.linkInvalid);
-      await ctx.reply(T.linked(res.user), { buttons: def.key !== 'signal' ? [[{ text: '🔔 Signal botni ochish', url: `https://t.me/${registry.usernameOf('signal')}` }]] : undefined });
+      const res = linkByCode(app, cmd.args.trim(), ctx.from, def.key, { owner });
+      if (!res.ok) {
+        if (res.reason === 'confirm') {
+          return ctx.reply(T.linkConfirm(res.target, res.current), { buttons: [[{ text: '✅ Ha, bog‘lash', cb: `lnk:ok:${res.hash}` }, { text: '✖️ Bekor', cb: `lnk:no:${res.hash}` }]] });
+        }
+        if (res.reason === 'owner_foreign') return ctx.reply(T.linkOwnerForeign);
+        if (res.blocked_until) return ctx.reply(T.linkBlocked(res.blocked_until));
+        return ctx.reply(res.reason === 'expired' ? T.linkExpired : T.linkInvalid);
+      }
+      await ctx.reply(T.linked(res.user), { buttons: signalButton() });
+    }
+    // 1b) tasdiq kartasi (lnk:ok|no:<kod xeshi>) — auth'dan oldin: joriy hisob bu bot auditoriyasida bo'lmasa ham ishlaydi
+    if (ctx.callback && ctx.cbData.startsWith('lnk:')) {
+      if (!(await onLinkCallback(ctx, owner))) return;
+      justLinked = true;
     }
 
-    // 2) auth: bog'langan, faol, shu bot auditoriyasida. Egalar (BOT_OWNER_IDS) — har doim FOUNDER, kodsiz bog'lanadi
-    const user = isOwnerId(ownerIds, ctx.from.id) ? ensureOwner(app, ctx.from.id, ctx.from) : userByTelegram(db, ctx.from.id);
+    // 2) auth: bog'langan, faol, shu bot auditoriyasida. Egalar (BOT_OWNER_IDS) — har doim FOUNDER hisobida (boshqa rol ko'tarilmaydi)
+    const user = owner ? ensureOwner(app, ctx.from.id, ctx.from) : userByTelegram(db, ctx.from.id);
     if (!user) {
       auditDenied(ctx, 'not_linked');
       return ctx.reply(T.notLinked(links.enabled ? `🌐 Web panel: ${esc(links.url('settings/profile'))}` : null));
@@ -238,6 +251,7 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
       return ctx.reply(T.wrongBot(user.role_code, registry.suggestFor(user.role_code, def.key)), { buttons: registry.suggestFor(user.role_code, def.key).map((s) => [{ text: `➡️ ${s.title}`, url: `https://t.me/${s.username}` }]) });
     }
     touchChat(db, def.key, ctx.chatId, user, ctx.from);
+    if (justLinked) return showMenu(ctx);
 
     // 3) tugmalar
     if (ctx.callback) return onCallback(ctx);
@@ -264,6 +278,29 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
     // 7) erkin matn → bot-agent (default: AI moliya yordamchisi, web "AI moliya" chati bilan bir xil)
     if (ctx.text) return def.onText ? def.onText(ctx) : aiReply(ctx, ctx.text);
     return ctx.reply('Matn yoki buyruq yuboring. /yordam');
+  }
+
+  const signalButton = () => (def.key !== 'signal' ? [[{ text: '🔔 Signal botni ochish', url: `https://t.me/${registry.usernameOf('signal')}` }]] : undefined);
+
+  /** lnk:ok:<xesh> — kutilayotgan bog'lashni tasdiqlash; lnk:no:<xesh> — bekor. Qaytaradi: bog'landimi */
+  async function onLinkCallback(ctx, owner) {
+    const [, op, hash] = ctx.cbData.split(':');
+    if (op === 'no') {
+      cancelPendingLink(db, ctx.from.id);
+      await ctx.edit(T.linkCancelled);
+      await ctx.answer('Bekor qilindi');
+      return false;
+    }
+    if (op !== 'ok') { await ctx.answer(T.expired, true); return false; }
+    const res = confirmPendingLink(app, ctx.from, hash, def.key, { owner });
+    if (!res.ok) {
+      await ctx.edit(res.reason === 'owner_foreign' ? T.linkOwnerForeign : T.linkConfirmExpired);
+      await ctx.answer();
+      return false;
+    }
+    await ctx.edit(T.linked(res.user), { buttons: signalButton() });
+    await ctx.answer('✅ Bog‘landi');
+    return true;
   }
 
   function parseCommand(text) {

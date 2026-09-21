@@ -60,6 +60,8 @@ export function register(app) {
     { name: 'DATA_QUALITY', test: (t) => /(sifat|quality|muammo|xato|warning|to[‘'ʻ]?liq emas|ogohlantir)/.test(t) },
   ];
 
+  // Debitorlik scope'i (web /api/receivables bilan bir xil): SALES — faqat o'zi menejer bo'lgan shartnomalar
+  const rcvScope = (ctx, f = {}) => S().receivables.scopeFor(ctx?.user, f);
   const handlers = {
     CASH() {
       const t = S().reports.treasury();
@@ -67,14 +69,14 @@ export function register(app) {
       if (t.low_liquidity) lines.push('⚠️ Likvidlik pastligi chegarasidan past!');
       return { answer: lines.join('\n'), data: { kind: 'kpis', items: [['Bank', t.bank_balance], ['Kassa', t.cash_balance], ['Jami', t.total_cash], ['Avans', t.customer_advances], ['Rezerv', t.reserved.total], ['Available', t.available_cash]] } };
     },
-    DEBTORS(q) {
-      const rows = S().receivables.list({ filter: /muddati o[‘'ʻ]?tgan|overdue/.test(q.toLowerCase()) ? 'overdue' : undefined });
-      const s = S().receivables.summary();
+    DEBTORS(q, ctx) {
+      const rows = S().receivables.list(rcvScope(ctx, { filter: /muddati o[‘'ʻ]?tgan|overdue/.test(q.toLowerCase()) ? 'overdue' : undefined }));
+      const s = S().receivables.summary(today(), rcvScope(ctx));
       const top = rows.slice(0, 10);
       const answer = [`Jami debitorlik: ${M(s.total_receivable)} (${s.count} shartnoma)`, `Muddati o‘tgan: ${M(s.overdue)} · Kritik (15+ kun): ${M(s.critical)}`, '', ...top.map((x, i) => `${i + 1}. ${x.client} — ${x.contract_number}: qarz ${M(x.debt)}, muddat ${x.due_date}${x.days_overdue > 0 ? ` (${x.days_overdue} kun o‘tdi)` : ''}`)].join('\n');
       return { answer, data: { kind: 'table', columns: [{ key: 'client', label: 'Mijoz' }, { key: 'contract_number', label: 'Shartnoma' }, { key: 'total', label: 'Summa', money: true }, { key: 'paid', label: 'To‘langan', money: true }, { key: 'debt', label: 'Qarz', money: true }, { key: 'due_date', label: 'Muddat' }, { key: 'days_overdue', label: 'Kechikish (kun)' }], rows } };
     },
-    OVERDUE(q) { return handlers.DEBTORS('muddati o‘tgan ' + q); },
+    OVERDUE(q, ctx) { return handlers.DEBTORS('muddati o‘tgan ' + q, ctx); },
     REVENUE(q) {
       const p = resolvePeriod(detectPeriod(q));
       const rev = S().revenue.recognizedInPeriod(p.from, p.to);
@@ -96,10 +98,10 @@ export function register(app) {
       const list = db.all("SELECT code, purpose, amount, required_date FROM expenses WHERE status='APPROVED' AND reversed_at IS NULL AND COALESCE(required_date, expense_date)<=? ORDER BY required_date", addDays(today(), days));
       return { answer: [`Keyingi ${days} kunda kutilayotgan chiqim: **${M(o.total)}**`, `• Tasdiqlangan, to‘lanmagan xarajatlar: ${M(o.approved_unpaid)}`, `• Doimiy xarajatlar (ijara, hosting, oylik...): ${M(o.recurring)}`].join('\n'), data: { kind: 'table', columns: [{ key: 'code', label: 'Kod' }, { key: 'purpose', label: 'Maqsad' }, { key: 'amount', label: 'Summa', money: true }, { key: 'required_date', label: 'Muddat' }], rows: list } };
     },
-    EXPECTED_INCOME(q) {
+    EXPECTED_INCOME(q, ctx) {
       const days = detectDays(q);
-      const rows = S().receivables.list({ filter: days <= 7 ? '7' : '30' });
-      const s = S().receivables.summary();
+      const rows = S().receivables.list(rcvScope(ctx, { filter: days <= 7 ? '7' : '30' }));
+      const s = S().receivables.summary(today(), rcvScope(ctx));
       return { answer: [`Keyingi ${days} kunda tushishi kerak: **${M(days <= 7 ? s.expected_7d : s.expected_30d)}**`, `Muddati o‘tgan (qo‘shimcha undirish kerak): ${M(s.overdue)}`, '', ...rows.slice(0, 10).map((x) => `• ${x.client} — ${x.contract_number}: ${M(x.debt)} (${x.due_date})`)].join('\n'), data: { kind: 'table', columns: [{ key: 'client', label: 'Mijoz' }, { key: 'contract_number', label: 'Shartnoma' }, { key: 'debt', label: 'Kutilayotgan', money: true }, { key: 'due_date', label: 'Muddat' }], rows } };
     },
     PROFIT(q) {
@@ -136,8 +138,7 @@ export function register(app) {
       return { answer: [`Forecast ${days} kun (${f.as_of} → ${f.to}). Hozirgi pul: ${M(f.cash_now)}`, ...Object.entries(f.scenarios).map(([k, s]) => `• ${k}: kirim ${M(s.inflow)}, chiqim ${M(s.outflow)}, net ${M(s.net)} → pul ${M(s.projected_cash)}`), `Risk: ${f.risk}`].join('\n'), data: { kind: 'table', columns: [{ key: 'scenario', label: 'Scenariy' }, { key: 'inflow', label: 'Kirim', money: true }, { key: 'outflow', label: 'Chiqim', money: true }, { key: 'net', label: 'Net', money: true }, { key: 'projected_cash', label: 'Prognoz pul', money: true }], rows: Object.entries(f.scenarios).map(([k, s]) => ({ scenario: k, ...s })) } };
     },
     APPROVALS(q, ctx) {
-      let rows = S().approvals.list({ status: 'PENDING' }, ctx.user);
-      if (['EMPLOYEE', 'SALES'].includes(ctx.user?.role_code)) rows = rows.filter((a) => a.is_mine); // web /api/approvals bilan bir xil scope
+      const rows = S().approvals.list({ status: 'PENDING' }, ctx.user).filter((a) => S().approvals.visibleTo(a, ctx.user)); // web /api/approvals bilan bir xil scope
       return { answer: rows.length ? [`Tasdiq kutayotgan: ${rows.length} ta, jami ${M(sum(rows, (a) => a.amount))}`, ...rows.slice(0, 10).map((a) => `• #${a.id} ${a.title} — ${M(a.amount)} (qadam ${a.current_step + 1}/${a.steps.length}: ${a.steps[a.current_step]?.role})${a.can_act ? ' ← siz tasdiqlashingiz mumkin' : ''}`)].join('\n') : 'Tasdiq kutayotgan so‘rovlar yo‘q.', data: { kind: 'table', columns: [{ key: 'id', label: '#' }, { key: 'title', label: 'Nomi' }, { key: 'amount', label: 'Summa', money: true }, { key: 'status', label: 'Status' }], rows } };
     },
     APPROVE_REQUEST(q, ctx) {
@@ -175,7 +176,7 @@ export function register(app) {
       return { answer: dq.total ? [`⚠️ ${dq.total} ta ma’lumot sifati muammosi:`, ...dq.issues.map((i) => `• ${i.title}: ${i.count} ta`)].join('\n') : 'Ma’lumot sifati muammolari yo‘q ✅', data: { kind: 'table', columns: [{ key: 'severity', label: 'Daraja' }, { key: 'title', label: 'Muammo' }, { key: 'count', label: 'Soni' }], rows: dq.issues } };
     },
     DAILY_STATUS(q, ctx) {
-      const c = handlers.CASH(), d = handlers.DEBTORS(''), a = handlers.APPROVALS('', ctx), u = handlers.UNMATCHED(), dq = handlers.DATA_QUALITY();
+      const c = handlers.CASH(), d = handlers.DEBTORS('', ctx), a = handlers.APPROVALS('', ctx), u = handlers.UNMATCHED(), dq = handlers.DATA_QUALITY();
       return { answer: ['📊 **Bugungi holat**', '', c.answer, '', d.answer.split('\n').slice(0, 2).join('\n'), '', a.answer.split('\n')[0], u.answer.split('\n')[0], dq.answer.split('\n')[0]].join('\n'), data: c.data };
     },
     HELP() {
@@ -190,7 +191,7 @@ export function register(app) {
     APPROVALS: ['approvals', 'VIEW'], FORECAST: ['forecast', 'VIEW'], PLAN: ['planfact', 'VIEW'], PAYROLL: ['payroll', 'VIEW'], CASH: ['treasury', 'VIEW'],
     EXPENSES: ['pnl', 'VIEW'], REVENUE: ['revenue', 'VIEW'], PROFIT: ['pnl', 'VIEW'], CONTRACTS: ['contracts', 'VIEW'], DATA_QUALITY: ['dashboard', 'VIEW'],
   };
-  const RESOURCE_LABEL = { treasury: 'Pul boshqaruvi', pnl: 'Foyda va zarar', receivables: 'Debitorlik', transactions: 'Tushumlar', approvals: 'Tasdiqlashlar', forecast: 'Prognoz', planfact: 'Reja / Fakt', payroll: 'KPI va oylik', revenue: 'Daromad', contracts: 'Shartnomalar', dashboard: 'Bosh sahifa', cashflow: 'Pul oqimi', ai: 'AI moliya' };
+  const RESOURCE_LABEL = { treasury: 'Pul boshqaruvi', pnl: 'Foyda va zarar', receivables: 'Debitorlik', transactions: 'Tushumlar', approvals: 'Tasdiqlashlar', forecast: 'Prognoz', planfact: 'Reja / Fakt', payroll: 'KPI va oylik', revenue: 'Daromad', contracts: 'Shartnomalar', dashboard: 'Bosh sahifa', cashflow: 'Pul oqimi', ai: 'AI moliya', reconciliation: 'Bog‘lash', expenses: 'Xarajatlar', collections: 'Undiruv' };
   const allowed = (ctx, perm) => !perm || (!!ctx?.user && app.rbac.can(ctx.user, perm[0], perm[1]));
 
   function route(question, ctx) {
@@ -209,7 +210,7 @@ export function register(app) {
   const obj = (properties = {}, required) => ({ type: 'object', properties, ...(required ? { required } : {}) });
   const PERIOD = { period: { type: 'string', description: 'davr: day | week | month | quarter | year' }, month: { type: 'string', description: 'oy YYYY-MM (masalan 2026-08)' } };
   const omit = (o, keys) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => !keys.includes(k)));
-  const scopedApprovals = (ctx, rows) => (['EMPLOYEE', 'SALES'].includes(ctx.user?.role_code) ? rows.filter((a) => a.is_mine) : rows);
+  const scopedApprovals = (ctx, rows) => rows.filter((a) => S().approvals.visibleTo(a, ctx.user));
   const stepOf = (a) => (a ? `${Math.min(a.current_step + 1, a.steps.length)}/${a.steps.length} ${a.steps[a.current_step]?.role || ''}`.trim() : null);
   const aprRow = (a) => ({ id: a.id, turi: a.entity_type, nomi: a.title, summa: a.amount, holat: a.status, qadam: stepOf(a), sorovchi: a.requested_by_name, bolim: a.department_name, men_tasdiqlay_olaman: !!a.can_act, sana: String(a.created_at || '').slice(0, 10) });
   const rcvRow = (x) => ({ mijoz: x.client, shartnoma: x.contract_number, xizmat: x.service_name, jami: x.total, tolangan: x.paid, qarz: x.debt, muddati_otgan: x.overdue_amount, kechikish_kun: x.days_overdue, muddat: x.due_date, bucket: x.bucket, menejer: x.manager });
@@ -218,7 +219,12 @@ export function register(app) {
     {
       name: 'get_dashboard', perm: ['dashboard', 'VIEW'], parameters: obj(),
       description: 'Bosh sahifa: asosiy KPI (bank, kassa, jami pul, ishlatish mumkin, avans, oy daromadi/xarajati/sof foydasi, debitorlik), o‘tgan oyga nisbatan o‘zgarish %, kutayotgan ishlar soni',
-      run: () => { const d = S().reports.dashboard(); return { sana: d.as_of, oy: d.month, kpi: d.kpi, ozgarish_pct: d.deltas, kutayotgan: d.pending, korsatkichlar: d.indicators, debitorlik: omit(d.receivables, ['top']), top_qarzdorlar: (d.receivables?.top || []).map((x) => ({ mijoz: x.client, qarz: x.debt, kechikish_kun: x.days_overdue })) }; },
+      run: (_, ctx) => {
+        const d = S().reports.dashboard();
+        const sc = rcvScope(ctx);
+        const top = sc.manager_user_id ? S().receivables.summary(today(), sc).top_debtors.slice(0, 5) : d.receivables?.top || []; // SALES — faqat o'z mijozlari
+        return { sana: d.as_of, oy: d.month, kpi: d.kpi, ozgarish_pct: d.deltas, kutayotgan: d.pending, korsatkichlar: d.indicators, debitorlik: omit(d.receivables, ['top']), top_qarzdorlar: top.map((x) => ({ mijoz: x.client, qarz: x.debt, kechikish_kun: x.days_overdue })) };
+      },
     },
     {
       name: 'get_treasury', perm: ['treasury', 'VIEW'], parameters: obj(),
@@ -244,7 +250,7 @@ export function register(app) {
     {
       name: 'get_receivables', perm: ['receivables', 'VIEW'], parameters: obj({ filter: { type: 'string', enum: ['overdue', '7', '30', '60+', 'critical', 'today'], description: 'ixtiyoriy filtr' } }),
       description: 'Debitorlik: jami, muddati o‘tgan, kritik, aging (0–7 … 60+ kun) va qarzdorlar ro‘yxati',
-      run: (i) => ({ xulosa: omit(S().receivables.summary(), ['top_debtors']), aging: S().receivables.aging().buckets, qarzdorlar: S().receivables.list({ filter: i.filter }).slice(0, 25).map(rcvRow) }),
+      run: (i, ctx) => ({ xulosa: omit(S().receivables.summary(today(), rcvScope(ctx)), ['top_debtors']), aging: S().receivables.aging(today(), rcvScope(ctx)).buckets, qarzdorlar: S().receivables.list(rcvScope(ctx, { filter: i.filter })).slice(0, 25).map(rcvRow) }),
     },
     {
       name: 'get_pnl', perm: ['pnl', 'VIEW'], parameters: obj(PERIOD),
@@ -353,11 +359,21 @@ export function register(app) {
       run: (_, ctx) => S().receivables.listCollections({ status: 'OPEN', assigned_to: ctx.user.id }).slice(0, 20).map((k) => ({ bosqich: k.stage, mijoz: k.client, shartnoma: k.contract_number, qarz: k.debt, muddat: k.due_date, vazifa_sanasi: k.task_date, izoh: k.note })),
     },
     {
+      // Taklif — faqat shu amalni web'da o'zi bajara oladigan foydalanuvchidan (PROPOSE_PERM); agent_code va muallif — server belgilaydi
       name: 'propose_action', perm: ['ai', 'CREATE'], parameters: obj({ action_type: { type: 'string' }, entity_type: { type: 'string' }, entity_id: { type: 'number' }, title: { type: 'string' }, payload: { type: 'object' }, confidence: { type: 'number' } }, ['action_type', 'title']),
       description: 'Tizimga harakat taklif qilish (AI hech qachon o‘zi bajarmaydi — inson tasdiqlaydi). action_type: MATCH_TRANSACTION | SET_EXPENSE_CATEGORY | RECOGNIZE_REVENUE | CREATE_COLLECTION_TASK | FLAG_ANOMALY',
-      run: (i, ctx) => svc.propose({ agent_code: 'CFO', ...i }, ctx),
+      run: (i, ctx) => {
+        try { return svc.proposeFromChat(i, ctx); }
+        catch (e) { if (e?.status === 400 || e?.status === 403) return { error: e.message }; throw e; }
+      },
     },
   ];
+  /** propose_action: amal turi → web'dagi ruxsat (taklif qiluvchida shu amalni o'zi bajarish huquqi bo'lishi shart); ro'yxatda yo'q turlar — rad */
+  const PROPOSE_PERM = {
+    MATCH_TRANSACTION: ['reconciliation', 'APPROVE'], SET_EXPENSE_CATEGORY: ['expenses', 'EDIT'], RECOGNIZE_REVENUE: ['revenue', 'CREATE'],
+    CREATE_COLLECTION_TASK: ['collections', 'CREATE'], FLAG_ANOMALY: ['transactions', 'EDIT'],
+  };
+  const proposableTypes = (ctx) => Object.keys(PROPOSE_PERM).filter((t) => allowed(ctx, PROPOSE_PERM[t]));
 
   /** Foydalanuvchiga ruxsat etilgan tool'lar, persona tartibida (bot kontekstiga mos tool'lar birinchi); RBAC har doim ustun */
   function toolsFor(ctx, persona, max = config.ai.maxTools) {
@@ -366,7 +382,9 @@ export function register(app) {
     // Token tejash (Groq TPM): persona tool'lari + faqat ruxsat etilganlar, eng ko'pi `max` ta; propose_action har doim oxirida
     const ok = TOOLS.filter((t) => t.name !== 'propose_action' && allowed(ctx, t.perm) && (persona?.key === 'web' || !pref.length || pref.includes(t.name))).sort((a, b) => rank(a) - rank(b)).slice(0, Math.max(1, max));
     const propose = TOOLS.find((t) => t.name === 'propose_action');
-    return allowed(ctx, propose.perm) && persona?.key === 'web' ? [...ok, propose] : ok;
+    const types = proposableTypes(ctx);
+    if (!(persona?.key === 'web' && allowed(ctx, propose.perm) && types.length)) return ok; // hech bir amalga ruxsat yo'q — tool berilmaydi
+    return [...ok, { ...propose, description: propose.description.replace(/action_type: .*$/, `action_type: ${types.join(' | ')}`) }];
   }
 
   // Faqat salomlashish (qo'shimcha savolsiz): "salom", "nima gap", "assalomu alaykum!", "привет" …
@@ -609,8 +627,33 @@ export function register(app) {
       const dedupe = key ? sha256(key) : null;
       if (dedupe && db.get("SELECT id FROM ai_actions WHERE status='PROPOSED' AND payload LIKE ?", `%"__k":"${dedupe}"%`)) return null;
       const id = db.insert('ai_actions', { agent_code: a.agent_code || 'CFO', action_type: a.action_type, entity_type: a.entity_type || null, entity_id: a.entity_id || null, title: a.title, payload: JSON.stringify({ ...(a.payload || {}), __k: dedupe }), confidence: a.confidence ?? null, status: 'PROPOSED', proposed_at: nowIso() });
-      audit(ctx, { action: 'AI_PROPOSED', entity: 'ai_action', entityId: id, newValue: { type: a.action_type, title: a.title }, aiAgentCode: a.agent_code });
+      const by = a.payload?.proposed_by;
+      audit(ctx, { action: 'AI_PROPOSED', entity: 'ai_action', entityId: id, newValue: { type: a.action_type, title: a.title, ...(by ? { proposed_by: by } : {}) }, aiAgentCode: a.agent_code });
       return { id, status: 'PROPOSED' };
+    },
+    /**
+     * Foydalanuvchi AI chat orqali yuborgan taklif (propose_action tool).
+     * Qoidalar: faqat PROPOSE_PERM dagi turlar va faqat shu amalning web ruxsati bor foydalanuvchi; agent_code argumentdan olinmaydi;
+     * kim yuborgani (user id, ism) payload.proposed_by, audit va sarlavhada — tasdiqlovchi "Taklif qilgan: <ism> (AI chat orqali)" ni ko'radi.
+     */
+    proposeFromChat(i = {}, ctx) {
+      const u = ctx?.user;
+      if (!u?.id || u.is_agent || u.role_code === 'AI_AGENT') throw forbidden('Taklifni faqat tizim foydalanuvchisi yubora oladi');
+      const type = String(i.action_type || '').trim().toUpperCase();
+      const perm = PROPOSE_PERM[type];
+      if (!perm) throw badRequest(`Bu amal turini taklif qilib bo‘lmaydi: ${type || '—'}. Mumkin: ${Object.keys(PROPOSE_PERM).join(', ')}`);
+      if (!allowed(ctx, perm)) throw forbidden(`${type} taklifi uchun «${RESOURCE_LABEL[perm[0]] || perm[0]}» bo‘limida ${perm[1]} ruxsati kerak — sizning rolingizda yo‘q`);
+      const text = String(i.title || '').replace(/\s+/g, ' ').trim();
+      if (!text) throw badRequest('title kerak');
+      const name = String(u.name || `#${u.id}`).slice(0, 40);
+      const payload = i.payload && typeof i.payload === 'object' && !Array.isArray(i.payload) ? { ...i.payload } : {};
+      payload.proposed_by = { user_id: u.id, name: u.name || null, role: u.role_code, via: 'AI_CHAT' };
+      const entityId = Number(i.entity_id);
+      return svc.propose({
+        agent_code: 'CFO', action_type: type, entity_type: i.entity_type ? String(i.entity_type).slice(0, 40) : null, entity_id: Number.isInteger(entityId) && entityId > 0 ? entityId : null,
+        title: `${text.length > 140 ? text.slice(0, 139) + '…' : text}\nTaklif qilgan: ${name} (AI chat orqali)`, payload,
+        confidence: Number.isFinite(Number(i.confidence)) ? Math.max(0, Math.min(100, Math.round(Number(i.confidence)))) : null,
+      }, ctx);
     },
     decideAction(id, decision, ctx) {
       const a = db.get('SELECT * FROM ai_actions WHERE id=?', id);

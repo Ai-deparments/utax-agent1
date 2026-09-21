@@ -1,6 +1,6 @@
 /** Barcha botlar uchun umumiy matnlar (o'zbek, lotin). Bot-spetsifik matnlar — o'z papkasida. */
 import { esc } from './html.mjs';
-import { roleLabel } from './format.mjs';
+import { roleLabel, dt } from './format.mjs';
 
 export const RESOURCE_LABEL = {
   dashboard: 'Bosh sahifa', treasury: 'Pul boshqaruvi', contracts: 'Shartnomalar', transactions: 'Tushumlar', reconciliation: 'Bog‘lash', revenue: 'Daromad',
@@ -23,6 +23,16 @@ export const T = {
   ].filter((x) => x !== null).join('\n'),
   linkInvalid: '❌ Kod noto‘g‘ri yoki allaqachon ishlatilgan. Web → Sozlamalar → Profil → Telegram botlar bo‘limidan yangi kod oling.',
   linkExpired: '⌛ Kod muddati tugagan (24 soat). Web panelda yangi kod oling.',
+  linkBlocked: (until) => `⛔ Juda ko‘p noto‘g‘ri kod. Bog‘lash vaqtincha to‘xtatildi — <b>${esc(dt(until))}</b> dan keyin qayta urinib ko‘ring.`,
+  linkOwnerForeign: '🛡 Siz ega sifatida avtomatik bog‘langansiz; bu kod boshqa hisob uchun. Kod qabul qilinmadi — joriy bog‘lanishingiz o‘zgarmadi.',
+  linkConfirm: (target, current) => [
+    `🔁 <b>${esc(target.name)}</b> · ${esc(roleLabel(target.role_code))} hisobiga bog‘lansinmi?`,
+    '',
+    `Joriy bog‘lanish (<b>${esc(current.name)}</b> · ${esc(roleLabel(current.role_code))}) uziladi.`,
+    '<i>Tasdiq 10 daqiqa amal qiladi.</i>',
+  ].join('\n'),
+  linkConfirmExpired: '⌛ Tasdiq muddati tugagan yoki kod o‘zgargan. Web paneldan yangi kod oling va /start KOD ni qayta yuboring.',
+  linkCancelled: '✖️ Bog‘lash bekor qilindi. Joriy bog‘lanish o‘zgarmadi.',
   linked: (user) => `✅ <b>Bog‘landi!</b>\n${esc(user.name)} · ${esc(roleLabel(user.role_code))}\n\nEndi UTAX botlari sizni taniydi. Bildirishnomalar <b>@utax_signal_bot</b> orqali keladi — uni ham oching.`,
   blocked: '⛔ Hisobingiz bloklangan. Rahbariyatga murojaat qiling.',
   wrongBot: (role, suggestions) => [

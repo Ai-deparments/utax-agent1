@@ -22,7 +22,8 @@ export default {
     { name: 'oqilmagan', desc: 'O‘qilmagan bildirishnomalar', button: '🔔 O‘qilmagan', perm: KORISH, run: oqilmagan },
     { name: 'tarix', desc: 'Bildirishnomalar tarixi', button: '🗂 Tarix', perm: KORISH, run: tarix },
     { name: 'sozlama', desc: 'Qaysi turlar kelsin, jim soatlar', button: '⚙️ Sozlama', perm: TAHRIR, run: sozlama },
-    { name: 'test', desc: 'O‘zimga test bildirishnoma', button: '🧪 Test', perm: KORISH, run: testXabar },
+    // /test bildirishnoma YARATADI (yozish amali) — web'dagi kabi notifications EDIT kerak; read-only AUDITOR uchun yopiq
+    { name: 'test', desc: 'O‘zimga test bildirishnoma', button: '🧪 Test', perm: TAHRIR, run: testXabar },
   ],
   callbacks: {
     'g.o': { perm: KORISH, run: ochish },

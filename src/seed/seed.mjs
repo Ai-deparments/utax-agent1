@@ -176,7 +176,8 @@ export async function seed(app, { log = console.log } = {}) {
   // So'rovlar (approval engine)
   const req = (d, by, dept, amount, purpose, required, decisions = []) => ev.push({ d, t: 'req', by, dept, amount, purpose, required, decisions });
   req('2026-08-28', 'employee@utax.uz', 'MARKETING', 6e6, 'Korporativ tadbir (team building)', '2026-09-05', [['head.marketing@utax.uz', 'APPROVE'], ['finance@utax.uz', 'REJECT', 'Byudjetdan tashqari']]);
-  req('2026-09-10', 'head.legal@utax.uz', 'LEGAL', 18e6, 'Yuridik adabiyot va huquqiy baza obunasi', '2026-09-30', [['head.legal@utax.uz', 'APPROVE'], ['finance@utax.uz', 'POSTPONE', 'Oktabr byudjetiga ko‘chirish']]);
+  // Bo'lim rahbarining o'z so'rovi — vazifalar ajratilishi: bo'lim rahbari qadamini CEO (ACT_AS) tasdiqlaydi
+  req('2026-09-10', 'head.legal@utax.uz', 'LEGAL', 18e6, 'Yuridik adabiyot va huquqiy baza obunasi', '2026-09-30', [['ceo@utax.uz', 'APPROVE'], ['finance@utax.uz', 'POSTPONE', 'Oktabr byudjetiga ko‘chirish']]);
   req('2026-09-13', 'sales2@utax.uz', 'SALES', 45e6, 'Ofis ta‘mirlash (sotuv bo‘limi)', '2026-10-05', [['founder@utax.uz', 'APPROVE']]);
   req('2026-09-14', 'employee@utax.uz', 'MARKETING', 12e6, 'Reklama kampaniyasi — sentabr-oktabr Telegram Ads', '2026-09-25', [['head.marketing@utax.uz', 'APPROVE']]);
   req('2026-09-16', 'head.it@utax.uz', 'IT', 3.5e6, 'Dizayner uchun 27" monitor', '2026-09-30');
