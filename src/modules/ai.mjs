@@ -600,6 +600,8 @@ export function register(app) {
     route, AGENTS, TOOLS, toolsFor, memoryRows, clearMemory,
     /** Testlar uchun: LLM obyektini almashtirish (null — o'chirish, undefined — config bo'yicha) */
     useLlm(x) { llmOverride = x; },
+    /** Kalit/model o'zgarganda (Integratsiyalar → Gemini/Groq) zanjirni qayta yaratish */
+    resetLlm() { llmInstance = null; llmLoading = null; },
     getLlm,
     /** LLM provayderlar holati (kalitsiz) — web Sozlamalar uchun */
     llmStats() { return llmInstance?.stats?.() || null; },

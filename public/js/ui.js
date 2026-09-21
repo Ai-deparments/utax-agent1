@@ -162,16 +162,16 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
 
 // ---------- KPI kartalar ----------
 /** kpiCard({ icon, tone, label, value, unit, delta, deltaLabel, invert, spark, accent, sub, size }) */
-export function kpiCard({ icon: ic = 'wallet', tone = 'green', label, value, unit, delta: dl, deltaLabel = 'O‘tgan oyga nisbatan', invert = false, spark, accent = false, sub, size = '', cls = '' }) {
+export function kpiCard({ icon: ic = 'wallet', tone = 'green', label, value, unit, delta: dl, deltaLabel = 'O‘tgan oyga nisbatan', invert = false, spark, accent = false, sub, size = '', cls = '', href }) {
   const isNum = typeof value === 'number';
-  const el = h('div', { class: `kpi-card ${size} ${accent ? 'accent' : ''} ${cls}`, title: isNum ? money(value) : '' },
+  const el = h(href ? 'a' : 'div', { class: `kpi-card ${size} ${accent ? 'accent' : ''} ${cls} ${href ? 'link' : ''}`, title: (isNum ? money(value) : '') + (href ? (isNum ? ' · ' : '') + 'Batafsil ko‘rish' : ''), ...(href ? { href } : {}) },
     h('div', { class: 'top' }, h('div', { class: 'tile ' + tone }, icon(ic, 20)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'vl' + (isNum && fmt(value).length > 13 ? ' xl' : isNum && fmt(value).length > 10 ? ' lg' : '') }, isNum ? fmt(value) : value, isNum ? h('span', { class: 'un' }, unit ?? CUR) : null))),
     dl !== undefined ? h('div', { class: 'dl' }, delta(dl, { invert }), h('span', {}, deltaLabel)) : sub ? h('div', { class: 'dl' }, sub) : null);
   if (spark && spark.length > 1) import('./charts.js').then(({ sparkline }) => el.append(h('div', { class: 'spark' }, sparkline(spark, { color: `var(--${{ green: 's1', blue: 's3', orange: 's2', red: 'crit', violet: 's5', amber: 's4', teal: 's6', gray: 'muted-2' }[tone] || 's1'})` }))));
   return el;
 }
 /** Kichik ko'rsatkich (Asosiy ko'rsatkichlar) */
-export const statTile = ({ icon: ic = 'info', tone = 'green', label, value, delta: dl, invert = false }) => h('div', { class: 'stat-tile' }, h('div', { class: 'tile ' + tone, style: { width: '36px', height: '36px' } }, icon(ic, 18)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'flex' }, h('span', { class: 'vl' }, value), dl !== undefined && dl !== null ? h('span', { class: 'dl' }, delta(dl, { invert, suffix: '' })) : null)));
+export const statTile = ({ icon: ic = 'info', tone = 'green', label, value, delta: dl, invert = false, href }) => h(href ? 'a' : 'div', { class: 'stat-tile' + (href ? ' link' : ''), ...(href ? { href, title: 'Batafsil ko‘rish' } : {}) }, h('div', { class: 'tile ' + tone, style: { width: '36px', height: '36px' } }, icon(ic, 18)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'flex' }, h('span', { class: 'vl' }, value), dl !== undefined && dl !== null ? h('span', { class: 'dl' }, delta(dl, { invert, suffix: '' })) : null)));
 /** Eski API: kpi(label, value, sub, cls) — sahifalar uchun qisqa karta */
 export const kpi = (label, value, sub, cls = '', ic = 'coins', tone = 'green') => kpiCard({ icon: ic, tone: cls === 'crit' ? 'red' : cls === 'warn' ? 'amber' : tone, label, value, sub, size: 'sm', accent: cls === 'hero', cls: cls === 'crit' || cls === 'warn' ? cls : '' });
 export const card = (title, body, actions, { tight = false, sub } = {}) => h('div', { class: 'card' }, title ? h('div', { class: 'card-h' }, typeof title === 'string' ? h('h3', {}, title, sub ? h('span', { class: 'sub' }, sub) : null) : title, ...(actions || [])) : null, h('div', { class: 'card-b ' + (tight ? 'tight' : '') }, body instanceof HTMLTableElement ? h('div', { class: 'tbl-wrap' }, body) : body));

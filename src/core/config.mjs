@@ -35,7 +35,7 @@ export const config = {
     geminiKey: env('GEMINI_API_KEY', ''),
     groqKey: env('GROQ_API_KEY', ''),
     geminiModel: env('GEMINI_MODEL', 'gemini-3.6-flash'),
-    geminiFallbackModels: String(env('GEMINI_FALLBACK_MODELS', 'gemini-3.5-flash')).split(/[\s,;]+/).filter(Boolean),
+    geminiFallbackModels: String(env('GEMINI_FALLBACK_MODELS', 'gemini-3.5-flash,gemini-flash-latest')).split(/[\s,;]+/).filter(Boolean),
     groqModel: env('GROQ_MODEL', 'openai/gpt-oss-120b'),
     // Groq limitlari (TPM) har model uchun alohida — asosiy model limitga yetsa shu model bilan davom etadi
     groqFallbackModel: env('GROQ_FALLBACK_MODEL', 'openai/gpt-oss-20b'),

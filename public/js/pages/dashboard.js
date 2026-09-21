@@ -19,19 +19,19 @@ export default async function render(outerRoot, { setTitle, navigate }) {
   const mL = (l) => l.map((x) => monthLabel(x.period));
 
   root.append(h('div', { class: 'kpis mb16' },
-    kpiCard({ icon: 'bank', tone: 'green', label: 'Bank qoldig‘i', value: k.bank_balance, delta: dl.bank_balance, deltaLabel: balLbl, spark: sp.bank }),
-    kpiCard({ icon: 'cash', tone: 'blue', label: 'Kassa qoldig‘i', value: k.cash_balance, delta: dl.cash_balance, deltaLabel: balLbl, spark: sp.cash }),
-    kpiCard({ icon: 'coins', tone: 'green', label: 'Jami pul mablag‘lari', value: k.total_cash, delta: dl.total_cash, deltaLabel: balLbl, spark: sp.total }),
-    kpiCard({ icon: 'inflow', tone: 'orange', label: 'Mijoz avanslari (predoplata)', value: k.customer_advances, delta: dl.customer_advances, deltaLabel: balLbl, spark: sp.advances }),
-    kpiCard({ icon: 'receipt', tone: 'red', label: `Xarajatlar ${P}`, value: k.expenses_month, delta: dl.expenses_month, deltaLabel: flowLbl, invert: true, spark: sp.expenses })));
+    kpiCard({ icon: 'bank', tone: 'green', href: '#/treasury', label: 'Bank qoldig‘i', value: k.bank_balance, delta: dl.bank_balance, deltaLabel: balLbl, spark: sp.bank }),
+    kpiCard({ icon: 'cash', tone: 'blue', href: '#/treasury', label: 'Kassa qoldig‘i', value: k.cash_balance, delta: dl.cash_balance, deltaLabel: balLbl, spark: sp.cash }),
+    kpiCard({ icon: 'coins', tone: 'green', href: '#/treasury', label: 'Jami pul mablag‘lari', value: k.total_cash, delta: dl.total_cash, deltaLabel: balLbl, spark: sp.total }),
+    kpiCard({ icon: 'inflow', tone: 'orange', href: '#/treasury', label: 'Mijoz avanslari (predoplata)', value: k.customer_advances, delta: dl.customer_advances, deltaLabel: balLbl, spark: sp.advances }),
+    kpiCard({ icon: 'receipt', tone: 'red', href: '#/expenses', label: `Xarajatlar ${P}`, value: k.expenses_month, delta: dl.expenses_month, deltaLabel: flowLbl, invert: true, spark: sp.expenses })));
 
   root.append(h('div', { class: 'kpis c6 mb16' },
-    kpiCard({ size: 'sm', accent: true, icon: 'wallet', tone: 'green', label: 'Ishlatish mumkin pul', value: k.available_cash, sub: k.low_liquidity ? 'Likvidlik chegarasidan past' : 'Jami pul − avanslar − rezerv' }),
-    kpiCard({ size: 'sm', icon: 'trend', tone: 'green', label: `Tan olingan daromad ${P}`, value: k.recognized_revenue, delta: dl.recognized_revenue, deltaLabel: flowLbl }),
-    kpiCard({ size: 'sm', icon: 'users', tone: 'blue', label: 'Olinadigan summalar (debitorlik)', value: k.accounts_receivable, delta: dl.accounts_receivable, deltaLabel: balLbl, invert: true }),
-    kpiCard({ size: 'sm', icon: 'calendar', tone: 'teal', label: 'Kutilayotgan daromad (30 kun)', value: k.expected_income, sub: 'To‘lov jadvali bo‘yicha' }),
-    kpiCard({ size: 'sm', icon: 'calendar', tone: 'amber', label: 'Kutilayotgan xarajat (30 kun)', value: k.expected_expenses, sub: 'Tasdiqlangan + doimiy xarajatlar' }),
-    kpiCard({ size: 'sm', icon: 'award', tone: k.net_profit < 0 ? 'red' : 'green', label: `Sof foyda ${P}`, value: k.net_profit, delta: dl.net_profit, deltaLabel: flowLbl })));
+    kpiCard({ size: 'sm', accent: true, icon: 'wallet', tone: 'green', href: '#/treasury', label: 'Ishlatish mumkin pul', value: k.available_cash, sub: k.low_liquidity ? 'Likvidlik chegarasidan past' : 'Jami pul − avanslar − rezerv' }),
+    kpiCard({ size: 'sm', icon: 'trend', tone: 'green', href: '#/pnl', label: `Tan olingan daromad ${P}`, value: k.recognized_revenue, delta: dl.recognized_revenue, deltaLabel: flowLbl }),
+    kpiCard({ size: 'sm', icon: 'users', tone: 'blue', href: '#/receivables', label: 'Olinadigan summalar (debitorlik)', value: k.accounts_receivable, delta: dl.accounts_receivable, deltaLabel: balLbl, invert: true }),
+    kpiCard({ size: 'sm', icon: 'calendar', tone: 'teal', href: '#/forecast', label: 'Kutilayotgan daromad (30 kun)', value: k.expected_income, sub: 'To‘lov jadvali bo‘yicha' }),
+    kpiCard({ size: 'sm', icon: 'calendar', tone: 'amber', href: '#/forecast', label: 'Kutilayotgan xarajat (30 kun)', value: k.expected_expenses, sub: 'Tasdiqlangan + doimiy xarajatlar' }),
+    kpiCard({ size: 'sm', icon: 'award', tone: k.net_profit < 0 ? 'red' : 'green', href: '#/pnl', label: `Sof foyda ${P}`, value: k.net_profit, delta: dl.net_profit, deltaLabel: flowLbl })));
 
   const cfBody = h('div', {}), rvBody = h('div', {});
   let months = 6;
@@ -56,10 +56,10 @@ export default async function render(outerRoot, { setTitle, navigate }) {
     card('So‘nggi yirik tushumlar', tbl([['Sana'], ['Kontragent'], ['Turi'], ['Summa', 'right']], d.recent_income, (t) => h('tr', { class: 'row click', onClick: () => navigate(t.contract_id ? 'contracts/' + t.contract_id : 'transactions') }, h('td', { class: 'nowrap' }, date(t.tx_date)), h('td', {}, t.counterparty_name || '—', t.contract_number ? h('div', { class: 'xs muted' }, t.contract_number) : null), h('td', {}, t.matching_status === 'MATCHED' ? (t.service_name || 'To‘lov') : badge(t.matching_status)), h('td', { class: 'right tnum' }, fmt(t.amount)))), [h('a', { class: 'btn xs ghost', href: '#/transactions' }, 'Barchasini ko‘rish', icon('arrowRight', 13))], { tight: true }),
     card('So‘nggi yirik xarajatlar', tbl([['Sana'], ['Nomi'], ['Toifa'], ['Summa', 'right']], d.recent_expenses, (e) => h('tr', { class: 'row click', onClick: () => navigate('expenses/' + e.id) }, h('td', { class: 'nowrap' }, date(e.expense_date)), h('td', {}, h('div', { style: { maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, e.purpose)), h('td', {}, e.category || '—'), h('td', { class: 'right tnum' }, fmt(e.amount)))), [h('a', { class: 'btn xs ghost', href: '#/expenses' }, 'Barchasini ko‘rish', icon('arrowRight', 13))], { tight: true }),
     card('Asosiy ko‘rsatkichlar', h('div', { class: 'stat-tiles' },
-      statTile({ icon: 'users', tone: 'green', label: 'Faol mijozlar', value: ind.active_clients, delta: ind.new_clients_month || null }),
-      statTile({ icon: 'contract', tone: 'blue', label: 'Faol shartnomalar', value: ind.active_contracts, delta: ind.new_contracts_month || null }),
-      statTile({ icon: 'activity', tone: 'teal', label: R ? 'Davrdagi tranzaksiyalar' : 'Jami tranzaksiyalar', value: ind.transactions_total, delta: ind.transactions_month || null }),
-      statTile({ icon: 'clock', tone: ind.overdue_count ? 'red' : 'green', label: 'Kechiktirilgan to‘lovlar', value: ind.overdue_count, delta: ind.overdue_count - ind.overdue_count_prev || null, invert: true })), null, { sub: R ? 'o‘zgarish — tanlangan davr' : 'o‘zgarish — joriy oy' })));
+      statTile({ icon: 'users', tone: 'green', href: '#/contracts', label: 'Faol mijozlar', value: ind.active_clients, delta: ind.new_clients_month || null }),
+      statTile({ icon: 'contract', tone: 'blue', href: '#/contracts', label: 'Faol shartnomalar', value: ind.active_contracts, delta: ind.new_contracts_month || null }),
+      statTile({ icon: 'activity', tone: 'teal', href: '#/transactions', label: R ? 'Davrdagi tranzaksiyalar' : 'Jami tranzaksiyalar', value: ind.transactions_total, delta: ind.transactions_month || null }),
+      statTile({ icon: 'clock', tone: ind.overdue_count ? 'red' : 'green', href: '#/receivables', label: 'Kechiktirilgan to‘lovlar', value: ind.overdue_count, delta: ind.overdue_count - ind.overdue_count_prev || null, invert: true })), null, { sub: R ? 'o‘zgarish — tanlangan davr' : 'o‘zgarish — joriy oy' })));
 
   const attention = [
     ['#/approvals', 'Tasdiq kutayotgan so‘rovlar', d.pending.approvals.n, money(d.pending.approvals.s), d.pending.approvals.n ? 'PENDING' : 'OK'],

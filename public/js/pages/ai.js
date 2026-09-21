@@ -22,7 +22,7 @@ export default async function render(root, { setTitle, can }) {
   };
   async function ask(q) {
     if (!q.trim()) return; inp.value = ''; add('user', q);
-    const wait = add('assistant', '…');
+    const wait = add('assistant', 'Tahlil qilinmoqda…');
     try {
       const r = await post('/api/ai/chat', { message: q });
       wait.remove();

@@ -58,19 +58,48 @@ export const ADAPTERS = {
       if (!res.ok) throw new Error(`Webhook javobi: HTTP ${res.status}`);
       return 'Webhook javob berdi (HTTP ' + res.status + ')';
     }, async pull() { return []; } },
+  GEMINI: { name: 'Gemini AI', description: 'Google Gemini — AI javoblar uchun asosiy provayder (xato/limitda Groq). Javoblar faqat tizimdagi real ma’lumotlar asosida', config_schema: { model: 'gemini-3.6-flash' }, secret_schema: { api_key: '' },
+    async test(cfg, sec) {
+      const key = sec.api_key || config.ai.geminiKey;
+      if (!key) throw new Error('API kalit kiritilmagan');
+      const model = cfg.model || config.ai.geminiModel;
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Faqat "OK" deb javob ber.' }] }] }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`Gemini javobi: ${String(j.error?.message || 'HTTP ' + res.status).replaceAll(key, '***')}`);
+      return `Gemini ulandi (${j.modelVersion || model})`;
+    }, async pull() { return []; } },
+  GROQ: { name: 'Groq AI', description: 'Groq — Gemini xato bersa yoki limitga yetsa AI javoblarini beradigan zaxira provayder (OpenAI-mos, tool calling)', config_schema: { model: 'openai/gpt-oss-120b' }, secret_schema: { api_key: '' },
+    async test(cfg, sec) {
+      const key = sec.api_key || config.ai.groqKey;
+      if (!key) throw new Error('API kalit kiritilmagan');
+      const model = cfg.model || config.ai.groqModel;
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Faqat "OK" deb javob ber.' }], max_tokens: 16 }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`Groq javobi: ${String(j.error?.message || 'HTTP ' + res.status).replaceAll(key, '***')}`);
+      return `Groq ulandi (${j.model || model})`;
+    }, async pull() { return []; } },
   WEBHOOK_IN: { name: 'Inbound webhook', description: 'Tashqi tizim POST /api/integrations/webhook/:token orqali tranzaksiya yuboradi', config_schema: { bank_account_id: 1 }, secret_schema: { token: '' }, async test() { return 'OK'; }, async pull() { return []; } },
 };
 
 export function register(app) {
   const { r, db, audit } = app;
-  const ENV = { telegramAlertChat: config.telegramAlertChat, emailWebhook: config.emailWebhook };
-  /** Tizimda saqlangan Telegram (kritik ogohlantirishlar guruhi) va Email sozlamalari .env qiymatlaridan ustun. Bot tokenlari — faqat .env (BOT_*_TOKEN). */
+  const ENV = { telegramAlertChat: config.telegramAlertChat, emailWebhook: config.emailWebhook, geminiKey: config.ai.geminiKey, geminiModel: config.ai.geminiModel, groqKey: config.ai.groqKey, groqModel: config.ai.groqModel };
+  /** Tizimda saqlangan sozlamalar .env qiymatlaridan ustun: Telegram kritik guruhi, Email webhook, Gemini/Groq kalitlari (shifrlangan). Bot tokenlari — faqat .env (BOT_*_TOKEN). */
   async function applyRuntime() {
     const tg = db.get("SELECT * FROM integrations WHERE type='TELEGRAM' AND is_active=1 ORDER BY id DESC LIMIT 1");
     const tgCfg = tg ? parseJson(tg.config, {}) : {};
     config.telegramAlertChat = tgCfg.alert_chat_id || ENV.telegramAlertChat;
     const em = db.get("SELECT * FROM integrations WHERE type='EMAIL' AND is_active=1 ORDER BY id DESC LIMIT 1");
     config.emailWebhook = (em && parseJson(em.config, {}).webhook_url) || ENV.emailWebhook;
+    const gm = db.get("SELECT * FROM integrations WHERE type='GEMINI' AND is_active=1 ORDER BY id DESC LIMIT 1");
+    const gq = db.get("SELECT * FROM integrations WHERE type='GROQ' AND is_active=1 ORDER BY id DESC LIMIT 1");
+    const before = JSON.stringify([config.ai.geminiKey, config.ai.geminiModel, config.ai.groqKey, config.ai.groqModel]);
+    config.ai.geminiKey = (gm && parseJson(decryptSecret(gm.secret_config) || '{}', {}).api_key) || ENV.geminiKey;
+    config.ai.geminiModel = (gm && parseJson(gm.config, {}).model) || ENV.geminiModel;
+    config.ai.groqKey = (gq && parseJson(decryptSecret(gq.secret_config) || '{}', {}).api_key) || ENV.groqKey;
+    config.ai.groqModel = (gq && parseJson(gq.config, {}).model) || ENV.groqModel;
+    // Kalit yoki model o'zgarsa AI zanjiri yangi sozlama bilan qayta yaratiladi
+    if (JSON.stringify([config.ai.geminiKey, config.ai.geminiModel, config.ai.groqKey, config.ai.groqModel]) !== before) app.services.ai?.resetLlm?.();
   }
   app.services.applyIntegrationsRuntime = applyRuntime;
   applyRuntime();
@@ -133,7 +162,7 @@ export function register(app) {
     audit(ctx, { action: 'CREATE', entity: 'integration', entityId: id, newValue: { type: b.type, name: b.name } });
     const out = view(db.get('SELECT * FROM integrations WHERE id=?', id));
     if (b.type === 'WEBHOOK_IN') out.webhook_url = `/api/integrations/webhook/${sec.token}`;
-    if (['TELEGRAM', 'EMAIL'].includes(b.type)) await applyRuntime();
+    if (['TELEGRAM', 'EMAIL', 'GEMINI', 'GROQ'].includes(b.type)) await applyRuntime();
     return out;
   });
   r.patch('/api/integrations/:id', { perm: ['integrations', 'EDIT'], tags: ['integrations'], summary: 'Integratsiyani tahrirlash' }, async (ctx) => {
@@ -146,7 +175,7 @@ export function register(app) {
     if (b.secret_config !== undefined) { const old = parseJson(decryptSecret(i.secret_config) || '{}', {}); const merged = { ...old }; for (const [k, v] of Object.entries(b.secret_config)) if (v && !String(v).includes('••')) merged[k] = v; upd.secret_config = encryptSecret(JSON.stringify(merged)); }
     db.update('integrations', i.id, upd);
     audit(ctx, { action: 'UPDATE', entity: 'integration', entityId: i.id, newValue: { name: b.name, config: b.config, secrets_changed: !!b.secret_config } });
-    if (['TELEGRAM', 'EMAIL'].includes(i.type)) await applyRuntime();
+    if (['TELEGRAM', 'EMAIL', 'GEMINI', 'GROQ'].includes(i.type)) await applyRuntime();
     return view(db.get('SELECT * FROM integrations WHERE id=?', i.id));
   });
   r.post('/api/integrations/:id/test', { perm: ['integrations', 'EDIT'], tags: ['integrations'], summary: 'Ulanishni tekshirish' }, async (ctx) => {
