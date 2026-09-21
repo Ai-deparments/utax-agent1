@@ -256,6 +256,6 @@ export const ACTION_LABEL = {
   AGENT_RUN: 'Agent ishga tushdi', AGENT_UPDATED: 'Agent sozlandi', AI_PROPOSED: 'AI taklif berdi', AI_ACTION_EXECUTED: 'AI taklifi bajarildi', AI_ACTION_REJECTED: 'AI taklifi rad etildi', AI_CATEGORIZED: 'AI kategoriyaladi',
   COLLECTION_TASK: 'Undiruv vazifasi yaratildi', COLLECTION_UPDATED: 'Undiruv vazifasi yangilandi', SETTINGS_UPDATED: 'Sozlamalar o‘zgardi', PERMISSIONS_UPDATED: 'Ruxsatlar o‘zgardi',
   PASSWORD_CHANGED: 'Parol o‘zgartirildi', '2FA_ENABLED': '2FA yoqildi', '2FA_DISABLED': '2FA o‘chirildi', TELEGRAM_LINKED: 'Telegram ulandi', BACKUP: 'Zaxira nusxa olindi', EXPORT: 'Eksport qilindi',
-  PLAN_CREATED: 'Reja kiritildi', PLAN_UPDATED: 'Reja o‘zgartirildi', BUDGET_SET: 'Byudjet kiritildi',
+  BALANCE_ADJUSTED: 'Qoldiqqa texnik tuzatma kiritildi', BALANCE_ADJUSTMENT_REVERSED: 'Texnik tuzatma bekor qilindi', PLAN_CREATED: 'Reja kiritildi', PLAN_UPDATED: 'Reja o‘zgartirildi', BUDGET_SET: 'Byudjet kiritildi',
 };
 export const actionLabel = (a) => ACTION_LABEL[a] || a;

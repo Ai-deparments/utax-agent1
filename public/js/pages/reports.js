@@ -22,7 +22,7 @@ export default async function render(root, { setTitle }) {
     ['Audit jurnali', (f, t) => get('/api/audit' + qs({ from: f, to: t })), ['ts', 'user_name', 'role', 'action', 'entity', 'entity_id', 'source'], 'harakat sanasi'],
   ];
   const dq = await get('/api/reports/data-quality');
-  const link = (x) => (x.entity === 'contract' ? '#/contracts/' + x.id : x.entity === 'transaction' ? '#/transactions/unmatched' : x.entity === 'expense' ? '#/expenses/' + x.id : x.entity === 'approval' ? '#/approvals/' + x.id : '#/settings');
+  const link = (x) => (x.entity === 'contract' ? '#/contracts/' + x.id : x.entity === 'transaction' ? '#/transactions/unmatched' : x.entity === 'expense' ? '#/expenses/' + x.id : x.entity === 'approval' ? '#/approvals/' + x.id : x.entity === 'bank_account' || x.entity === 'cash_account' ? '#/treasury' : '#/settings');
   const dqCard = card('Ma’lumot sifati', dq.issues.length ? h('div', { class: 'list' }, ...dq.issues.map((i) => h('div', { class: 'li', style: { flexDirection: 'column', alignItems: 'stretch' } }, h('div', { class: 'flex gap8' }, badge(i.severity), h('b', {}, i.title), h('span', { class: 'muted' }, `(${i.count})`)), h('div', { class: 'small mt8 chips' }, ...i.items.slice(0, 12).map((x) => h('a', { class: 'chip', href: link(x) }, x.label)), i.count > 12 ? h('span', { class: 'muted' }, `+${i.count - 12}`) : null)))) : alert('good', 'Ma’lumot sifati muammolari yo‘q'), null, { sub: `${dq.total} ta muammo · ${dq.checked_at}` });
   const grid = h('div', { class: 'grid g2' });
   function draw() {
