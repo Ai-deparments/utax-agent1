@@ -167,8 +167,10 @@ export function register(app) {
       return { months, cash_flow: S().banking.monthlyFlows(months), revenue: S().revenue.monthlySeries(months), pnl };
     },
     /** range = {from, to} ixtiyoriy. Berilmasa — joriy oy va o'tgan oy bilan taqqoslash (avvalgi xatti-harakat, o'zgarishsiz) */
-    dashboard(range = null) {
+    /** @param user  — berilsa debitorlik bloki shu foydalanuvchi scope'ida (SALES — faqat o'z shartnomalari; /api/receivables bilan bir xil) */
+    dashboard(range = null, user = null) {
       const R = !!(range && range.from && range.to);
+      const rs = user ? S().receivables.scopeFor(user) : {};
       const realToday = today();
       const asOf = R ? (range.to < realToday ? range.to : realToday) : realToday;
       const tr = svc.treasury(asOf);
@@ -179,9 +181,9 @@ export function register(app) {
       const prevR = R ? (() => { const len = daysBetween(from, to) + 1; return { from: addDays(from, -len), to: addDays(from, -1) }; })() : monthRange(prevM);
       const pnl = R ? svc.pnl({ period: 'custom', from, to }) : svc.pnl({ month });
       const pnlPrev = R ? svc.pnl({ period: 'custom', from: prevR.from, to: prevR.to }) : svc.pnl({ month: prevM });
-      const rc = S().receivables.summary(asOf);
-      const rcPrev = S().receivables.summary(prevR.to);
-      const aging = S().receivables.aging(asOf);
+      const rc = S().receivables.summary(asOf, rs);
+      const rcPrev = S().receivables.summary(prevR.to, rs);
+      const aging = S().receivables.aging(asOf, rs);
       const pf = R ? S().budget.planFactRange(from, to) : S().budget.planFact(month);
       const recon = S().reconciliation.stats();
       const expByGroup = S().expenses.totalsByGroup(from, to);
@@ -249,7 +251,7 @@ export function register(app) {
   };
   app.services.reports = svc;
 
-  r.get('/api/dashboard', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr)', query: ['from', 'to'] }, async (ctx) => { const { from, to } = ctx.query; if (from && to && from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas'); return svc.dashboard(from && to ? { from, to } : null); });
+  r.get('/api/dashboard', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr)', query: ['from', 'to'] }, async (ctx) => { const { from, to } = ctx.query; if (from && to && from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas'); return svc.dashboard(from && to ? { from, to } : null, ctx.user); });
   r.get('/api/reports/trends', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'Oylik trendlar (pul oqimi, daromad, P&L)', query: ['months'] }, async (ctx) => svc.trends(ctx.query.months));
   r.get('/api/treasury', { perm: ['treasury', 'VIEW'], tags: ['reports'], summary: 'Pul boshqaruvi: bank/kassa/avans/available/kutilayotgan; from+to berilsa — shu davrdagi kirim/chiqim', query: ['as_of', 'from', 'to'] }, async (ctx) => {
     const to = ctx.query.to || ctx.query.as_of || today();

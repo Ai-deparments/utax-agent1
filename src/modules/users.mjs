@@ -1,7 +1,12 @@
 import { hashPassword } from '../core/auth.mjs';
-import { badRequest, notFound, conflict } from '../core/http.mjs';
+import { badRequest, notFound, conflict, forbidden } from '../core/http.mjs';
 import { ACTIONS, RESOURCES, ROLES } from '../core/rbac.mjs';
 import { nowIso } from '../core/util.mjs';
+
+/** FOUNDER rolini faqat FOUNDER beradi yoki o'zgartiradi (ADMIN o'zini/boshqani ta'sischi qila olmaydi, ta'sischini rolidan tushira olmaydi) */
+const assertFounderChange = (ctx, fromRole, toRole) => {
+  if ((toRole === 'FOUNDER' || fromRole === 'FOUNDER') && fromRole !== toRole && ctx?.user?.role_code !== 'FOUNDER') throw forbidden('Ta’sischi (FOUNDER) rolini faqat ta’sischi beradi yoki o‘zgartiradi');
+};
 
 /** Forma/JSON qiymati → boolean (true, 1, '1', 'true') */
 const toBool = (v) => v === true || v === 1 || v === '1' || v === 'true';
@@ -41,6 +46,7 @@ export function register(app) {
     const b = ctx.body || {};
     if (!b.email || !b.name || !b.role_code || !b.password) throw badRequest('email, name, role_code, password majburiy');
     if (!ROLES.some((x) => x.code === b.role_code)) throw badRequest('Noma’lum rol');
+    assertFounderChange(ctx, null, b.role_code);
     if (db.get('SELECT id FROM users WHERE lower(email)=lower(?)', b.email)) throw conflict('Bunday email mavjud');
     const id = db.insert('users', { email: b.email.trim(), password_hash: hashPassword(b.password), name: b.name, role_code: b.role_code, department_id: b.department_id || null, phone: b.phone || null, created_at: nowIso() });
     audit(ctx, { action: 'CREATE', entity: 'user', entityId: id, newValue: { email: b.email, role: b.role_code } });
@@ -62,6 +68,7 @@ export function register(app) {
     const active = b.is_active === undefined ? null : toBool(b.is_active);
     // Avval blok holati (taqiqlar joriy rol bo'yicha tekshiriladi — ta'sischini bitta so'rovda «tushirib-bloklab» bo'lmaydi)
     const roleChanged = upd.role_code !== undefined && upd.role_code !== u.role_code;
+    if (roleChanged) assertFounderChange(ctx, u.role_code, upd.role_code);
     db.tx(() => {
       if (active !== null && active !== !!u.is_active) app.services.users.setActive(u.id, active, ctx);
       db.update('users', u.id, upd);
