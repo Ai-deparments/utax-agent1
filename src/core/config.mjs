@@ -15,6 +15,9 @@ if (fs.existsSync(envFile)) {
 }
 
 const env = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k]);
+/** Butun son sozlama: buzuq yoki chegaradan kichik qiymat — defaultga tushadi (bitta noto'g'ri env tizimni yiqitmasin) */
+const intEnv = (k, d, min = 1) => { const n = Number(env(k, d)); return Number.isInteger(n) && n >= min ? n : d; };
+const TEST_MODE = !!process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === 'test';
 // Fon vazifalari (scheduler dailyAt: 08:30 digest, 17:00 eslatma) server qaysi zonada bo'lishidan qat'i nazar Toshkent vaqtida
 if (!process.env.TZ) process.env.TZ = env('APP_TZ', 'Asia/Tashkent');
 
@@ -27,8 +30,24 @@ export const config = {
   accessTtl: Number(env('ACCESS_TOKEN_TTL', 900)),
   refreshTtl: Number(env('REFRESH_TOKEN_TTL', 604800)),
   secretsKey: env('SECRETS_KEY', 'dev-secrets-key-change-me'),
-  anthropicKey: env('ANTHROPIC_API_KEY', ''),
-  aiModel: env('AI_MODEL', 'claude-opus-5'),
+  // AI (erkin matn): Gemini asosiy, xato/limit bo'lsa Groq; ikkalasi ham bo'lmasa — qoidalar dvigateli (src/modules/ai.mjs)
+  ai: {
+    geminiKey: env('GEMINI_API_KEY', ''),
+    groqKey: env('GROQ_API_KEY', ''),
+    geminiModel: env('GEMINI_MODEL', 'gemini-3.6-flash'),
+    geminiFallbackModels: String(env('GEMINI_FALLBACK_MODELS', 'gemini-3.5-flash')).split(/[\s,;]+/).filter(Boolean),
+    groqModel: env('GROQ_MODEL', 'openai/gpt-oss-120b'),
+    // Groq limitlari (TPM) har model uchun alohida — asosiy model limitga yetsa shu model bilan davom etadi
+    groqFallbackModel: env('GROQ_FALLBACK_MODEL', 'openai/gpt-oss-20b'),
+    maxTools: intEnv('AI_MAX_TOOLS', 8),
+    geminiRpm: intEnv('GEMINI_RPM', 12),
+    maskNames: env('AI_MASK_NAMES', 'true') !== 'false',
+    memoryTurns: intEnv('AI_MEMORY_TURNS', 6),
+    memoryHours: intEnv('AI_MEMORY_HOURS', 12),
+    timeoutMs: intEnv('AI_TIMEOUT_MS', 25000, 1000),
+    // `node --test` ostida haqiqiy LLM hech qachon chaqirilmaydi (testlar tarmoqsiz); majburlash: AI_LIVE_IN_TESTS=1
+    live: !TEST_MODE || env('AI_LIVE_IN_TESTS', '') === '1',
+  },
   // Telegram botlar (src/bots). TELEGRAM_BOT_TOKEN — eski yagona bot kaliti, rahbar botiga fallback.
   bots: {
     rahbar: env('BOT_RAHBAR_TOKEN', env('TELEGRAM_BOT_TOKEN', '')),

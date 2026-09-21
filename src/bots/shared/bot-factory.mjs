@@ -19,6 +19,7 @@ import { TelegramError } from './telegram-api.mjs';
 import { BotError } from './errors.mjs';
 import { sharedCallbacks, sharedDialogs } from './common.mjs';
 import { aiReply } from './ai-chat.mjs';
+import { personaFor, exampleText } from '../../modules/ai-context.mjs';
 
 export { BotError };
 
@@ -26,6 +27,17 @@ const CMD_RE = /^\/([a-z0-9_]+)(?:@([a-z0-9_]+))?(?:\s+([\s\S]*))?$/i;
 const LINK_CODE_RE = /^[A-F0-9]{6,16}$/i;
 const MAX_FILE = 10 * 1024 * 1024;
 export const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
+
+/** Telegram "Menyu": start → bot buyruqlari → help, clear, bekor (/yordam va /tozalash — aliaslar, menyuda ko'rinmaydi) */
+export function menuCommands(list) {
+  return [
+    { command: 'start', description: 'Botni boshlash / qayta ishga tushirish' },
+    ...list.map((c) => ({ command: c.name, description: String(c.desc).slice(0, 250) })),
+    { command: 'help', description: 'Qo‘llanma va buyruqlar' },
+    { command: 'clear', description: 'AI suhbat tarixini tozalash' },
+    { command: 'bekor', description: 'Ochiq amalni bekor qilish' },
+  ];
+}
 
 export function createBot(def, { app, api, dialogs, state, registry, links, log = console, rateLimit = { windowMs: 60000, max: 30 }, ownerIds = config.botOwnerIds }) {
   const db = app.db;
@@ -267,7 +279,11 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
       case 'start': dialogs.clear(dkey); return showMenu(ctx);
       case 'yordam': case 'help': return showHelp(ctx);
       case 'bekor': case 'cancel': return ctx.reply(dialogs.clear(dkey) ? T.cancelled : T.nothingToCancel);
-      case 'tozalash': dialogs.clear(dkey); return ctx.reply(T.cleared);
+      case 'tozalash': case 'clear':
+        // AI suhbat xotirasi (backend, shu bot kanali) + ochiq dialog tozalanadi
+        dialogs.clear(dkey);
+        app.services.ai?.clearMemory?.(ctx.user.id, `TELEGRAM:${def.key}`);
+        return ctx.reply(T.aiCleared);
       case 'menu': return showMenu(ctx);
       default: break;
     }
@@ -333,10 +349,11 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
       '',
       ...list.map((c) => `${esc(c.usage || '/' + c.name)} — ${esc(c.desc)}`),
       '',
-      '/start — menyu',
+      '/start — botni boshlash / menyu',
+      '/help — shu qo‘llanma',
+      '/clear — AI suhbat tarixini tozalash (yangi mavzu)',
       '/bekor — ochiq amalni bekor qilish',
-      '/tozalash — suhbatni tozalash',
-      aiOn ? '\n💬 <b>Erkin savol</b> — oddiy matn yozing, masalan: «Bugun qancha pulimiz bor?», «Kim bizdan eng ko‘p qarzdor?». Javob web paneldagi «AI moliya» bilan bir xil.' : null,
+      aiOn ? `\n💬 <b>Erkin savol</b> — ${esc(personaFor(def.key).title)} sifatida oddiy matnga javob beraman: tizim ma’lumotlari asosida, so‘rasangiz maslahat bilan, oldingi suhbatni eslab. Masalan:\n${personaFor(def.key).examples.slice(0, 4).map((x) => `• «${esc(exampleText(x))}»`).join('\n')}` : null,
       def.helpExtra ? def.helpExtra(ctx) : null,
       '',
       `<i>Rolingiz: ${esc(roleLabel(ctx.user.role_code))} — buyruqlar ruxsatingizga qarab ko‘rsatiladi.</i>`,
@@ -346,7 +363,7 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
 
   /** Telegram "Menyu" tugmasi — shu chat uchun faqat ruxsat etilgan buyruqlar (rol o'zgarsa yangilanadi) */
   async function syncChatCommands(ctx, list) {
-    const cmds = [{ command: 'start', description: 'Menyu' }, ...list.map((c) => ({ command: c.name, description: String(c.desc).slice(0, 250) })), { command: 'yordam', description: 'Yordam' }, { command: 'bekor', description: 'Bekor qilish' }];
+    const cmds = menuCommands(list);
     const hash = sha256(JSON.stringify(cmds)).slice(0, 16);
     const key = `cmds:${def.key}:${ctx.chatId}`;
     if (state.get(key) === hash) return;
@@ -394,7 +411,7 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
     bot.username = me.username;
     bot.id = me.id;
     const all = def.commands.filter((c) => !c.hidden);
-    const cmds = [{ command: 'start', description: 'Menyu' }, ...all.map((c) => ({ command: c.name, description: String(c.desc).slice(0, 250) })), { command: 'yordam', description: 'Yordam' }, { command: 'bekor', description: 'Bekor qilish' }];
+    const cmds = menuCommands(all);
     const soft = (p, what) => p.catch((e) => log.warn?.(`[bots:${def.key}] ${what}: ${e.message}`));
     await soft(api.setMyCommands(cmds), 'setMyCommands');
     if (def.about) {

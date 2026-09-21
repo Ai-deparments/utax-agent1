@@ -15,6 +15,18 @@ const saqlanganFayllar = [];
 const cb = (r, re) => r.buttons.find((b) => re.test(b.callback_data || ''));
 const ctxOf = (email) => ({ user: H.user(email), ip: 'test', source: 'TEST' });
 const kassaQoldiq = () => S.banking.cashBalance().accounts.find((a) => a.id === 1).balance;
+/** Kutilgan natija qattiq yozilmaydi — web bilan bir xil RBAC matritsasidan (admin panelda o'zgaradi) */
+const can = (email, resource, action) => H.app.rbac.can(H.user(email), resource, action);
+/** Admin rol ruxsatini olib tashlagandek (permissions jadvali) — fn tugagach tiklanadi */
+async function ruxsatsiz(role, resource, action, fn) {
+  const bor = !!db.get('SELECT id FROM permissions WHERE role_code=? AND resource=? AND action=?', role, resource, action);
+  db.run('DELETE FROM permissions WHERE role_code=? AND resource=? AND action=?', role, resource, action);
+  H.app.rbac.reload();
+  try { return await fn(); } finally {
+    if (bor) db.run('INSERT OR IGNORE INTO permissions (role_code, resource, action) VALUES (?,?,?)', role, resource, action);
+    H.app.rbac.reload();
+  }
+}
 
 before(async () => {
   H = await createBotHarness();
@@ -26,27 +38,45 @@ before(async () => {
 });
 after(() => { for (const f of saqlanganFayllar) fs.rmSync(f, { force: true }); });
 
-test('auditoriya: SALES kira olmaydi; menyu rolga qarab (buxgalterda kassa/akt yo‘q, CFO da bor)', async () => {
+test('auditoriya: SALES kira olmaydi; menyu rolga qarab (tugmalar matritsa ruxsatiga mos)', async () => {
   let r = await H.send('buxgalter', sales, '/start');
   assert.match(r.text, /mo‘ljallanmagan/);
+  for (const [email, tg] of [['accountant@utax.uz', acc], ['cfo@utax.uz', cfo], ['finance@utax.uz', fm]]) {
+    r = await H.send('buxgalter', tg, '/start');
+    const tugma = r.buttons.map((b) => b.text).join('|');
+    assert.match(tugma, /Vipiska/);
+    assert.equal(/Bog‘lash/.test(tugma), can(email, 'reconciliation', 'VIEW'), `${email}: Bog‘lash ↔ reconciliation VIEW`);
+    assert.equal(/Kassa/.test(tugma), can(email, 'treasury', 'CREATE'), `${email}: Kassa ↔ treasury CREATE`);
+    assert.equal(/Akt/.test(tugma), can(email, 'contracts', 'EDIT'), `${email}: Akt ↔ contracts EDIT`);
+    assert.equal(/To‘lov/.test(tugma), can(email, 'expenses', 'EDIT'), `${email}: To‘lov ↔ expenses EDIT`);
+  }
+  const st = S.reconciliation.stats();
   r = await H.send('buxgalter', acc, '/start');
-  const accTugma = r.buttons.map((b) => b.text).join('|');
-  assert.match(accTugma, /Vipiska/);
-  assert.match(accTugma, /Bog‘lash/);
-  assert.doesNotMatch(accTugma, /Kassa/, 'ACCOUNTANT da treasury CREATE yo‘q');
-  assert.doesNotMatch(accTugma, /Akt/, 'ACCOUNTANT da contracts EDIT yo‘q');
-  assert.match(r.text, /Bog‘lanmagan tranzaksiyalar: <b>4 ta<\/b>/);
-  r = await H.send('buxgalter', cfo, '/start');
-  const cfoTugma = r.buttons.map((b) => b.text).join('|');
-  assert.match(cfoTugma, /Kassa/);
-  assert.match(cfoTugma, /Akt/);
+  assert.match(r.text, new RegExp(`Bog‘lanmagan tranzaksiyalar: <b>${(st.unmatched || 0) + (st.suggested || 0)} ta</b>`));
+  // admin ruxsatni olib tashlasa — tugma yo'qoladi (bot = web matritsa)
+  await ruxsatsiz('ACCOUNTANT', 'treasury', 'CREATE', async () => {
+    r = await H.send('buxgalter', acc, '/start');
+    assert.doesNotMatch(r.buttons.map((b) => b.text).join('|'), /Kassa/);
+  });
 });
 
-test('ruxsat: ACCOUNTANT /kassa va /akt — web bilan bir xil ⛔ (treasury CREATE, contracts EDIT)', async () => {
-  let r = await H.send('buxgalter', acc, '/kassa');
-  assert.match(r.text, /⛔ Ruxsat yo‘q: «Pul boshqaruvi» — yaratish/);
+test('ruxsat: /kassa va /akt — web matritsasi bilan bir xil; ruxsat olib tashlansa ⛔ (treasury CREATE, contracts EDIT)', async () => {
+  let r;
+  await ruxsatsiz('ACCOUNTANT', 'treasury', 'CREATE', async () => {
+    r = await H.send('buxgalter', acc, '/kassa');
+    assert.match(r.text, /⛔ Ruxsat yo‘q: «Pul boshqaruvi» — yaratish/);
+  });
+  await ruxsatsiz('ACCOUNTANT', 'contracts', 'EDIT', async () => {
+    r = await H.send('buxgalter', acc, '/akt');
+    assert.match(r.text, /⛔ Ruxsat yo‘q: «Shartnomalar» — tahrirlash/);
+  });
+  // standart matritsa bo'yicha: ruxsat bo'lsa buyruq ochiladi, bo'lmasa ⛔
+  r = await H.send('buxgalter', acc, '/kassa');
+  if (can('accountant@utax.uz', 'treasury', 'CREATE')) assert.match(r.text, /Kassa:/); else assert.match(r.text, /⛔ Ruxsat yo‘q/);
+  await H.send('buxgalter', acc, '/bekor');
   r = await H.send('buxgalter', acc, '/akt');
-  assert.match(r.text, /⛔ Ruxsat yo‘q: «Shartnomalar» — tahrirlash/);
+  if (can('accountant@utax.uz', 'contracts', 'EDIT')) assert.doesNotMatch(r.text, /⛔/); else assert.match(r.text, /⛔ Ruxsat yo‘q: «Shartnomalar» — tahrirlash/);
+  await H.send('buxgalter', acc, '/bekor');
 });
 
 test('vipiska: CSV → ko‘rib chiqish → import (shartnoma raqami bo‘yicha auto-match); takroriy fayl o‘tkazib yuboriladi', async () => {
@@ -71,6 +101,12 @@ test('vipiska: CSV → ko‘rib chiqish → import (shartnoma raqami bo‘yicha 
   assert.match(r.text, /Avtomatik bog‘landi: <b>1<\/b>/);
   assert.equal(S.contracts.get(23).paid, oldinPaid + 10e6, 'UTAX-R-00008 ga to‘lov yozildi');
   assert.equal(db.get("SELECT COUNT(*) n FROM bank_transactions WHERE source='TELEGRAM'").n, 3);
+  // web Excel yuklash bilan bir xil: Integratsiyalar sahifasidagi EXCEL holati va jurnali
+  const excel = db.get("SELECT * FROM integrations WHERE type='EXCEL' ORDER BY is_active DESC, id LIMIT 1");
+  assert.match(excel.last_status, /^Yuklandi: 3 yangi, 0 takroriy/);
+  const log = db.get('SELECT * FROM integration_sync_logs WHERE integration_id=? ORDER BY id DESC LIMIT 1', excel.id);
+  assert.equal(log.rows_new, 3);
+  assert.match(log.message, /"source":"TELEGRAM"/);
   assert.ok(cb(r, /^cmd:boglash$/), 'bog‘lash tugmasi');
   // shu faylni qayta yuborish → hammasi takroriy
   await H.send('buxgalter', acc, '/vipiska');
@@ -195,12 +231,16 @@ test('kassa: chiqim, xarajatsiz → kassa qoldig‘i kamayadi', async () => {
   assert.equal(kassaQoldiq(), oldin - 300000);
 });
 
-test('tolov: bank orqali (ACCOUNTANT — expenses EDIT bor, kassa tugmasi yo‘q)', async () => {
+test('tolov: bank orqali (ACCOUNTANT — expenses EDIT; kassa tugmasi treasury CREATE ga qarab)', async () => {
   let r = await H.send('buxgalter', acc, '/tolov');
   assert.match(r.text, /EXP-000715/);
   assert.match(r.text, /EXP-000713/);
   assert.ok(cb(r, /^b\.pay:b:66$/));
-  assert.equal(cb(r, /^b\.pay:c:/), undefined, 'treasury CREATE yo‘q — kassadan to‘lash tugmasi yo‘q');
+  assert.equal(!!cb(r, /^b\.pay:c:/), can('accountant@utax.uz', 'treasury', 'CREATE'), 'kassadan to‘lash tugmasi ↔ treasury CREATE');
+  await ruxsatsiz('ACCOUNTANT', 'treasury', 'CREATE', async () => {
+    r = await H.send('buxgalter', acc, '/tolov');
+    assert.equal(cb(r, /^b\.pay:c:/), undefined, 'treasury CREATE yo‘q — kassadan to‘lash tugmasi yo‘q');
+  });
   r = await H.click('buxgalter', acc, 'b.pay:b:66');
   assert.match(r.text, /Bankdan to‘landi<\/b> deb belgilansinmi/);
   r = await H.click('buxgalter', acc, 'b.pay:yb:66');
@@ -208,8 +248,10 @@ test('tolov: bank orqali (ACCOUNTANT — expenses EDIT bor, kassa tugmasi yo‘q
   assert.equal(S.expenses.get(66).status, 'PAID');
   r = await H.click('buxgalter', acc, 'b.pay:yb:66');
   assert.match(r.answers[0].text, /Holat: To‘langan/, 'ikkinchi marta to‘lanmaydi');
-  r = await H.click('buxgalter', acc, 'b.pay:yc:64');
-  assert.match(r.answers.map((a) => a.text).join(' ') + r.text, /⛔/, 'soxta kassa callback — ruxsat yo‘q');
+  await ruxsatsiz('ACCOUNTANT', 'treasury', 'CREATE', async () => {
+    r = await H.click('buxgalter', acc, 'b.pay:yc:64');
+    assert.match(r.answers.map((a) => a.text).join(' ') + r.text, /⛔/, 'soxta kassa callback — ruxsat yo‘q');
+  });
   assert.equal(S.expenses.get(64).status, 'APPROVED');
 });
 
@@ -318,7 +360,7 @@ test('integratsiyalar: sinxron tugmasi faqat web’dagi turlarda; xato matni ko�
     r = await H.click('buxgalter', acc, 'b.int:3');
     assert.match(r.text, /sinxronlash xatosi/);
     assert.match(r.text, /tarmoq yo‘q \(test\)/);
-    assert.match(S.integrations.get(3).last_status, /^ERROR/);
+    assert.match(S.integrations.get(3).last_status, /^Xato: .*tarmoq yo‘q \(test\)/, 'web bilan bir xil status matni');
   } finally { globalThis.fetch = asl; }
 });
 

@@ -232,6 +232,16 @@ ALTER TABLE notifications ADD COLUMN next_try_at TEXT;
 CREATE INDEX IF NOT EXISTS ix_notif_channel ON notifications(channel, sent_at);
 `,
   },
+  {
+    version: 3,
+    name: 'ai_memory',
+    sql: `
+ALTER TABLE ai_conversations ADD COLUMN provider TEXT;
+ALTER TABLE ai_conversations ADD COLUMN model TEXT;
+ALTER TABLE ai_conversations ADD COLUMN tools TEXT;
+CREATE INDEX IF NOT EXISTS ix_aiconv_user_channel ON ai_conversations(user_id, channel, id);
+`,
+  },
 ];
 
 export function migrate(db) {

@@ -97,7 +97,8 @@ async function balans(ctx) {
 }
 
 // ---------- Reja / Fakt ----------
-const PF_NAME = { Revenue: 'Daromad', Expense: 'Xarajat', Profit: 'Foyda', Cash: 'Pul qoldig‘i', Collection: 'Tushum (undiruv)' };
+// web public/js/pages/planfact.js NAMES bilan bir xil (key — servis kaliti, name — o'zbekcha yorliq)
+const PF_NAME = { Revenue: 'Daromad', Expense: 'Xarajat', Profit: 'Foyda', Cash: 'Pul qoldig‘i', Collection: 'Undirish' };
 const PF_ICON = { OK: '🟢', WARN: '🟡', BAD: '🔴', NO_PLAN: '⚪' };
 function pfCard(ctx, month) {
   const pf = ctx.S.budget.planFact(month);
@@ -107,7 +108,7 @@ function pfCard(ctx, month) {
     muted(`Ruxsat etilgan og‘ish: ${tol}% · xarajatda rejadan kam bo‘lishi yaxshi`),
     '',
     ...pf.items.map((it) => {
-      const name = PF_NAME[it.name] || it.name;
+      const name = PF_NAME[it.key] || PF_NAME[it.name] || it.name;
       if (it.status === 'NO_PLAN') return lines(`${PF_ICON.NO_PLAN} <b>${esc(name)}</b>: fakt ${esc(money(it.fact))}`, '    <i>reja kiritilmagan</i>');
       return lines(
         `${PF_ICON[it.status] || '⚪'} <b>${esc(name)}</b>: fakt ${esc(money(it.fact))} / reja ${esc(money(it.plan))}`,

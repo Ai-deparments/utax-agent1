@@ -12,7 +12,7 @@ const SINXRON = ['BANK_API', 'GOOGLE_SHEETS', 'ONE_C', 'ERP'];
 
 function byudjetHtml(ctx, period) {
   const rows = ctx.S.budget.budgets(period);
-  const pf = ctx.S.budget.planFact(period).items.find((x) => x.name === 'Expense');
+  const pf = ctx.S.budget.planFact(period).items.find((x) => (x.key || x.name) === 'Expense');
   const jamiReja = rows.reduce((s, x) => s + x.amount, 0), jamiFakt = rows.reduce((s, x) => s + x.fact, 0);
   const oshgan = rows.filter((x) => x.exceeded);
   return lines(

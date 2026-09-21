@@ -13,10 +13,8 @@
     "test": "node --test \"tests/**/*.test.mjs\"",
     "backup": "bash deploy/backup.sh",
     "openapi": "node -e \"import('./src/server.mjs').then(m=>console.log(JSON.stringify(m.buildOpenApi(),null,2)))\"",
-    "check": "node scripts/check.mjs"
-  },
-  "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.110.0"
+    "check": "node scripts/check.mjs",
+    "llm:check": "node scripts/llm-check.mjs"
   },
   "license": "UNLICENSED"
 }

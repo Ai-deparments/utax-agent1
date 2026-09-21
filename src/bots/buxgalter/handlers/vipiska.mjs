@@ -3,7 +3,7 @@
  * hisob tanlash → CSV/XLSX fayl → banking.normalizeRows → ko'rib chiqish → banking.importRows (+ avtomatik bog'lash).
  */
 import { parseCsv, parseXlsx } from '../../../core/export.mjs';
-import { sum } from '../../../core/util.mjs';
+import { sum, nowIso } from '../../../core/util.mjs';
 import { esc } from '../../shared/html.mjs';
 import { money, date, lines, line, title, muted, clip, fmt } from '../../shared/format.mjs';
 import { BotError } from '../../shared/errors.mjs';
@@ -11,6 +11,15 @@ import { T } from '../../shared/texts.mjs';
 import { hisobNomi } from './umumiy.mjs';
 
 const D = 'b.vipiska';
+
+/** Web «Excel yuklash» (POST /api/integrations/excel-upload) bilan bir xil: EXCEL integratsiyasi jurnali va holati — Integratsiyalar sahifasida ko'rinadi */
+function jurnalgaYoz(ctx, fayl, accountId, r) {
+  const integ = ctx.db.get("SELECT * FROM integrations WHERE type='EXCEL' ORDER BY is_active DESC, id LIMIT 1");
+  if (!integ) return;
+  const t = nowIso();
+  ctx.db.insert('integration_sync_logs', { integration_id: integ.id, started_at: t, finished_at: t, status: 'OK', rows_in: r.rows, rows_new: r.created, message: JSON.stringify({ file: fayl || null, bank_account_id: accountId, source: 'TELEGRAM', ...r }) });
+  ctx.db.run('UPDATE integrations SET last_sync_at=?, last_status=? WHERE id=?', t, `Yuklandi: ${r.created} yangi, ${r.duplicates} takroriy`, integ.id);
+}
 const MAX_QATOR = 3000;
 const BUZILGAN = String.fromCharCode(0xfffd);
 
@@ -102,6 +111,7 @@ export default {
           const hisob = hisobOl(ctx.S, st.data.account_id);
           await ctx.answer('⏳ Import qilinmoqda…');
           const r = ctx.S.banking.importRows(hisob.id, st.data.rows, ctx.actor, 'TELEGRAM');
+          jurnalgaYoz(ctx, st.data.file_name, hisob.id, r);
           ctx.dialog.clear();
           const qoldi = (r.suggested || 0) + (r.unmatched || 0);
           await ctx.edit(lines(

@@ -1,11 +1,13 @@
 import { badRequest, notFound, forbidden } from '../core/http.mjs';
 import { config } from '../core/config.mjs';
 import { nowIso, today, round2, parseJson, monthOf, addMonths, monthRange, resolvePeriod, addDays, sum, sha256, uid } from '../core/util.mjs';
+import { personaFor, personaHelp, buildSystemPrompt, createMasker, compact } from './ai-context.mjs';
 
 /**
  * AI FINANCE CENTER
  *  1) Rule-based intent router — API kalitsiz ham 15 acceptance savoliga real raqam bilan javob beradi.
- *  2) LLM gateway (Anthropic SDK, ixtiyoriy) — tool use orqali faqat o'qish; harakatlar propose_action → human approval.
+ *  2) LLM (Gemini → Groq, src/core/llm.mjs) — bot/kanal personasi, RBAC bilan filtrlangan tool'lar (faqat o'qish), niqoblash,
+ *     suhbat xotirasi; xato bo'lsa jim ravishda qoidalarga o'tadi. Harakatlar — propose_action → inson tasdig'i.
  *  3) 14 agent — detect → recommend → human approves → execute → audit.
  */
 const fmt = (n) => Math.round(Number(n) || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
@@ -202,63 +204,265 @@ export function register(app) {
     return { intent: 'HELP', ...handlers.HELP() };
   }
 
-  // ---------------- LLM GATEWAY (Anthropic SDK, ixtiyoriy) ----------------
+  // ---------------- LLM (Gemini → Groq) TOOLS ----------------
+  // Har tool: web resurs ruxsati (perm) yoki self (faqat o'z ma'lumoti). Natijalar ixcham, maxfiy maydonlar niqoblanadi.
+  const obj = (properties = {}, required) => ({ type: 'object', properties, ...(required ? { required } : {}) });
+  const PERIOD = { period: { type: 'string', description: 'davr: day | week | month | quarter | year' }, month: { type: 'string', description: 'oy YYYY-MM (masalan 2026-08)' } };
+  const omit = (o, keys) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => !keys.includes(k)));
+  const scopedApprovals = (ctx, rows) => (['EMPLOYEE', 'SALES'].includes(ctx.user?.role_code) ? rows.filter((a) => a.is_mine) : rows);
+  const stepOf = (a) => (a ? `${Math.min(a.current_step + 1, a.steps.length)}/${a.steps.length} ${a.steps[a.current_step]?.role || ''}`.trim() : null);
+  const aprRow = (a) => ({ id: a.id, turi: a.entity_type, nomi: a.title, summa: a.amount, holat: a.status, qadam: stepOf(a), sorovchi: a.requested_by_name, bolim: a.department_name, men_tasdiqlay_olaman: !!a.can_act, sana: String(a.created_at || '').slice(0, 10) });
+  const rcvRow = (x) => ({ mijoz: x.client, shartnoma: x.contract_number, xizmat: x.service_name, jami: x.total, tolangan: x.paid, qarz: x.debt, muddati_otgan: x.overdue_amount, kechikish_kun: x.days_overdue, muddat: x.due_date, bucket: x.bucket, menejer: x.manager });
+  const contractRow = (c) => ({ id: c.id, raqam: c.contract_number, mijoz: c.company_name, xizmat: c.service_code, summa: c.amount, tolangan: c.paid, qoldiq: c.remaining, tolangan_pct: c.paid_pct, holat: c.contract_status, xizmat_holati: c.service_status, keyingi_muddat: c.next_due_date, kechikish_kun: c.overdue_days, tan_olingan: c.recognized, avans_qoldigi: c.advance_balance });
   const TOOLS = [
-    { name: 'get_treasury', description: 'Bank, kassa, jami pul, mijoz avanslari, rezerv, ISHLATISH MUMKIN bo‘lgan pul, 7/30 kun kutilayotgan kirim/chiqim', input_schema: { type: 'object', properties: {} }, run: () => S().reports.treasury() },
-    { name: 'get_receivables', description: 'Debitorlik ro‘yxati va aging', input_schema: { type: 'object', properties: { filter: { type: 'string', enum: ['overdue', '7', '30', '60+', 'critical', 'today'] } } }, run: (i) => ({ summary: S().receivables.summary(), aging: S().receivables.aging(), rows: S().receivables.list(i).slice(0, 40) }) },
-    { name: 'get_pnl', description: 'P&L davr bo‘yicha (period: day|week|month|quarter|year yoki month: YYYY-MM)', input_schema: { type: 'object', properties: { period: { type: 'string' }, month: { type: 'string' } } }, run: (i) => S().reports.pnl(i) },
-    { name: 'get_expenses', description: 'Xarajatlar xulosasi va kutilayotgan chiqim', input_schema: { type: 'object', properties: { period: { type: 'string' }, month: { type: 'string' }, days_ahead: { type: 'number' } } }, run: (i) => { const p = resolvePeriod(i); return { period: p, total: S().expenses.total(p.from, p.to), by_category: S().expenses.totalsByCategory(p.from, p.to).filter((c) => c.amount > 0), expected_outflow: S().expenses.expectedOutflow(today(), addDays(today(), i.days_ahead || 30)), pending: db.all("SELECT code, purpose, amount, department_id, required_date FROM expenses WHERE status='PENDING' AND reversed_at IS NULL") }; } },
-    { name: 'get_revenue', description: 'Tan olingan daromad, avanslar, kutilayotgan daromad', input_schema: { type: 'object', properties: { period: { type: 'string' }, month: { type: 'string' } } }, run: (i) => { const p = resolvePeriod(i); return { period: p, recognized: S().revenue.recognizedInPeriod(p.from, p.to), customer_advances: S().revenue.advancesBalance(), expected_revenue: S().revenue.expectedRevenue(), monthly: S().revenue.monthlySeries(6) }; } },
-    { name: 'get_forecast', description: 'Forecast (7/30/90/180/365 kun), 3 scenariy', input_schema: { type: 'object', properties: { days: { type: 'number' } } }, run: (i) => S().forecast.compute(i.days || 30) },
-    { name: 'get_service_profitability', description: 'Xizmat turlari bo‘yicha rentabellik', input_schema: { type: 'object', properties: { period: { type: 'string' }, month: { type: 'string' } } }, run: (i) => S().reports.serviceProfitability(i) },
-    { name: 'get_plan_fact', description: 'Plan/Fakt oy bo‘yicha', input_schema: { type: 'object', properties: { month: { type: 'string' } } }, run: (i) => S().budget.planFact(i.month || monthOf(today())) },
-    { name: 'get_pending_approvals', description: 'Tasdiq kutayotgan so‘rovlar', input_schema: { type: 'object', properties: {} }, run: (_, ctx) => S().approvals.list({ status: 'PENDING' }, ctx.user) },
-    { name: 'get_unmatched_transactions', description: 'Shartnoma bilan bog‘lanmagan bank tranzaksiyalari', input_schema: { type: 'object', properties: {} }, run: () => db.all("SELECT id, tx_date, amount, direction, counterparty_name, counterparty_inn, purpose, matching_status, confidence, suggested_contract_id FROM bank_transactions WHERE matching_status IN ('UNMATCHED','SUGGESTED') AND reversed_at IS NULL ORDER BY tx_date DESC LIMIT 50") },
-    { name: 'get_contracts', description: 'Shartnomalar (q — qidiruv, status)', input_schema: { type: 'object', properties: { q: { type: 'string' }, status: { type: 'string' } } }, run: (i) => S().contracts.list(i).slice(0, 50).map((c) => ({ id: c.id, contract_number: c.contract_number, company: c.company_name, service: c.service_code, amount: c.amount, paid: c.paid, remaining: c.remaining, status: c.contract_status, service_status: c.service_status, due: c.next_due_date, overdue_days: c.overdue_days })) },
-    { name: 'get_data_quality', description: 'Ma’lumot sifati muammolari', input_schema: { type: 'object', properties: {} }, run: () => S().reports.dataQuality() },
-    { name: 'get_cash_flow', description: 'Cash flow (operating/investing/financing)', input_schema: { type: 'object', properties: { period: { type: 'string' }, month: { type: 'string' } } }, run: (i) => S().reports.cashFlow(i) },
-    { name: 'propose_action', description: 'Harakat taklif qilish (AI hech qachon o‘zi bajarmaydi — inson tasdiqlaydi). action_type: MATCH_TRANSACTION|SET_EXPENSE_CATEGORY|RECOGNIZE_REVENUE|CREATE_COLLECTION_TASK|FLAG_ANOMALY', input_schema: { type: 'object', properties: { action_type: { type: 'string' }, entity_type: { type: 'string' }, entity_id: { type: 'number' }, title: { type: 'string' }, payload: { type: 'object' }, confidence: { type: 'number' } }, required: ['action_type', 'title'] }, run: (i, ctx) => svc.propose({ agent_code: 'CFO', ...i }, ctx) },
+    {
+      name: 'get_dashboard', perm: ['dashboard', 'VIEW'], parameters: obj(),
+      description: 'Bosh sahifa: asosiy KPI (bank, kassa, jami pul, ishlatish mumkin, avans, oy daromadi/xarajati/sof foydasi, debitorlik), o‘tgan oyga nisbatan o‘zgarish %, kutayotgan ishlar soni',
+      run: () => { const d = S().reports.dashboard(); return { sana: d.as_of, oy: d.month, kpi: d.kpi, ozgarish_pct: d.deltas, kutayotgan: d.pending, korsatkichlar: d.indicators, debitorlik: omit(d.receivables, ['top']), top_qarzdorlar: (d.receivables?.top || []).map((x) => ({ mijoz: x.client, qarz: x.debt, kechikish_kun: x.days_overdue })) }; },
+    },
+    {
+      name: 'get_treasury', perm: ['treasury', 'VIEW'], parameters: obj(),
+      description: 'Pul boshqaruvi: bank va kassa qoldig‘i, jami pul, mijoz avanslari (cheklangan), rezerv tarkibi, ISHLATISH MUMKIN bo‘lgan pul, xavfsiz olish summasi, 7/30 kunlik kutilayotgan kirim/chiqim',
+      run: () => {
+        const t = S().reports.treasury();
+        return {
+          sana: t.as_of, bank: t.bank_balance, kassa: t.cash_balance, jami_pul: t.total_cash,
+          mijoz_avanslari: t.customer_advances, avansdan_cheklangan: t.restricted_cash,
+          rezerv: { tasdiqlangan_tolanmagan_xarajat: t.reserved.approved_unpaid_expenses, oylik_rezervi: t.reserved.pending_payroll, xavfsizlik_rezervi: t.reserved.safety_reserve, jami: t.reserved.total },
+          ishlatish_mumkin: t.available_cash, xavfsiz_olish: t.safe_withdrawal,
+          kutilayotgan: { kirim_7_kun: t.expected_7d_income, chiqim_7_kun: t.expected_7d_expense, kirim_30_kun: t.expected_30d_income, chiqim_30_kun: t.expected_30d_expense },
+          muddati_otgan_debitorlik: t.overdue_receivable, likvidlik_past: t.low_liquidity,
+          izoh: {
+            ishlatish_mumkin: `jami_pul − avansdan_cheklangan − rezerv.jami (tizim formulasi: ${t.formula})`,
+            xavfsiz_olish: 'ishlatish_mumkin − 30 kunlik kutilgan chiqim + 30 kunlik kutilgan kirimning 50% (manfiy bo‘lsa 0) — tizim hisoblagan',
+            avans: 'mijoz avansi bankda turibdi, lekin daromad emas va ishlatib bo‘lmaydi',
+          },
+          bank_hisoblari: (t.accounts?.bank || []).map((a) => ({ bank: a.bank_name, qoldiq: a.balance, valyuta: a.currency })), kassalar: (t.accounts?.cash || []).map((a) => ({ kassa: a.name, qoldiq: a.balance })),
+        };
+      },
+    },
+    {
+      name: 'get_receivables', perm: ['receivables', 'VIEW'], parameters: obj({ filter: { type: 'string', enum: ['overdue', '7', '30', '60+', 'critical', 'today'], description: 'ixtiyoriy filtr' } }),
+      description: 'Debitorlik: jami, muddati o‘tgan, kritik, aging (0–7 … 60+ kun) va qarzdorlar ro‘yxati',
+      run: (i) => ({ xulosa: omit(S().receivables.summary(), ['top_debtors']), aging: S().receivables.aging().buckets, qarzdorlar: S().receivables.list({ filter: i.filter }).slice(0, 25).map(rcvRow) }),
+    },
+    {
+      name: 'get_pnl', perm: ['pnl', 'VIEW'], parameters: obj(PERIOD),
+      description: 'Foyda va zarar (P&L, tan olingan daromad asosida): qatorlar, marja, oldingi davr bilan taqqoslash, xizmatlar bo‘yicha daromad',
+      run: (i) => { const p = S().reports.pnl(i); return { davr: p.period, jami: p.totals, qatorlar: p.lines.map((l) => ({ nomi: l.label, summa: l.amount, marja: l.margin })), oldingi_davr: p.previous, xizmatlar: p.by_service.filter((x) => x.revenue).map((x) => ({ xizmat: x.name, daromad: x.revenue })), xarajat_kategoriyalari: p.by_category.slice(0, 10).map((c) => ({ kategoriya: c.name, summa: c.amount })), oylik_trend: p.monthly }; },
+    },
+    {
+      name: 'get_expenses', perm: ['pnl', 'VIEW'], parameters: obj({ ...PERIOD, days_ahead: { type: 'number', description: 'kutilayotgan chiqim necha kunga (default 30)' } }),
+      description: 'Xarajatlar: davr jami, kategoriyalar, tasdiq kutayotganlar, keyingi kunlarda kutilayotgan chiqim',
+      run: (i) => { const p = resolvePeriod(i); return { davr: p, jami: S().expenses.total(p.from, p.to), kategoriyalar: S().expenses.totalsByCategory(p.from, p.to).filter((c) => c.amount > 0).map((c) => ({ kategoriya: c.name, summa: c.amount, soni: c.n })), kutilayotgan_chiqim: S().expenses.expectedOutflow(today(), addDays(today(), Number(i.days_ahead) || 30)), tasdiq_kutmoqda: db.all("SELECT code, purpose, amount, required_date FROM expenses WHERE status='PENDING' AND reversed_at IS NULL ORDER BY amount DESC LIMIT 20"), tolanmagan_tasdiqlangan: S().expenses.approvedUnpaid() }; },
+    },
+    {
+      name: 'get_revenue', perm: ['revenue', 'VIEW'], parameters: obj(PERIOD),
+      description: 'Daromad: davrda tan olingan, mijoz avanslari qoldig‘i, backlog (kutilayotgan daromad), oylik qator, tasdiq kutayotgan tan olishlar',
+      run: (i) => { const p = resolvePeriod(i); return { davr: p, tan_olingan: S().revenue.recognizedInPeriod(p.from, p.to), mijoz_avanslari: S().revenue.advancesBalance(), kutilayotgan_daromad: S().revenue.expectedRevenue(), oylik: S().revenue.monthlySeries(6), tasdiq_kutmoqda: S().revenue.listRecognitions({ status: 'PENDING_APPROVAL', limit: 15 }).map((r) => ({ shartnoma: r.contract_number, mijoz: r.company_name, summa: r.amount, sana: r.recognized_at })) }; },
+    },
+    {
+      name: 'get_forecast', perm: ['forecast', 'VIEW'], parameters: obj({ days: { type: 'number', description: '7 | 30 | 90 | 180 | 365 (default 30)' } }),
+      description: 'Pul prognozi: 3 senariy (conservative/base/optimistic) bo‘yicha kirim, chiqim, prognoz pul va ishlatish mumkin, risk darajasi',
+      run: (i) => { const f = S().forecast.compute(Number(i.days) || 30); return { sana: f.as_of, gacha: f.to, kun: f.horizon_days, hozirgi_pul: f.cash_now, hozir_ishlatish_mumkin: f.available_now, risk: f.risk, senariylar: Object.fromEntries(Object.entries(f.scenarios).map(([k, s]) => [k, { kirim: s.inflow, chiqim: s.outflow, sof: s.net, prognoz_pul: s.projected_cash, prognoz_ishlatish_mumkin: s.projected_available }])), tarkib_base: f.scenarios.base?.breakdown }; },
+    },
+    {
+      name: 'get_service_profitability', perm: ['pnl', 'VIEW'], parameters: obj(PERIOD),
+      description: 'Xizmat turlari rentabelligi: daromad, to‘g‘ridan-to‘g‘ri xarajat, oylik, taqsimlangan OPEX, sof foyda, marja, xulosa (OK/LOW/LOSS)',
+      run: (i) => { const sp = S().reports.serviceProfitability(i); return { davr: sp.period, jami_daromad: sp.total_revenue, xizmatlar: sp.rows.map((x) => ({ xizmat: x.name, daromad: x.revenue, togridan_xarajat: x.direct_expense, oylik: x.payroll, taqsimlangan_opex: x.allocated_opex, sof_foyda: x.net_profit, marja_pct: x.margin, xulosa: x.verdict })) }; },
+    },
+    {
+      name: 'get_plan_fact', perm: ['planfact', 'VIEW'], parameters: obj({ month: PERIOD.month }),
+      description: 'Reja / Fakt oy bo‘yicha: daromad, xarajat, foyda, pul, undiruv — reja, fakt, bajarilish %',
+      run: (i) => S().budget.planFact(i.month || monthOf(today())).items,
+    },
+    {
+      name: 'get_budgets', perm: ['planfact', 'VIEW'], parameters: obj({ month: PERIOD.month }),
+      description: 'Bo‘limlar/kategoriyalar byudjeti va fakt ijrosi (oshganlar belgilangan)',
+      run: (i) => S().budget.budgets(i.month || monthOf(today())).map((b) => ({ bolim: b.department_name, kategoriya: b.category_name, byudjet: b.amount, fakt: b.fact, pct: b.pct, oshdi: b.exceeded })),
+    },
+    {
+      name: 'get_cash_flow', perm: ['cashflow', 'VIEW'], parameters: obj(PERIOD),
+      description: 'Pul oqimi: ochilish va yopilish qoldig‘i, operating / investing / financing kirim-chiqim, asosiy kirim va chiqim manbalari',
+      run: (i) => { const c = S().reports.cashFlow(i); return { davr: c.period, ochilish: c.opening_cash, yopilish: c.closing_cash, sof_ozgarish: c.net_change, operating: c.operating, investing: c.investing, financing: c.financing, kirim_manbalari: (c.inflow_detail || []).slice(0, 8), chiqim_yonalishlari: (c.outflow_detail || []).slice(0, 8) }; },
+    },
+    {
+      name: 'get_balance_sheet', perm: ['balance', 'VIEW'], parameters: obj(),
+      description: 'Boshqaruv balansi: aktivlar (bank, kassa, debitorlik), majburiyatlar (avanslar, kreditorlik, oylik qarzi), kapital',
+      run: () => S().reports.balance(),
+    },
+    {
+      name: 'get_pending_approvals', perm: ['approvals', 'VIEW'], parameters: obj(),
+      description: 'Tasdiq kutayotgan barcha so‘rovlar (xarajat, daromad tan olish, oylik): summa, qadam, kim tasdiqlaydi',
+      run: (_, ctx) => scopedApprovals(ctx, S().approvals.list({ status: 'PENDING' }, ctx.user)).slice(0, 25).map(aprRow),
+    },
+    {
+      name: 'get_approvals_for_me', perm: ['approvals', 'VIEW'], parameters: obj(),
+      description: 'Aynan shu foydalanuvchi tasdiqlashi kerak bo‘lgan so‘rovlar (uning navbati)',
+      run: (_, ctx) => { const rows = S().approvals.pendingFor(ctx.user); return { soni: rows.length, jami: sum(rows, (a) => a.amount), sorovlar: rows.slice(0, 20).map(aprRow) }; },
+    },
+    {
+      name: 'get_unmatched_transactions', perm: ['transactions', 'VIEW'], parameters: obj(),
+      description: 'Shartnoma yoki xarajatga bog‘lanmagan bank tranzaksiyalari (UNMATCHED/SUGGESTED), taklif qilingan shartnoma bilan',
+      run: () => S().banking.listTransactions({ statuses: ['UNMATCHED', 'SUGGESTED'], limit: 30 }).map((t) => ({ id: t.id, sana: t.tx_date, summa: t.amount, yonalish: t.direction, kontragent: t.counterparty_name, counterparty_inn: t.counterparty_inn, maqsad: t.purpose, holat: t.matching_status, ishonch: t.confidence, taklif_shartnoma: t.suggested_contract_number })),
+    },
+    {
+      name: 'get_contracts', perm: ['contracts', 'VIEW'], parameters: obj({ q: { type: 'string', description: 'shartnoma raqami yoki mijoz' }, status: { type: 'string' } }),
+      description: 'Shartnomalar ro‘yxati (q — raqam yoki mijoz bo‘yicha qidiruv, status — holat filtri)',
+      run: (i, ctx) => S().contracts.list({ q: i.q || undefined, status: i.status || undefined, manager_user_id: ctx.user?.role_code === 'SALES' ? ctx.user.id : undefined }).slice(0, 30).map(contractRow),
+    },
+    {
+      name: 'get_data_quality', perm: ['dashboard', 'VIEW'], parameters: obj(),
+      description: 'Ma’lumot sifati muammolari: akt yo‘q shartnomalar, bog‘lanmagan tranzaksiyalar, muddati yo‘q shartnomalar va h.k.',
+      run: () => { const dq = S().reports.dataQuality(); return { jami: dq.total, muammolar: dq.issues.map((x) => ({ kod: x.code, daraja: x.severity, nomi: x.title, soni: x.count, misollar: x.items.slice(0, 3).map((it) => it.label) })) }; },
+    },
+    {
+      name: 'get_expense_categories', perm: ['expenses', 'VIEW'], parameters: obj(),
+      description: 'Xarajat kategoriyalari ro‘yxati (so‘rov tuzishda to‘g‘ri kategoriyani tanlash uchun)',
+      run: () => S().expenses.categories().map((c) => ({ kod: c.code, nomi: c.name, guruh: c.pnl_group })),
+    },
+    // ---- "o'zim" tool'lari: faqat ctx.user ma'lumoti ----
+    {
+      name: 'get_my_expense_requests', self: true, parameters: obj(),
+      description: 'Mening xarajat so‘rovlarim: holati, tasdiq zanjirida kim kutyapti, rad etilganlari sababi',
+      run: (_, ctx) => S().expenses.list({}, ctx.user).filter((e) => e.requested_by === ctx.user.id).slice(0, 15).map((e) => { const a = e.approval_id ? S().approvals.get(e.approval_id) : null; return { kod: e.code, summa: e.amount, maqsad: e.purpose, kategoriya: e.category_name, holat: e.status, sana: e.expense_date, kerakli_sana: e.required_date, qadam: stepOf(a), izoh: a?.comment || null }; }),
+    },
+    {
+      name: 'get_my_payroll', self: true, parameters: obj({ month: PERIOD.month }),
+      description: 'Mening oyligim: fiks, KPI, bonus, jarima, avans, gross, ushlanma, qo‘limga tegadigan (net), holat, KPI tafsiloti, oxirgi oylar',
+      run: (i, ctx) => { const m = S().payroll.mine(ctx.user.id, i.month || undefined); if (!m) return { xabar: 'Xodim kartangiz topilmadi (HR ga murojaat qiling)' }; return { lavozim: m.employee.position, bolim: m.employee.department_name, davr: m.period, oylik: m.payroll ? omit(m.payroll, ['id', 'employee_id', 'approval_id', 'expense_id', 'created_at']) : null, kpi: m.kpis.map((k) => ({ qoida: k.rule_name, metrika: k.metric_value, summa: k.kpi_amount })), avanslar: m.advances, tarix: m.history }; },
+    },
+    {
+      name: 'get_my_notifications', self: true, parameters: obj({ unread: { type: 'boolean', description: 'faqat o‘qilmaganlar' } }),
+      description: 'Mening bildirishnomalarim (oxirgilari) va o‘qilmaganlar soni',
+      run: (i, ctx) => ({ oqilmagan: S().notifications.unreadCount(ctx.user.id), royxat: S().notifications.listFor(ctx.user.id, { unread: !!i.unread, limit: 15 }).map((n) => ({ turi: n.type, daraja: n.severity, sarlavha: n.title, matn: n.body, vaqt: n.created_at, oqilgan: !!n.is_read })) }),
+    },
+    {
+      name: 'get_my_contracts', self: true, perm: ['contracts', 'VIEW'], parameters: obj(),
+      description: 'Men menejer bo‘lgan faol shartnomalar: summa, to‘langan, qoldiq, holat',
+      run: (_, ctx) => S().contracts.list({ manager_user_id: ctx.user.id, active: true }).slice(0, 25).map(contractRow),
+    },
+    {
+      name: 'get_my_debtors', self: true, perm: ['receivables', 'VIEW'], parameters: obj(),
+      description: 'Mening mijozlarim qarzi: qarz, muddati o‘tgan, kechikish kuni, keyingi muddat',
+      run: (_, ctx) => { const rows = S().receivables.list({ manager_user_id: ctx.user.id }); return { jami_qarz: sum(rows, (x) => x.debt), muddati_otgan: sum(rows, (x) => x.overdue_amount), qarzdorlar: rows.slice(0, 20).map(rcvRow) }; },
+    },
+    {
+      name: 'get_my_collection_tasks', self: true, perm: ['collections', 'VIEW'], parameters: obj(),
+      description: 'Menga biriktirilgan ochiq undiruv vazifalari: bosqich, mijoz, qarz, muddat, izoh',
+      run: (_, ctx) => S().receivables.listCollections({ status: 'OPEN', assigned_to: ctx.user.id }).slice(0, 20).map((k) => ({ bosqich: k.stage, mijoz: k.client, shartnoma: k.contract_number, qarz: k.debt, muddat: k.due_date, vazifa_sanasi: k.task_date, izoh: k.note })),
+    },
+    {
+      name: 'propose_action', perm: ['ai', 'CREATE'], parameters: obj({ action_type: { type: 'string' }, entity_type: { type: 'string' }, entity_id: { type: 'number' }, title: { type: 'string' }, payload: { type: 'object' }, confidence: { type: 'number' } }, ['action_type', 'title']),
+      description: 'Tizimga harakat taklif qilish (AI hech qachon o‘zi bajarmaydi — inson tasdiqlaydi). action_type: MATCH_TRANSACTION | SET_EXPENSE_CATEGORY | RECOGNIZE_REVENUE | CREATE_COLLECTION_TASK | FLAG_ANOMALY',
+      run: (i, ctx) => svc.propose({ agent_code: 'CFO', ...i }, ctx),
+    },
   ];
-  const SYSTEM = `Sen UTAX kompaniyasining moliyaviy AI yordamchisisan (CFO Agent). Faqat tool'lardan olingan real raqamlar bilan javob ber, hech qachon raqam o'ylab topma. O'zbek tilida (lotin) qisqa, aniq, rahbar uchun tushunarli javob ber; jadval/ro'yxat formatini afzal ko'r. Summalarni "123 456 789 so‘m" ko'rinishida yoz.
-Qoidalar: BANKDAGI PUL ≠ DAROMAD ≠ ISHLATISH MUMKIN BO'LGAN PUL. Cash received ≠ recognized revenue. Mijoz avanslari cheklangan pul.
-AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat tasdiqlamaysan, shartnoma summasi/maoshni o'zgartirmaysan. Kerak bo'lsa propose_action orqali taklif qil — inson tasdiqlaydi.`;
 
-  // LLM faqat foydalanuvchi web'da ko'ra oladigan ma'lumot tool'larini oladi
-  const TOOL_PERM = {
-    get_treasury: ['treasury', 'VIEW'], get_receivables: ['receivables', 'VIEW'], get_pnl: ['pnl', 'VIEW'], get_expenses: ['pnl', 'VIEW'], get_revenue: ['revenue', 'VIEW'],
-    get_forecast: ['forecast', 'VIEW'], get_service_profitability: ['pnl', 'VIEW'], get_plan_fact: ['planfact', 'VIEW'], get_pending_approvals: ['approvals', 'VIEW'],
-    get_unmatched_transactions: ['transactions', 'VIEW'], get_contracts: ['contracts', 'VIEW'], get_data_quality: ['dashboard', 'VIEW'], get_cash_flow: ['cashflow', 'VIEW'], propose_action: ['ai', 'CREATE'],
-  };
+  /** Foydalanuvchiga ruxsat etilgan tool'lar, persona tartibida (bot kontekstiga mos tool'lar birinchi); RBAC har doim ustun */
+  function toolsFor(ctx, persona, max = config.ai.maxTools) {
+    const pref = persona?.tools || [];
+    const rank = (t) => (pref.includes(t.name) ? pref.indexOf(t.name) : 100 + TOOLS.indexOf(t));
+    // Token tejash (Groq TPM): persona tool'lari + faqat ruxsat etilganlar, eng ko'pi `max` ta; propose_action har doim oxirida
+    const ok = TOOLS.filter((t) => t.name !== 'propose_action' && allowed(ctx, t.perm) && (persona?.key === 'web' || !pref.length || pref.includes(t.name))).sort((a, b) => rank(a) - rank(b)).slice(0, Math.max(1, max));
+    const propose = TOOLS.find((t) => t.name === 'propose_action');
+    return allowed(ctx, propose.perm) && persona?.key === 'web' ? [...ok, propose] : ok;
+  }
 
-  async function llmChat(question, ctx, history = []) {
-    let Anthropic;
-    try { Anthropic = (await import('@anthropic-ai/sdk')).default; } catch { return null; }
-    const client = new Anthropic({ apiKey: config.anthropicKey });
-    const messages = [...history.slice(-8).map((h) => ({ role: h.role, content: h.content })), { role: 'user', content: question }];
-    const permitted = TOOLS.filter((t) => allowed(ctx, TOOL_PERM[t.name] || ['ai', 'VIEW']));
-    const tools = permitted.map(({ name, description, input_schema }) => ({ name, description, input_schema }));
-    let firstData = null;
-    for (let i = 0; i < 8; i++) {
-      const response = await client.messages.create({ model: config.aiModel, max_tokens: 4096, system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }], tools, messages });
-      if (response.stop_reason === 'refusal') return { answer: 'Bu so‘rovga javob bera olmayman.', data: null, engine: 'LLM' };
-      if (response.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: response.content }); continue; }
-      const toolUses = response.content.filter((b) => b.type === 'tool_use');
-      if (response.stop_reason !== 'tool_use' || !toolUses.length) {
-        const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
-        return { answer: text, data: firstData, engine: 'LLM', model: config.aiModel };
-      }
-      messages.push({ role: 'assistant', content: response.content });
-      const results = [];
-      for (const tu of toolUses) {
-        const tool = permitted.find((t) => t.name === tu.name);
-        let out;
-        try { out = tool ? tool.run(tu.input || {}, ctx) : { error: 'unknown tool' }; if (!firstData && tool && tool.name !== 'propose_action') firstData = { kind: 'json', tool: tool.name, value: out }; }
-        catch (e) { out = { error: e.message }; }
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(out).slice(0, 60000) });
-      }
-      messages.push({ role: 'user', content: results });
+  // Faqat salomlashish (qo'shimcha savolsiz): "salom", "nima gap", "assalomu alaykum!", "привет" …
+  const ONLY_GREETING = /^\s*(assalomu?\s*alaykum|assalom|salom(\s*alaykum)?|hayrli\s*(kun|tong|kech)|xayrli\s*(kun|tong|kech)|hi|hello|hey|привет|здравствуй(те)?|добрый\s*(день|вечер)|nima\s*gap(lar)?|qalay(siz)?|yaxshimisiz|ishlar\s*qalay)[\s!.,?)😊🙂👋]*$/i;
+  /** Persona misollari — faqat foydalanuvchiga ruxsat etilgan tool'lar bilan javob beriladiganlari */
+  function personaExamples(persona, permitted) {
+    const have = new Set(permitted.map((t) => t.name));
+    return (persona.examples || []).filter((x) => typeof x === 'string' || !x.tool || have.has(x.tool)).map((x) => (typeof x === 'string' ? x : x.q));
+  }
+  function greetingText(ctx, personaKey) {
+    const persona = personaFor(personaKey);
+    const b = (app.botCatalog?.() || []).find((x) => x.key === personaKey);
+    const ex = personaExamples(persona, toolsFor(ctx, persona)).slice(0, 3);
+    const first = String(ctx.user?.name || '').split(' ')[0];
+    return [
+      `Assalomu alaykum${first ? ', ' + first : ''}! Men — ${b?.title || 'UTAX'}, sizning **${persona.greeting || persona.title}**.`,
+      ex.length ? 'Masalan, shunday so‘rashingiz mumkin:' : null,
+      ...ex.map((x) => `- ${x}`),
+      'Savolingizni oddiy matn bilan yozing, buyruqlar — /help.',
+    ].filter(Boolean).join('\n');
+  }
+  const GREETING = /^\s*(assalomu?|salom|hayrli|xayrli|hi\b|hello|привет|здравствуй|nima gap|qalay|qalaysiz|yaxshimisiz|how are)/i;
+
+  // ---------------- XOTIRA (ai_conversations, kanal bo'yicha; /clear dan keyin) ----------------
+  const resetKey = (userId, channel) => `ai_reset:${userId}:${channel}`;
+  function memoryRows(userId, channel, { limit = config.ai.memoryTurns, hours = config.ai.memoryHours } = {}) {
+    if (!userId) return [];
+    const reset = db.get('SELECT value FROM bot_state WHERE key=?', resetKey(userId, channel))?.value || '';
+    const since = new Date(Date.now() - hours * 3600e3).toISOString();
+    const edge = reset > since ? reset : since;
+    return db.all('SELECT id, question, answer, engine, provider, created_at FROM ai_conversations WHERE user_id=? AND channel=? AND created_at > ? ORDER BY id DESC LIMIT ?', userId, channel, edge, limit).reverse();
+  }
+  function clearMemory(userId, channel) {
+    if (!userId) return false;
+    db.run('INSERT INTO bot_state (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at', resetKey(userId, channel), nowIso(), nowIso());
+    return true;
+  }
+
+  // ---------------- LLM ulanishi (lazy; testlarda useLlm bilan almashtiriladi) ----------------
+  let llmOverride;
+  let llmInstance = null;
+  let llmLoading = null;
+  async function getLlm() {
+    if (llmOverride !== undefined) return llmOverride;
+    if (!config.ai.live || !(config.ai.geminiKey || config.ai.groqKey)) return null;
+    if (!llmInstance) {
+      llmLoading ??= import('../core/llm.mjs').then(({ createLlm }) => {
+        const providers = [];
+        if (config.ai.geminiKey) providers.push({ name: 'gemini', apiKey: config.ai.geminiKey, model: config.ai.geminiModel, fallbackModels: config.ai.geminiFallbackModels, rpm: config.ai.geminiRpm });
+        if (config.ai.groqKey) providers.push({ name: 'groq', apiKey: config.ai.groqKey, model: config.ai.groqModel });
+        if (config.ai.groqKey && config.ai.groqFallbackModel && config.ai.groqFallbackModel !== config.ai.groqModel) providers.push({ name: 'groq', apiKey: config.ai.groqKey, model: config.ai.groqFallbackModel });
+        return createLlm({ providers, timeoutMs: config.ai.timeoutMs, log: console });
+      }).catch((e) => { console.error('[ai] LLM moduli yuklanmadi:', e.message); return { enabled: false }; });
+      llmInstance = await llmLoading;
     }
-    return { answer: 'Javob juda uzun bo‘lib ketdi, savolni aniqlashtiring.', data: firstData, engine: 'LLM' };
+    return llmInstance?.enabled ? llmInstance : null;
+  }
+
+  /** Foydalanuvchiga ruxsat etilgan shu bot buyruqlari (persona promptida va yordam matnida) */
+  function botCommandsFor(ctx, botKey) {
+    const b = (app.botCatalog?.() || []).find((x) => x.key === botKey);
+    if (!b || !ctx?.user) return [];
+    return b.commands.filter((c) => (!c.roles || c.roles.includes(ctx.user.role_code)) && (!c.perm || app.rbac.can(ctx.user, c.perm[0], c.perm[1] || 'VIEW')));
+  }
+
+  /** LLM javobi (tools bilan). Xato bo'lsa throw — chaqiruvchi jim ravishda qoidalarga o'tadi */
+  async function llmAnswer(question, ctx, { channel, personaKey, llm }) {
+    const persona = personaFor(personaKey);
+    const masker = createMasker(db, config.ai.maskNames);
+    const permitted = toolsFor(ctx, persona);
+    const commands = botCommandsFor(ctx, personaKey);
+    const userLabel = masker.tokenFor(ctx.user.name) || ctx.user.name;
+    const botTitle = (app.botCatalog?.() || []).find((x) => x.key === personaKey)?.title || null;
+    const otherBots = (app.botCatalog?.() || []).filter((b) => b.key !== personaKey && b.allowed_roles.includes(ctx.user.role_code)).map((b) => b.key);
+    const system = masker.mask(buildSystemPrompt({ persona, company: settings.get('company.name') || 'UTAX', today: today(), userLabel, role: ctx.user.role_code, botTitle, botKey: personaKey, commands, otherBots, examples: personaExamples(persona, permitted) }));
+    const clipTurn = (s, n) => { const t = String(s || ''); return t.length > n ? t.slice(0, n) + '…' : t; };
+    const history = memoryRows(ctx.user.id, channel).flatMap((m) => [{ role: 'user', content: masker.mask(clipTurn(m.question, 500)) }, { role: 'assistant', content: masker.mask(clipTurn(m.answer, 900)) }]);
+    const used = [];
+    let firstData = null;
+    const runTool = async (name, args) => {
+      const tool = permitted.find((t) => t.name === name);
+      if (!tool) return { error: 'Bu ma’lumot foydalanuvchi rolida mavjud emas' };
+      try {
+        const out = await tool.run(masker.unmaskArgs(args || {}), ctx);
+        used.push(name);
+        if (!firstData && name !== 'propose_action') firstData = { kind: 'json', tool: name, value: out };
+        return masker.maskDeep(compact(out, { limit: 12, maxChars: 4500 }));
+      } catch (e) {
+        console.warn(`[ai] tool ${name} xatosi: ${String(e?.message || e).slice(0, 200)}`);
+        return { error: 'Ma’lumotni olib bo‘lmadi' };
+      }
+    };
+    const r = await llm.chat({ system, messages: [...history, { role: 'user', content: masker.mask(question) }], tools: permitted.map(({ name, description, parameters }) => ({ name, description, parameters })), runTool, maxSteps: 4, temperature: 0.3, maxTokens: 1200 });
+    const answer = masker.unmask(String(r?.text || '').trim());
+    if (!answer) throw new Error('bo‘sh javob');
+    return { answer, data: firstData, intent: null, engine: 'LLM', provider: r.provider || null, model: r.model || null, tools: [...new Set(used)] };
   }
 
   // ---------------- AGENTS ----------------
@@ -393,7 +597,12 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
     REVIEW_CONTRACT: (p) => ({ reviewed: p.contract_id }),
   };
   const svc = {
-    route, llmChat, AGENTS,
+    route, AGENTS, TOOLS, toolsFor, memoryRows, clearMemory,
+    /** Testlar uchun: LLM obyektini almashtirish (null — o'chirish, undefined — config bo'yicha) */
+    useLlm(x) { llmOverride = x; },
+    getLlm,
+    /** LLM provayderlar holati (kalitsiz) — web Sozlamalar uchun */
+    llmStats() { return llmInstance?.stats?.() || null; },
     propose(a, ctx, key) {
       const dedupe = key ? sha256(key) : null;
       if (dedupe && db.get("SELECT id FROM ai_actions WHERE status='PROPOSED' AND payload LIKE ?", `%"__k":"${dedupe}"%`)) return null;
@@ -424,11 +633,39 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
       audit(c, { action: 'AGENT_RUN', entity: 'ai_agent', entityId: ag.id, newValue: result && typeof result === 'object' ? Object.fromEntries(Object.entries(result).filter(([k]) => !['tasks', 'issues', 'findings', 'aging', 'digest', 'analysis'].includes(k))) : result, aiAgentCode: code });
       return result;
     },
-    async chat(question, ctx, { channel = 'WEB', history = [] } = {}) {
+    /**
+     * Erkin savol → javob. Tartib: (1) LLM (Gemini → Groq) persona + RBAC tool'lar + suhbat xotirasi bilan;
+     * (2) xato/bo'sh/o'chirilgan bo'lsa — JIM ravishda qoidalar dvigateli. Texnik xato matni hech qachon javobga tushmaydi.
+     * @param opts.channel  'WEB' | 'TELEGRAM:<botKey>' | boshqa (xotira kaliti)
+     * @param opts.bot      persona kaliti: rahbar | buxgalter | sorov | signal | web
+     */
+    async chat(question, ctx, { channel = 'WEB', bot } = {}) {
+      const q = String(question || '').trim().slice(0, 2000);
+      const personaKey = bot || (String(channel).startsWith('TELEGRAM:') ? String(channel).slice(9) : 'web');
       let res = null;
-      if (config.anthropicKey && settings.get('ai.allow_llm')) { try { res = await llmChat(question, ctx, history); } catch (e) { res = null; console.error('[ai] LLM error:', e.message); } }
-      if (!res) res = { ...route(question, ctx), engine: 'RULES' };
-      db.insert('ai_conversations', { user_id: ctx.user?.id || null, channel, question, answer: res.answer, intent: res.intent || null, engine: res.engine, created_at: nowIso() });
+      // Faqat salom (savolsiz) — persona o'zini tanishtiradi (tez, LLM tokeni sarflanmaydi)
+      if (ONLY_GREETING.test(q) && ctx?.user?.id) {
+        const res = { answer: greetingText(ctx, personaKey), intent: 'GREETING', engine: 'RULES', data: null };
+        db.insert('ai_conversations', { user_id: ctx.user.id, channel, question: q, answer: res.answer, intent: res.intent, engine: res.engine, created_at: nowIso() });
+        return res;
+      }
+      // Tasdiqlash niyati ("…so'rovini tasdiqla") — deterministik: qoidalar ✅ tugmasini beradi, AI o'zi tasdiqlamaydi
+      const approveIntent = INTENTS.find((it) => it.name === 'APPROVE_REQUEST').test(q.toLowerCase());
+      if (!approveIntent && ctx?.user?.id && !ctx.user.is_agent && settings.get('ai.allow_llm')) {
+        const llm = await getLlm();
+        if (llm) {
+          try { res = await llmAnswer(q, ctx, { channel, personaKey, llm }); }
+          catch (e) { res = null; console.warn(`[ai] LLM javob bermadi (${personaKey}) — qoidalar: ${String(e?.code || e?.message || e).slice(0, 160)}`); }
+        }
+      }
+      if (!res) {
+        res = { ...route(q, ctx), engine: 'RULES' };
+        if (res.intent === 'HELP') {
+          const persona = personaFor(personaKey);
+          res.answer = GREETING.test(q) ? greetingText(ctx, personaKey) : personaHelp(persona, botCommandsFor(ctx, personaKey));
+        }
+      }
+      db.insert('ai_conversations', { user_id: ctx?.user?.id || null, channel, question: q, answer: res.answer, intent: res.intent || null, engine: res.engine, provider: res.provider || null, model: res.model || null, tools: res.tools?.length ? JSON.stringify(res.tools) : null, created_at: nowIso() });
       return res;
     },
     seedAgents() { for (const a of AGENTS) { db.run('INSERT OR IGNORE INTO ai_agents (code,name,description,schedule,permissions) VALUES (?,?,?,?,?)', a.code, a.name, a.description, a.schedule, JSON.stringify(['VIEW', 'PROPOSE'])); db.run('UPDATE ai_agents SET name=?, description=? WHERE code=?', a.name, a.description, a.code); } },
@@ -442,16 +679,19 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
   app.services.ai = svc;
   svc.seedAgents();
 
-  r.post('/api/ai/chat', { perm: ['ai', 'CREATE'], tags: ['ai'], summary: 'AI Finance chat (rule-based + LLM)' }, async (ctx) => {
+  r.post('/api/ai/chat', { perm: ['ai', 'CREATE'], tags: ['ai'], summary: 'AI moliya chat (Gemini → Groq, xato bo‘lsa qoidalar); suhbat xotirasi serverda' }, async (ctx) => {
     const q = String(ctx.body?.message || ctx.body?.question || '').trim();
     if (!q) throw badRequest('message kerak');
-    return svc.chat(q, ctx, { history: ctx.body?.history || [] });
+    const res = await svc.chat(q, ctx, { channel: 'WEB', bot: 'web' });
+    return { ...res, provider: res.provider || null, tools: res.tools || [] };
   });
+  r.post('/api/ai/clear', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'AI suhbat tarixini tozalash (web)' }, async (ctx) => { svc.clearMemory(ctx.user.id, 'WEB'); return { ok: true }; });
   r.post('/api/ai/confirm', { perm: ['approvals', 'APPROVE'], tags: ['ai'], summary: 'Chat orqali taklif qilingan harakatni tasdiqlash {approval_id}' }, async (ctx) => {
     if (!ctx.body?.approval_id) throw badRequest('approval_id kerak');
     return S().approvals.decide(ctx.body.approval_id, 'APPROVE', { ...ctx, source: ctx.source || 'AI_CHAT' }, ctx.body.comment || 'AI chat orqali tasdiqlandi');
   });
-  r.get('/api/ai/history', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'Chat tarixi' }, async (ctx) => db.all('SELECT * FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 50', ctx.user.id).reverse());
+  r.get('/api/ai/history', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'Chat tarixi (channel=WEB — joriy suhbat, oxirgi tozalashdan keyin)', query: ['channel'] }, async (ctx) =>
+    (ctx.query.channel ? memoryRows(ctx.user.id, ctx.query.channel, { limit: 50 }) : db.all('SELECT * FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 50', ctx.user.id).reverse()));
   r.get('/api/ai/agents', { perm: ['ai', 'VIEW'], tags: ['ai'], summary: 'AI agentlar va oxirgi natijalari' }, async () => svc.listAgents());
   r.post('/api/ai/agents/:code/run', { perm: ['ai', 'CREATE'], tags: ['ai'], summary: 'Agentni qo‘lda ishga tushirish' }, async (ctx) => ({ result: await svc.runAgent(ctx.params.code, agentCtx(ctx.params.code)) }));
   r.patch('/api/ai/agents/:code', { perm: ['ai', 'EDIT'], tags: ['ai'], summary: 'Agentni yoqish/o‘chirish, API kalit yaratish' }, async (ctx) => {

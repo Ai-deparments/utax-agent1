@@ -94,7 +94,7 @@ test('/xizmatlar, /pul_oqimi, /balans, /reja — servis raqamlari bilan bir xil'
   const pf = H.S.budget.planFact('2026-08');
   r = await H.send('rahbar', ceo, '/reja 2026-08');
   for (const it of pf.items) has(r, money(it.fact));
-  for (const name of ['Daromad', 'Xarajat', 'Foyda', 'Pul qoldig‘i', 'Tushum (undiruv)']) has(r, name);
+  for (const name of ['Daromad', 'Xarajat', 'Foyda', 'Pul qoldig‘i', 'Undirish']) has(r, name);
 });
 
 test('/prognoz 90 — 3 senariy = forecast.compute(90); r.fc:7 gorizontni almashtiradi', async () => {

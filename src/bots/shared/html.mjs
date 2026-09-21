@@ -21,27 +21,73 @@ export function stripTags(html) {
 }
 
 /**
- * Markdown-lite (AI javoblari, ai.mjs "**qalin**") → Telegram HTML.
- * Qo'llab-quvvatlanadi: **qalin**, __qalin__, *kursiv*, _kursiv_, `kod`, ```blok```, # sarlavha, "- " / "* " ro'yxat, [matn](https://...)
+ * AI Markdown → Telegram HTML (parse_mode: 'HTML'). Telegram <ul>/<li> ni qo'llamaydi, shuning uchun:
+ *   ```til\n…``` → <pre><code class="language-til">…</code></pre>   `kod` → <code>
+ *   **qalin** / __qalin__ → <b>        *kursiv* / _kursiv_ → <i> (so'z ichidagi file_name, 2*3 ga tegilmaydi)
+ *   satr boshidagi "- " / "* " / "+ " → "• " (ichki ro'yxat indentatsiyasi saqlanadi), "1. " raqamli ro'yxat o'zgarmaydi
+ *   # sarlavha → <b>   > iqtibos → <blockquote>   [matn](https://…) → <a>   | jadval | → <pre> (monospace)   --- → chiziq
+ * Qolgan < > & escape qilinadi. Uzun natija splitHtml bilan 4096 chegarasida teglarni buzmasdan bo'laklanadi.
  */
 export function mdToHtml(md) {
-  const src = String(md ?? '').replace(/\r\n/g, '\n');
+  const src = String(md ?? '').replace(/\r\n?/g, '\n');
   const out = [];
   const parts = src.split(/```/);
   parts.forEach((part, idx) => {
-    if (idx % 2 === 1) { out.push(`<pre>${esc(part.replace(/^[a-z0-9_-]*\n/i, '').replace(/\n$/, ''))}</pre>`); return; }
-    const lines = part.split('\n').map((line) => {
-      let l = line;
-      const h = /^\s{0,3}#{1,6}\s+(.*)$/.exec(l);
-      if (h) return `<b>${inline(h[1])}</b>`;
-      const li = /^(\s*)[-*•]\s+(.*)$/.exec(l);
-      if (li) return `${li[1]}• ${inline(li[2])}`;
-      if (/^\s*([-*_])\1{2,}\s*$/.test(l)) return '──────────';
-      return inline(l);
-    });
-    out.push(lines.join('\n'));
+    if (idx % 2 === 1) {
+      // kod bloki (yopilmagan oxirgi blok ham kod sifatida)
+      const m = /^([a-z0-9_+#.-]{1,20})[ \t]*\n/i.exec(part);
+      const lang = m ? m[1].toLowerCase() : '';
+      const body = (m ? part.slice(m[0].length) : part.replace(/^\n/, '')).replace(/\n$/, '');
+      out.push(`<pre><code${lang ? ` class="language-${escAttr(lang)}"` : ''}>${esc(body)}</code></pre>`);
+      return;
+    }
+    out.push(blocks(part));
   });
   return out.join('');
+}
+
+/** Kod blokidan tashqari matn: satrlar guruhlanadi (jadval, iqtibos), qolgani satrma-satr */
+function blocks(text) {
+  const src = text.split('\n');
+  const out = [];
+  for (let k = 0; k < src.length; k++) {
+    const line = src[k];
+    // | jadval | — ketma-ket satrlar monospace <pre> ga
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const rows = [];
+      while (k < src.length && /^\s*\|.*\|\s*$/.test(src[k])) rows.push(src[k++]);
+      k--;
+      out.push(table(rows));
+      continue;
+    }
+    // > iqtibos — ketma-ket satrlar bitta <blockquote>
+    if (/^\s{0,3}>\s?/.test(line)) {
+      const q = [];
+      while (k < src.length && /^\s{0,3}>\s?/.test(src[k])) q.push(src[k++].replace(/^\s{0,3}>\s?/, ''));
+      k--;
+      out.push(`<blockquote>${q.map(inline).join('\n')}</blockquote>`);
+      continue;
+    }
+    const h = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
+    if (h) { out.push(`<b>${inline(h[1])}</b>`); continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push('──────────'); continue; }
+    const li = /^(\s*)[-*+•]\s+(.*)$/.exec(line);
+    if (li) { out.push(`${li[1].replace(/\t/g, '  ')}• ${inline(li[2])}`); continue; }
+    out.push(inline(line));
+  }
+  return out.join('\n');
+}
+
+/** Markdown jadvali → tekislangan monospace matn (<pre>); ajratuvchi |---| qatori tashlanadi */
+function table(rows) {
+  const cells = rows
+    .map((r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim().replace(/\*\*|__|`/g, '')))
+    .filter((cs) => !cs.every((c) => /^:?-{2,}:?$/.test(c) || c === ''));
+  if (!cells.length) return '';
+  const n = Math.max(...cells.map((cs) => cs.length));
+  const width = Array.from({ length: n }, (_, j) => Math.min(28, Math.max(...cells.map((cs) => (cs[j] || '').length))));
+  const fit = (s, w) => (s.length > w ? s.slice(0, w - 1) + '…' : s.padEnd(w));
+  return `<pre>${esc(cells.map((cs) => width.map((w, j) => fit(cs[j] || '', w)).join('  ').trimEnd()).join('\n'))}</pre>`;
 }
 
 function inline(text) {
