@@ -1,5 +1,5 @@
 import { api, get, post, setTokens, isLoggedIn, qs } from './api.js';
-import { h, clear, toast, err, icon, fmt, date } from './ui.js';
+import { h, clear, toast, err, icon, fmt, date, alert } from './ui.js';
 
 export const NAV = [
   ['dashboard', 'Bosh sahifa', 'dashboard', 'home'], ['treasury', 'Pul boshqaruvi', 'treasury', 'wallet'], ['contracts', 'Shartnomalar', 'contracts', 'contract'], ['transactions', 'Tushumlar', 'transactions', 'inflow'],
@@ -19,26 +19,38 @@ const root = document.getElementById('root');
 const logoMark = () => h('div', { class: 'mark' }, icon('x_mark', 20));
 
 // ---------- LOGIN ----------
-function renderLogin() {
+/**
+ * notice — login ustida ko'rsatiladigan ogohlantirish (masalan Telegram Mini App orqali kirish muvaffaqiyatsiz bo'lsa).
+ * twoFa — Telegram Mini App'da 2FA yoqilgan foydalanuvchi: {temp_token} bilan darhol kod bosqichi (parol bilan kirishdagi 2FA qismi aynan shu).
+ */
+function renderLogin(notice, twoFa = null) {
   const email = h('input', { class: 'input', type: 'email', placeholder: 'Elektron pochta', autocomplete: 'username' });
   const pass = h('input', { class: 'input', type: 'password', placeholder: 'Parol', autocomplete: 'current-password' });
-  const code = h('input', { class: 'input', placeholder: '2FA kodi (6 raqam)', inputmode: 'numeric', style: { display: 'none' } });
+  const code = h('input', { class: 'input', placeholder: '2FA kodi (6 raqam)', inputmode: 'numeric', autocomplete: 'one-time-code', style: { display: 'none' } });
   const msg = h('div', { class: 'small neg mt8' });
   let temp = null;
   const btn = h('button', { class: 'btn pri', type: 'submit', style: { width: '100%', justifyContent: 'center', marginTop: '14px', padding: '10px' } }, 'Kirish');
+  const credFields = [h('div', { class: 'field mt8' }, h('label', {}, 'Elektron pochta'), email), h('div', { class: 'field mt12' }, h('label', {}, 'Parol'), pass)];
+  /** 2FA bosqichi: temp token olingan — faqat kod so'raladi */
+  const askCode = (token, text = '2FA kodini kiriting') => { temp = token; code.style.display = ''; msg.textContent = text; setTimeout(() => code.focus(), 50); };
   const submit = async (e) => {
     e?.preventDefault(); btn.disabled = true; msg.textContent = '';
     try {
       let r;
-      if (temp) r = await post('/api/auth/2fa/verify', { temp_token: temp, code: code.value });
-      else { r = await post('/api/auth/login', { email: email.value.trim(), password: pass.value }); if (r.requires_2fa) { temp = r.temp_token; code.style.display = ''; code.focus(); msg.textContent = '2FA kodini kiriting'; btn.disabled = false; return; } }
+      if (temp) r = await post('/api/auth/2fa/verify', { temp_token: temp, code: code.value.trim() });
+      else { r = await post('/api/auth/login', { email: email.value.trim(), password: pass.value }); if (r.requires_2fa) { askCode(r.temp_token); btn.disabled = false; return; } }
       setTokens(r); await boot();
     } catch (x) { msg.textContent = x.message; } finally { btn.disabled = false; }
   };
+  const viaTelegram = !!twoFa?.temp_token;
   clear(root).append(h('div', { class: 'login' }, h('form', { class: 'card box', onSubmit: submit, style: { padding: '28px' } },
     h('div', { class: 'brand' }, logoMark(), h('div', {}, h('div', { class: 'nm' }, 'UTAX Finance'), h('small', {}, 'Moliya boshqaruv tizimi'))),
-    h('div', { class: 'field mt8' }, h('label', {}, 'Elektron pochta'), email), h('div', { class: 'field mt12' }, h('label', {}, 'Parol'), pass), h('div', { class: 'field mt8' }, code), msg, btn)));
-  setTimeout(() => pass.focus(), 50);
+    notice ? h('div', { class: 'mb12' }, alert('warn', notice, 'send')) : null,
+    viaTelegram ? h('div', { class: 'mb12' }, alert('info', 'Telegram orqali kirish: hisobingizda ikki bosqichli tasdiqlash (2FA) yoqilgan. Authenticator ilovasidagi 6 raqamli kodni kiriting.', 'shield')) : null,
+    ...(viaTelegram ? [] : credFields), h('div', { class: 'field mt8' }, code), msg, btn,
+    viaTelegram ? h('button', { class: 'btn ghost', type: 'button', style: { width: '100%', justifyContent: 'center', marginTop: '8px' }, onClick: () => renderLogin() }, 'Elektron pochta va parol bilan kirish') : null)));
+  if (viaTelegram) askCode(twoFa.temp_token, '');
+  else setTimeout(() => pass.focus(), 50);
 }
 
 // ---------- LAYOUT ----------
@@ -104,9 +116,11 @@ async function route() {
   const query = Object.fromEntries(new URLSearchParams(queryPart || ''));
   const page = parts[0] || 'dashboard';
   const perm = NAV.find(([p]) => p === page)?.[2];
+  // Profil (parol, 2FA, Telegram botlar) — har bir kirgan foydalanuvchi uchun ochiq; boshqa sozlamalar ruxsat bilan
+  const openForAll = page === 'settings' && parts[1] === 'profile';
   renderNav();
   window.scrollTo(0, 0);
-  if (!PAGES[page] || (perm && !App.can(perm))) { clear(layout.main).append(h('div', { class: 'empty-state' }, icon('alert', 28), h('b', {}, 'Sahifa topilmadi yoki ruxsat yo‘q'))); return; }
+  if (!PAGES[page] || (perm && !openForAll && !App.can(perm))) { clear(layout.main).append(h('div', { class: 'empty-state' }, icon('alert', 28), h('b', {}, 'Sahifa topilmadi yoki ruxsat yo‘q'))); return; }
   const head = h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, NAV.find(([p]) => p === page)?.[1] || page), h('div', { class: 'sub' }, '')), h('div', { class: 'acts' }));
   const cont = h('div', {}, h('div', { class: 'empty-state' }, 'Yuklanmoqda…'));
   clear(layout.main).append(head, cont);
@@ -140,10 +154,75 @@ async function checkBuild() {
 window.addEventListener('hashchange', checkBuild);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkBuild(); });
 
-export async function boot() {
-  if (!isLoggedIn()) return renderLogin();
-  try { await App.refreshMe(); } catch (e) { setTokens(null); return renderLogin(); }
+/** twoFa — Mini App 2FA bosqichi ({temp_token}); faqat telegramLaunch'dan keladi */
+export async function boot(notice, twoFa = null) {
+  if (!isLoggedIn()) return renderLogin(notice, twoFa);
+  try { await App.refreshMe(); } catch (e) { setTokens(null); return renderLogin(notice); }
   renderLayout();
   if (!location.hash) location.hash = '#/dashboard'; else route();
 }
-boot();
+
+// ---------- TELEGRAM MINI APP ----------
+/**
+ * Bot tugmasi ilovani `https://domen/?tgp=<sahifa>#tgWebAppData=…&tgWebAppVersion=…` ko'rinishida ochadi.
+ * tgWebAppData — Telegram imzolagan xom initData satri: server uni bot tokeni bilan tekshirib, bog'langan foydalanuvchiga sessiya beradi.
+ * Marshrut hash'da emas, `?tgp` da keladi (hash'ni Telegram egallaydi). Kirishdan keyin manzil `#/<sahifa>` ga keltiriladi.
+ */
+const cleanRoute = (p) => String(p || '').replace(/^[#/]+/, '').replace(/[^\w\-/?=&.%]/g, '').slice(0, 200);
+
+/** telegram-web-app.js — faqat ready()/expand() uchun; yuklanmasa ham (bloklangan, sekin tarmoq) ilova ishlayveradi */
+function loadTelegramScript(timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const done = () => { try { window.Telegram?.WebApp?.ready(); window.Telegram?.WebApp?.expand(); } catch {} resolve(); };
+    if (window.Telegram?.WebApp) return done();
+    const s = document.createElement('script');
+    s.src = 'https://telegram.org/js/telegram-web-app.js';
+    s.async = true;
+    s.onload = done;
+    s.onerror = () => resolve();
+    document.head.append(s);
+    setTimeout(resolve, timeoutMs);
+  });
+}
+
+/** Qaytaradi: {notice, twoFa} — twoFa: 2FA yoqilgan foydalanuvchi uchun temp token (kod login formasida so'raladi) */
+async function telegramLaunch() {
+  const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const initData = hashParams.get('tgWebAppData');
+  const tgp = new URLSearchParams(location.search).get('tgp');
+  if (!initData && tgp === null) return { notice: null, twoFa: null };
+  let notice = null;
+  let twoFa = null;
+  let route = cleanRoute(tgp);
+  if (initData) {
+    // Skript hash hali o'zgarmagan paytda yuklanishi kerak (u launch parametrlarini hash'dan o'qiydi)
+    const scriptReady = loadTelegramScript();
+    try {
+      // api.js emas: 401 da refresh urinishi va eski sessiya bilan aralashmasligi uchun to'g'ridan-to'g'ri fetch
+      const res = await fetch('/api/auth/telegram-webapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ init_data: initData }) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.access_token) {
+        setTokens(data);
+        if (!route && data.start_param) route = cleanRoute(String(data.start_param).replace(/__/g, '/'));
+      } else if (res.ok && data.requires_2fa && data.temp_token) {
+        // 2FA: parol bilan kirish kabi — kod so'raladi; eski sessiya (boshqa hisob bo'lishi mumkin) qolmasin
+        setTokens(null);
+        twoFa = { temp_token: data.temp_token };
+        if (!route && data.start_param) route = cleanRoute(String(data.start_param).replace(/__/g, '/'));
+      } else {
+        if (res.status === 401) setTokens(null); // boshqa Telegram hisobi yoki uzilgan bog'lanish — eski sessiya qolmasin
+        notice = data.message || 'Telegram orqali kirib bo‘lmadi. Elektron pochta va parol bilan kiring.';
+      }
+    } catch {
+      notice = 'Server bilan aloqa yo‘q. Birozdan so‘ng qayta urinib ko‘ring.';
+    }
+    await scriptReady;
+  }
+  history.replaceState(null, '', location.pathname + '#/' + (route || 'dashboard'));
+  return { notice, twoFa };
+}
+
+telegramLaunch().catch(() => ({ notice: null, twoFa: null })).then(({ notice, twoFa }) => {
+  boot(notice, twoFa);
+  if (notice && isLoggedIn()) toast(notice, 'err'); // eski sessiya bilan davom etilsa ham sababi ko'rinsin
+});

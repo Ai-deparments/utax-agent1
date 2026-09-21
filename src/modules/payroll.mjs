@@ -57,7 +57,7 @@ export function register(app) {
     summary(period) {
       const rows = svc.list(period);
       const byDept = {};
-      for (const x of rows) { byDept[x.department_name || '—'] ??= { department: x.department_name || '—', gross: 0, net: 0, kpi: 0, n: 0 }; const d = byDept[x.department_name || '—']; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n++; }
+      for (const x of rows) { byDept[x.department_name || '--'] ??= { department: x.department_name || '--', gross: 0, net: 0, kpi: 0, n: 0 }; const d = byDept[x.department_name || '--']; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n++; }
       const apr = db.get("SELECT * FROM approvals WHERE entity_type='PAYROLL' AND title LIKE ? ORDER BY id DESC LIMIT 1", `%${period}%`);
       return { period, rows: rows.length, gross: round2(sum(rows, (x) => x.gross)), net: round2(sum(rows, (x) => x.net)), kpi: round2(sum(rows, (x) => x.kpi)), status: rows.length ? (rows.every((x) => x.status === 'PAID') ? 'PAID' : rows.every((x) => x.status === 'APPROVED') ? 'APPROVED' : rows.some((x) => x.status === 'SUBMITTED') ? 'SUBMITTED' : 'DRAFT') : 'EMPTY', by_department: Object.values(byDept).map((d) => ({ ...d, gross: round2(d.gross), net: round2(d.net), kpi: round2(d.kpi) })), approval: apr ? { ...apr, steps: parseJson(apr.steps, []) } : null };
     },
@@ -91,6 +91,25 @@ export function register(app) {
     /** Tasdiqlashda turgan oylik. Tasdiqlangan oylik xarajat (APPROVED) sifatida yaratiladi va kreditorlikka kiradi — shuning uchun bu yerda faqat SUBMITTED */
     pendingPayrollReserve() {
       return db.get("SELECT COALESCE(SUM(net),0) s FROM payrolls WHERE status='SUBMITTED'").s;
+    },
+    /** Buxgalteriya: tasdiqlangan oylikni to'langan deb belgilash (bog'liq xarajatlar ham PAID) */
+    markPaid(period, paidAt, ctx) {
+      const date = paidAt || today();
+      const n = db.run("UPDATE payrolls SET status='PAID', paid_at=? WHERE period=? AND status='APPROVED'", date, period).changes;
+      for (const e of db.all('SELECT DISTINCT expense_id FROM payrolls WHERE period=? AND expense_id IS NOT NULL', period)) { const x = db.get('SELECT status FROM expenses WHERE id=?', e.expense_id); if (x?.status === 'APPROVED') app.services.expenses.markPaid(e.expense_id, { paid_at: date }, ctx); }
+      audit(ctx, { action: 'PAYROLL_PAID', entity: 'payroll', newValue: { period, rows: n } });
+      return svc.summary(period);
+    },
+    /** Xodimning o'z oyligi va KPI (employees.user_id bo'yicha) — faqat o'ziniki */
+    mine(userId, period) {
+      const employee = db.get('SELECT e.*, d.name AS department_name FROM employees e LEFT JOIN departments d ON d.id=e.department_id WHERE e.user_id=? ORDER BY e.is_active DESC, e.id DESC LIMIT 1', userId);
+      if (!employee) return null;
+      const payroll = period ? db.get('SELECT * FROM payrolls WHERE employee_id=? AND period=?', employee.id, period) : db.get('SELECT * FROM payrolls WHERE employee_id=? ORDER BY period DESC LIMIT 1', employee.id);
+      const p = payroll?.period || period || null;
+      const kpis = p ? db.all('SELECT k.*, r.code AS rule_code, r.name AS rule_name, r.formula FROM employee_kpis k LEFT JOIN kpi_rules r ON r.id=k.kpi_rule_id WHERE k.employee_id=? AND k.period=? ORDER BY k.id', employee.id, p) : [];
+      const advances = p ? db.all('SELECT amount, given_at, note FROM advances WHERE employee_id=? AND period=? ORDER BY given_at', employee.id, p) : [];
+      const history = db.all('SELECT period, net, status FROM payrolls WHERE employee_id=? ORDER BY period DESC LIMIT 6', employee.id);
+      return { employee, period: p, payroll: payroll || null, kpis, advances, history };
     },
   };
   app.services.payroll = svc;
@@ -148,7 +167,7 @@ export function register(app) {
     const items = months.flatMap((p) => svc.list(p).filter(scope));
     const per = months.map((p) => { const s = svc.summary(p); return { period: p, rows: s.rows, gross: s.gross, kpi: s.kpi, net: s.net, status: s.status }; });
     const byDept = {};
-    for (const x of items) { const k = x.department_name || '—'; byDept[k] ??= { department: k, gross: 0, net: 0, kpi: 0, n: new Set() }; const d = byDept[k]; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n.add(x.employee_id); }
+    for (const x of items) { const k = x.department_name || '--'; byDept[k] ??= { department: k, gross: 0, net: 0, kpi: 0, n: new Set() }; const d = byDept[k]; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n.add(x.employee_id); }
     return { from, to, months, per_month: per, items, employees: new Set(items.map((x) => x.employee_id)).size, gross: round2(sum(items, (x) => x.gross)), kpi: round2(sum(items, (x) => x.kpi)), net: round2(sum(items, (x) => x.net)),
       by_department: Object.values(byDept).map((d) => ({ department: d.department, n: d.n.size, gross: round2(d.gross), kpi: round2(d.kpi), net: round2(d.net) })) };
   });
@@ -169,10 +188,5 @@ export function register(app) {
     audit(ctx, { action: 'PAYROLL_ROW_EDIT', entity: 'payroll', entityId: p.id, oldValue: p, newValue: upd });
     return db.get('SELECT * FROM payrolls WHERE id=?', p.id);
   });
-  r.post('/api/payroll/:period/mark-paid', { perm: ['payroll', 'EDIT'], tags: ['payroll'], summary: 'To‘langan deb belgilash (buxgalteriya)' }, async (ctx) => {
-    db.run("UPDATE payrolls SET status='PAID', paid_at=? WHERE period=? AND status='APPROVED'", ctx.body?.paid_at || today(), ctx.params.period);
-    for (const e of db.all("SELECT DISTINCT expense_id FROM payrolls WHERE period=? AND expense_id IS NOT NULL", ctx.params.period)) { const x = db.get('SELECT status FROM expenses WHERE id=?', e.expense_id); if (x?.status === 'APPROVED') app.services.expenses.markPaid(e.expense_id, { paid_at: ctx.body?.paid_at || today() }, ctx); }
-    audit(ctx, { action: 'PAYROLL_PAID', entity: 'payroll', newValue: { period: ctx.params.period } });
-    return svc.summary(ctx.params.period);
-  });
+  r.post('/api/payroll/:period/mark-paid', { perm: ['payroll', 'EDIT'], tags: ['payroll'], summary: 'To‘langan deb belgilash (buxgalteriya)' }, async (ctx) => svc.markPaid(ctx.params.period, ctx.body?.paid_at, ctx));
 }

@@ -4,3 +4,9 @@ data/*.db-*
 data/backups/
 .env
 uploads/
+# Haqiqiy moliyaviy Excel fayllari va import hisobotlari — git'ga tushmasin
+*.xlsx
+*.xlsm
+*.xls
+data/imports/
+data/import-*.json

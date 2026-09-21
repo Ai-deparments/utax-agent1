@@ -14,7 +14,7 @@ export function register(app) {
     const all = settings.all();
     const out = {};
     for (const [k, v] of Object.entries(all)) if (!HIDDEN.test(k)) out[k] = v;
-    return { settings: out, defaults: DEFAULT_SETTINGS, env: { ai_llm: !!config.anthropicKey, ai_model: config.aiModel, telegram: !!config.telegramToken, email: !!config.emailWebhook, db: config.dbPath, node: process.version } };
+    return { settings: out, defaults: DEFAULT_SETTINGS, env: { ai_llm: !!(config.ai.geminiKey || config.ai.groqKey), ai_providers: { gemini: !!config.ai.geminiKey, groq: !!config.ai.groqKey }, ai_model: [config.ai.geminiKey ? `Gemini ${config.ai.geminiModel}` : null, config.ai.groqKey ? `Groq ${config.ai.groqModel}` : null].filter(Boolean).join(' → ') || null, ai_stats: app.services.ai?.llmStats?.() || null, telegram: Object.values(config.bots).some(Boolean), telegram_bots: Object.fromEntries(Object.entries(config.bots).map(([k, v]) => [k, !!v])), bot_mode: config.botMode, email: !!config.emailWebhook, db: config.dbPath, node: process.version } };
   });
   r.put('/api/settings', { perm: ['settings', 'EDIT'], tags: ['settings'], summary: 'Sozlamalarni yangilash {key: value}' }, async (ctx) => {
     const b = ctx.body || {};

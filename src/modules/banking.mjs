@@ -5,20 +5,32 @@ import { parseCsv, parseXlsx, excelDate, parseAmount } from '../core/export.mjs'
 export function register(app) {
   const { r, db, audit, settings } = app;
 
+  /**
+   * Hisob qoldiqlari. Boshlang'ich qoldiq (opening_balance) kiritilmagan (NULL — masalan Excel importida yo'q) hisobning qoldig'i
+   * NOMA'LUM: balance = null ('--'), 0 deb hisoblanmaydi; bunday hisob bo'lsa jami ham null. Harakat (movement) baribir ko'rsatiladi.
+   */
+  function balances(rows) {
+    const accounts = rows.map((a) => {
+      const known = a.opening_balance !== null && a.opening_balance !== undefined;
+      const bal = known ? round2(a.opening_balance + a.movement) : null;
+      return { ...a, movement: round2(a.movement), balance: bal, balance_base: known ? round2(settings.toBase(bal, a.currency)) : null, opening_missing: !known };
+    });
+    const unknown = accounts.some((a) => a.balance_base === null);
+    return { total: unknown ? null : round2(accounts.reduce((s, a) => s + a.balance_base, 0)), accounts, movement: round2(accounts.reduce((s, a) => s + settings.toBase(a.movement, a.currency), 0)), opening_missing: accounts.filter((a) => a.opening_missing).map((a) => a.bank_name || a.name) };
+  }
+
   const svc = {
     bankBalance(asOf = today(), accountId) {
       const rows = db.all(`SELECT ba.id, ba.bank_name, ba.account_number, ba.currency, ba.opening_balance, ba.opening_date,
           COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM bank_transactions t WHERE t.bank_account_id=ba.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement
         FROM bank_accounts ba WHERE ba.is_active=1 ${accountId ? 'AND ba.id=?' : ''}`, asOf, ...(accountId ? [accountId] : []));
-      const accounts = rows.map((a) => ({ ...a, balance: round2(a.opening_balance + a.movement), balance_base: round2(settings.toBase(a.opening_balance + a.movement, a.currency)) }));
-      return { total: round2(accounts.reduce((s, a) => s + a.balance_base, 0)), accounts };
+      return balances(rows);
     },
     cashBalance(asOf = today()) {
       const rows = db.all(`SELECT ca.id, ca.name, ca.currency, ca.opening_balance, ca.opening_date,
           COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM cash_transactions t WHERE t.cash_account_id=ca.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement
         FROM cash_accounts ca WHERE ca.is_active=1`, asOf);
-      const accounts = rows.map((a) => ({ ...a, balance: round2(a.opening_balance + a.movement), balance_base: round2(settings.toBase(a.opening_balance + a.movement, a.currency)) }));
-      return { total: round2(accounts.reduce((s, a) => s + a.balance_base, 0)), accounts };
+      return balances(rows);
     },
     /** Davr bo'yicha pul harakati (bank+kassa) */
     flows(from, to) {
@@ -102,6 +114,72 @@ export function register(app) {
       audit(ctx, { action: 'IMPORT', entity: 'bank_transaction', newValue: { bank_account_id: bankAccountId, rows: rows.length, created, duplicates: dup, auto_matched: auto, suggested: sugg } });
       return { rows: rows.length, created, duplicates: dup, auto_matched: auto, suggested: sugg, unmatched: created - auto - sugg };
     },
+    bankAccounts() { return db.all('SELECT * FROM bank_accounts WHERE is_active=1 ORDER BY id'); },
+    cashAccounts() { return db.all('SELECT * FROM cash_accounts WHERE is_active=1 ORDER BY id'); },
+    /** Bank tranzaksiyalari ro'yxati (web /api/transactions va botlar uchun bitta manba).
+     *  statuses — massiv (botlar) yoki vergulli satr (web: ?statuses=UNMATCHED,SUGGESTED) */
+    listTransactions(q = {}) {
+      const w = ['1=1'], p = [];
+      if (q.status) { w.push('t.matching_status=?'); p.push(q.status); }
+      const statuses = (Array.isArray(q.statuses) ? q.statuses : String(q.statuses ?? '').split(',')).map((s) => String(s ?? '').trim()).filter(Boolean);
+      if (statuses.length) { w.push(`t.matching_status IN (${statuses.map(() => '?').join(',')})`); p.push(...statuses); }
+      if (q.direction) { w.push('t.direction=?'); p.push(q.direction); }
+      if (q.from) { w.push('t.tx_date>=?'); p.push(q.from); }
+      if (q.to) { w.push('t.tx_date<=?'); p.push(q.to); }
+      if (q.account_id) { w.push('t.bank_account_id=?'); p.push(q.account_id); }
+      if (q.q) { w.push('(t.counterparty_name LIKE ? OR t.purpose LIKE ? OR t.counterparty_inn LIKE ? OR t.contract_number_ref LIKE ?)'); p.push(`%${q.q}%`, `%${q.q}%`, `%${q.q}%`, `%${q.q}%`); }
+      if (!q.include_reversed) w.push('t.reversed_at IS NULL');
+      const limit = Math.min(2000, Math.max(1, Math.trunc(Number(q.limit)) || 2000)); // web ?limit=1.5 kabi qiymat ham butun songa keltiriladi
+      return db.all(`SELECT t.*, ba.bank_name, ba.account_number, c.contract_number AS matched_contract_number, co.name AS matched_company, sc.contract_number AS suggested_contract_number,
+          e.code AS matched_expense_code
+        FROM bank_transactions t JOIN bank_accounts ba ON ba.id=t.bank_account_id
+        LEFT JOIN contracts c ON c.id=t.matched_contract_id LEFT JOIN companies co ON co.id=c.company_id
+        LEFT JOIN contracts sc ON sc.id=t.suggested_contract_id LEFT JOIN expenses e ON e.id=t.matched_expense_id
+        WHERE ${w.join(' AND ')} ORDER BY t.tx_date DESC, t.id DESC LIMIT ${limit}`, ...p);
+    },
+    /**
+     * Xarajatni hozir kassadan to'lash mumkin emasligi sababi (mumkin bo'lsa — null). Web va bot bir xil qoidani ishlatadi:
+     * faqat tasdiqlangan (APPROVED), reversal qilinmagan va hali hech qaysi bank/kassa tranzaksiyasiga bog'lanmagan xarajat to'lanadi.
+     */
+    expenseUnpayableReason(e) {
+      if (!e) return 'Xarajat topilmadi';
+      if (e.reversed_at) return `Xarajat ${e.code} bekor qilingan (reversal) — to‘lanmaydi`;
+      if (e.status === 'PAID' || e.cash_transaction_id || e.bank_transaction_id) return `Xarajat ${e.code} allaqachon to‘langan — ikkinchi marta to‘lanmaydi`;
+      if (e.status !== 'APPROVED') return `Faqat tasdiqlangan xarajat to‘lanadi (${e.code} hozir: ${e.status})`;
+      return null;
+    },
+    /** Kassa kirim/chiqim: INCOME + contract_id → to'lov va daromad eventlari; EXPENSE + expense_id → xarajat to'landi (faqat bir marta) */
+    createCashTransaction(b, ctx) {
+      if (!b.cash_account_id || !b.tx_date || !b.amount || !b.direction) throw badRequest('cash_account_id, tx_date, amount, direction majburiy');
+      if (!['INCOME', 'EXPENSE'].includes(b.direction)) throw badRequest('direction INCOME|EXPENSE');
+      const xarajatli = b.direction === 'EXPENSE' && !!b.expense_id;
+      if (xarajatli) {
+        // Oldindan tekshiruv — foydalanuvchiga aniq sabab (topilmadi / bekor qilingan / allaqachon to'langan)
+        const e = db.get('SELECT id, code, status, reversed_at, cash_transaction_id, bank_transaction_id FROM expenses WHERE id=?', b.expense_id);
+        if (!e) throw notFound('Xarajat topilmadi');
+        const sabab = svc.expenseUnpayableReason(e);
+        if (sabab) throw badRequest(sabab);
+      }
+      const id = db.tx(() => {
+        const id = db.insert('cash_transactions', { cash_account_id: b.cash_account_id, tx_date: b.tx_date, amount: round2(Math.abs(b.amount)), currency: b.currency || 'UZS', direction: b.direction, counterparty_name: b.counterparty_name || null, purpose: b.purpose || null, contract_id: b.contract_id || null, expense_id: b.expense_id || null, cf_class: b.cf_class || 'OPERATING', created_by: ctx.user?.id || null, created_at: nowIso() });
+        if (b.direction === 'INCOME' && b.contract_id) {
+          const pid = db.insert('payments', { contract_id: b.contract_id, amount: round2(Math.abs(b.amount)), paid_at: b.tx_date, source: 'CASH', cash_transaction_id: id, created_by: ctx.user?.id || null, created_at: nowIso() });
+          app.services.revenue.onPaymentRecorded(db.get('SELECT * FROM payments WHERE id=?', pid), ctx);
+          app.services.contracts.recompute(b.contract_id, ctx);
+        }
+        if (xarajatli) {
+          // Poygaga chidamli himoya: holat tekshiruvi va yozuv bitta shartli UPDATE da. Parallel bosishda (bot/web, boshqa jarayon)
+          // ikkinchi so'rov 0 qator o'zgartiradi → xato → ROLLBACK, ya'ni ikkinchi kassa chiqimi yozilmaydi.
+          const n = db.run("UPDATE expenses SET status='PAID', paid_at=?, cash_transaction_id=?, updated_at=? WHERE id=? AND status='APPROVED' AND reversed_at IS NULL AND cash_transaction_id IS NULL AND bank_transaction_id IS NULL",
+            b.tx_date, id, nowIso(), b.expense_id).changes;
+          if (!n) throw badRequest('Xarajat holati o‘zgardi (allaqachon to‘langan yoki bekor qilingan) — kassa chiqimi yozilmadi');
+          audit(ctx, { action: 'EXPENSE_PAID', entity: 'expense', entityId: Number(b.expense_id), newValue: { cash_transaction_id: id, paid_at: b.tx_date } });
+        }
+        return id;
+      });
+      audit(ctx, { action: 'CREATE', entity: 'cash_transaction', entityId: id, newValue: b });
+      return db.get('SELECT * FROM cash_transactions WHERE id=?', id);
+    },
   };
   app.services.banking = svc;
 
@@ -137,23 +215,7 @@ export function register(app) {
     return db.get('SELECT * FROM cash_accounts WHERE id=?', id);
   });
 
-  r.get('/api/transactions', { perm: ['transactions', 'VIEW'], tags: ['banking'], summary: 'Bank tranzaksiyalari', query: ['status', 'direction', 'from', 'to', 'q', 'account_id'] }, async (ctx) => {
-    const w = ['1=1'], p = [];
-    const q = ctx.query;
-    if (q.status) { w.push('t.matching_status=?'); p.push(q.status); }
-    if (q.direction) { w.push('t.direction=?'); p.push(q.direction); }
-    if (q.from) { w.push('t.tx_date>=?'); p.push(q.from); }
-    if (q.to) { w.push('t.tx_date<=?'); p.push(q.to); }
-    if (q.account_id) { w.push('t.bank_account_id=?'); p.push(q.account_id); }
-    if (q.q) { w.push('(t.counterparty_name LIKE ? OR t.purpose LIKE ? OR t.counterparty_inn LIKE ? OR t.contract_number_ref LIKE ?)'); p.push(`%${q.q}%`, `%${q.q}%`, `%${q.q}%`, `%${q.q}%`); }
-    if (!q.include_reversed) w.push('t.reversed_at IS NULL');
-    return db.all(`SELECT t.*, ba.bank_name, ba.account_number, c.contract_number AS matched_contract_number, co.name AS matched_company, sc.contract_number AS suggested_contract_number,
-        e.code AS matched_expense_code
-      FROM bank_transactions t JOIN bank_accounts ba ON ba.id=t.bank_account_id
-      LEFT JOIN contracts c ON c.id=t.matched_contract_id LEFT JOIN companies co ON co.id=c.company_id
-      LEFT JOIN contracts sc ON sc.id=t.suggested_contract_id LEFT JOIN expenses e ON e.id=t.matched_expense_id
-      WHERE ${w.join(' AND ')} ORDER BY t.tx_date DESC, t.id DESC LIMIT 2000`, ...p);
-  });
+  r.get('/api/transactions', { perm: ['transactions', 'VIEW'], tags: ['banking'], summary: 'Bank tranzaksiyalari (statuses — vergulli ro‘yxat: UNMATCHED,SUGGESTED)', query: ['status', 'statuses', 'direction', 'from', 'to', 'q', 'account_id', 'limit'] }, async (ctx) => svc.listTransactions(ctx.query));
   r.post('/api/transactions', { perm: ['transactions', 'CREATE'], tags: ['banking'], summary: 'Tranzaksiya qo‘lda kiritish' }, async (ctx) => {
     const res = svc.createTransaction(ctx.body || {}, ctx);
     if (res.duplicate) throw badRequest('Bunday tranzaksiya allaqachon mavjud');
@@ -191,20 +253,5 @@ export function register(app) {
     if (ctx.query.to) { w.push('t.tx_date<=?'); p.push(ctx.query.to); }
     return db.all(`SELECT t.*, ca.name AS cash_account, c.contract_number FROM cash_transactions t JOIN cash_accounts ca ON ca.id=t.cash_account_id LEFT JOIN contracts c ON c.id=t.contract_id WHERE ${w.join(' AND ')} ORDER BY t.tx_date DESC, t.id DESC`, ...p);
   });
-  r.post('/api/cash-transactions', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassa kirim/chiqim (shartnoma yoki xarajatga bog‘lash)' }, async (ctx) => {
-    const b = ctx.body || {};
-    if (!b.cash_account_id || !b.tx_date || !b.amount || !b.direction) throw badRequest('cash_account_id, tx_date, amount, direction majburiy');
-    const id = db.tx(() => {
-      const id = db.insert('cash_transactions', { cash_account_id: b.cash_account_id, tx_date: b.tx_date, amount: round2(Math.abs(b.amount)), currency: b.currency || 'UZS', direction: b.direction, counterparty_name: b.counterparty_name || null, purpose: b.purpose || null, contract_id: b.contract_id || null, expense_id: b.expense_id || null, cf_class: b.cf_class || 'OPERATING', created_by: ctx.user?.id || null, created_at: nowIso() });
-      if (b.direction === 'INCOME' && b.contract_id) {
-        const pid = db.insert('payments', { contract_id: b.contract_id, amount: round2(b.amount), paid_at: b.tx_date, source: 'CASH', cash_transaction_id: id, created_by: ctx.user?.id || null, created_at: nowIso() });
-        app.services.revenue.onPaymentRecorded(db.get('SELECT * FROM payments WHERE id=?', pid), ctx);
-        app.services.contracts.recompute(b.contract_id, ctx);
-      }
-      if (b.direction === 'EXPENSE' && b.expense_id) app.services.expenses.markPaid(b.expense_id, { cash_transaction_id: id, paid_at: b.tx_date }, ctx);
-      return id;
-    });
-    audit(ctx, { action: 'CREATE', entity: 'cash_transaction', entityId: id, newValue: b });
-    return db.get('SELECT * FROM cash_transactions WHERE id=?', id);
-  });
+  r.post('/api/cash-transactions', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassa kirim/chiqim (shartnoma yoki xarajatga bog‘lash)' }, async (ctx) => svc.createCashTransaction(ctx.body || {}, ctx));
 }

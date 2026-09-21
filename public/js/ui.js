@@ -15,12 +15,12 @@ export function h(tag, attrs = {}, ...children) {
 export const frag = (...c) => { const f = document.createDocumentFragment(); for (const x of c.flat(Infinity)) if (x !== null && x !== undefined && x !== false) f.append(x instanceof Node ? x : document.createTextNode(String(x))); return f; };
 export const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
 export const CUR = 'so‘m';
-export const fmt = (n, d = 0) => (n === null || n === undefined || n === '' || Number.isNaN(Number(n)) ? '—' : Number(n).toLocaleString('ru-RU', { minimumFractionDigits: d, maximumFractionDigits: d }).replace(/,/g, ' ').replace(/ /g, ' '));
-export const money = (n) => fmt(n) + ' ' + CUR;
-export const short = (n) => { const a = Math.abs(Number(n) || 0); const s = Number(n) < 0 ? '−' : ''; if (a >= 1e9) return s + (a / 1e9).toFixed(2) + ' mlrd'; if (a >= 1e6) return s + (a / 1e6).toFixed(1) + ' mln'; if (a >= 1e3) return s + (a / 1e3).toFixed(0) + ' ming'; return s + fmt(a); };
-export const date = (d) => (d ? String(d).slice(0, 10).split('-').reverse().join('.') : '—');
-export const dt = (d) => (d ? new Date(d).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
-export const pct = (n) => (n === null || n === undefined ? '—' : Number(n).toFixed(1) + '%');
+export const fmt = (n, d = 0) => (n === null || n === undefined || n === '' || Number.isNaN(Number(n)) ? '--' : Number(n).toLocaleString('ru-RU', { minimumFractionDigits: d, maximumFractionDigits: d }).replace(/,/g, ' ').replace(/ /g, ' '));
+export const money = (n) => (n === null || n === undefined || n === '' || Number.isNaN(Number(n)) ? '--' : fmt(n) + ' ' + CUR);
+export const short = (n) => { if (n === null || n === undefined || n === '' || Number.isNaN(Number(n))) return '--'; const a = Math.abs(Number(n) || 0); const s = Number(n) < 0 ? '−' : ''; if (a >= 1e9) return s + (a / 1e9).toFixed(2) + ' mlrd'; if (a >= 1e6) return s + (a / 1e6).toFixed(1) + ' mln'; if (a >= 1e3) return s + (a / 1e3).toFixed(0) + ' ming'; return s + fmt(a); };
+export const date = (d) => (d ? String(d).slice(0, 10).split('-').reverse().join('.') : '--');
+export const dt = (d) => (d ? new Date(d).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '--');
+export const pct = (n) => (n === null || n === undefined || Number.isNaN(Number(n)) ? '--' : Number(n).toFixed(1) + '%');
 export const today = () => new Date().toISOString().slice(0, 10);
 export const monthNow = () => today().slice(0, 7);
 export const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -37,13 +37,13 @@ const STATUS = {
   INFO: ['info', 'Ma’lumot'], WARNING: ['warn', 'Ogohlantirish'], CRITICAL: ['crit', 'Kritik'], OK: ['good', 'Yaxshi'], WARN: ['warn', 'Diqqat'], BAD: ['crit', 'Bajarilmadi'], NO_PLAN: ['', 'Reja yo‘q'], LOSS: ['crit', 'Zarar'], LOW: ['warn', 'Past'], NO_DATA: ['', 'Ma’lumot yo‘q'], HIGH: ['crit', 'Yuqori'], MEDIUM: ['warn', 'O‘rta'],
   INCOME: ['good', 'Kirim'], EXPENSE: ['crit', 'Chiqim'], RUNNING: ['info', 'Ishlamoqda'], ERROR: ['crit', 'Xato'], EMPTY: ['', 'Bo‘sh'],
 };
-export const badge = (s, label) => { const [cls, lb] = STATUS[s] || ['', s]; return h('span', { class: 'badge ' + cls }, label || lb || s || '—'); };
+export const badge = (s, label) => { const [cls, lb] = STATUS[s] || ['', s]; return h('span', { class: 'badge ' + cls }, label || lb || s || '--'); };
 export const statusLabel = (s) => (STATUS[s] || [null, s])[1];
 export const progress = (p, cls = '') => { const v = Math.max(0, Math.min(100, Number(p) || 0)); return h('div', { class: 'progtxt' }, h('div', { class: 'prog ' + (cls || (v >= 100 ? 'good' : '')) }, h('i', { style: { width: v + '%' } })), h('span', { class: 'pct' }, v.toFixed(0) + '%')); };
 export const confBar = (c) => { const v = Number(c) || 0; return h('span', { class: 'conf' }, h('div', { class: 'prog ' + (v >= 95 ? 'good' : v >= 60 ? 'warn' : 'crit') }, h('i', { style: { width: v + '%' } })), h('span', { class: 'small tnum' }, v + '%')); };
 /** O'zgarish belgisi: +12.5% ↑ (musbat yashil, salbiy qizil); invert=true bo'lsa (xarajat) o'sish qizil */
 export const delta = (p, { invert = false, suffix = '%' } = {}) => {
-  if (p === null || p === undefined || Number.isNaN(Number(p))) return h('span', { class: 'delta flat' }, '—');
+  if (p === null || p === undefined || Number.isNaN(Number(p))) return h('span', { class: 'delta flat' }, '--');
   const v = Number(p); const up = v > 0, flat = Math.abs(v) < 0.05;
   const good = flat ? null : invert ? !up : up;
   return h('span', { class: 'delta ' + (flat ? 'flat' : good ? 'up' : 'down') }, flat ? null : icon(up ? 'arrowUp' : 'arrowDown', 13), (up ? '+' : '') + v.toFixed(1) + suffix);
@@ -120,7 +120,7 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
     if (c.badge) return badge(v);
     if (c.pct) return pct(v);
     if (c.progress) return progress(v);
-    return v === null || v === undefined ? '—' : String(v);
+    return v === null || v === undefined ? '--' : String(v);
   };
   function filtered() {
     let r = all;
@@ -165,7 +165,7 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
 export function kpiCard({ icon: ic = 'wallet', tone = 'green', label, value, unit, delta: dl, deltaLabel = 'O‘tgan oyga nisbatan', invert = false, spark, accent = false, sub, size = '', cls = '', href }) {
   const isNum = typeof value === 'number';
   const el = h(href ? 'a' : 'div', { class: `kpi-card ${size} ${accent ? 'accent' : ''} ${cls} ${href ? 'link' : ''}`, title: (isNum ? money(value) : '') + (href ? (isNum ? ' · ' : '') + 'Batafsil ko‘rish' : ''), ...(href ? { href } : {}) },
-    h('div', { class: 'top' }, h('div', { class: 'tile ' + tone }, icon(ic, 20)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'vl' + (isNum && fmt(value).length > 13 ? ' xl' : isNum && fmt(value).length > 10 ? ' lg' : '') }, isNum ? fmt(value) : value, isNum ? h('span', { class: 'un' }, unit ?? CUR) : null))),
+    h('div', { class: 'top' }, h('div', { class: 'tile ' + tone }, icon(ic, 20)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'vl' + (isNum && fmt(value).length > 13 ? ' xl' : isNum && fmt(value).length > 10 ? ' lg' : '') }, isNum ? fmt(value) : value ?? '--', isNum ? h('span', { class: 'un' }, unit ?? CUR) : null))),
     dl !== undefined ? h('div', { class: 'dl' }, delta(dl, { invert }), h('span', {}, deltaLabel)) : sub ? h('div', { class: 'dl' }, sub) : null);
   if (spark && spark.length > 1) import('./charts.js').then(({ sparkline }) => el.append(h('div', { class: 'spark' }, sparkline(spark, { color: `var(--${{ green: 's1', blue: 's3', orange: 's2', red: 'crit', violet: 's5', amber: 's4', teal: 's6', gray: 'muted-2' }[tone] || 's1'})` }))));
   return el;
@@ -175,7 +175,7 @@ export const statTile = ({ icon: ic = 'info', tone = 'green', label, value, delt
 /** Eski API: kpi(label, value, sub, cls) — sahifalar uchun qisqa karta */
 export const kpi = (label, value, sub, cls = '', ic = 'coins', tone = 'green') => kpiCard({ icon: ic, tone: cls === 'crit' ? 'red' : cls === 'warn' ? 'amber' : tone, label, value, sub, size: 'sm', accent: cls === 'hero', cls: cls === 'crit' || cls === 'warn' ? cls : '' });
 export const card = (title, body, actions, { tight = false, sub } = {}) => h('div', { class: 'card' }, title ? h('div', { class: 'card-h' }, typeof title === 'string' ? h('h3', {}, title, sub ? h('span', { class: 'sub' }, sub) : null) : title, ...(actions || [])) : null, h('div', { class: 'card-b ' + (tight ? 'tight' : '') }, body instanceof HTMLTableElement ? h('div', { class: 'tbl-wrap' }, body) : body));
-export const kv = (pairs) => h('dl', { class: 'kv' }, ...pairs.filter(Boolean).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v instanceof Node ? v : v ?? '—')]));
+export const kv = (pairs) => h('dl', { class: 'kv' }, ...pairs.filter(Boolean).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v instanceof Node ? v : v ?? '--')]));
 export const mdLite = (text) => { const el = h('div', {}); el.innerHTML = esc(text).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>'); return el; };
 export const emptyState = (title = 'Ma’lumot yo‘q', sub = '', ic = 'inbox') => h('div', { class: 'empty-state' }, icon(ic, 28), h('b', {}, title), sub ? h('div', {}, sub) : null);
 export const alert = (kind, text, ic) => h('div', { class: 'alert ' + kind }, icon(ic || (kind === 'crit' ? 'alert' : kind === 'warn' ? 'alert' : kind === 'good' ? 'check' : 'info'), 16), h('div', { class: 'grow' }, text));

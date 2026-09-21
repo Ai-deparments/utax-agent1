@@ -10,12 +10,12 @@
     "dev": "node --watch src/server.mjs",
     "seed": "node src/seed/seed.mjs",
     "seed:reset": "node src/seed/seed.mjs --reset",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test \"tests/**/*.test.mjs\"",
     "backup": "bash deploy/backup.sh",
-    "openapi": "node -e \"import('./src/server.mjs').then(m=>console.log(JSON.stringify(m.buildOpenApi(),null,2)))\""
-  },
-  "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.110.0"
+    "openapi": "node -e \"import('./src/server.mjs').then(m=>console.log(JSON.stringify(m.buildOpenApi(),null,2)))\"",
+    "check": "node scripts/check.mjs",
+    "llm:check": "node scripts/llm-check.mjs",
+    "import:excel": "node scripts/excel-import.mjs"
   },
   "license": "UNLICENSED"
 }

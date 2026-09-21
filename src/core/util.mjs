@@ -4,8 +4,35 @@ export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 export const sum = (arr, f = (x) => x) => round2(arr.reduce((a, x) => a + (Number(f(x)) || 0), 0));
 export const pct = (a, b) => (Number(b) ? round2((Number(a) / Number(b)) * 100) : 0);
 
+/** Jarayon vaqt zonasi: config.mjs TZ ni o'rnatadi (APP_TZ, default Asia/Tashkent); util config'siz import qilinsa ham shu default */
+export function appTimeZone() {
+  return process.env.TZ || process.env.APP_TZ || 'Asia/Tashkent';
+}
+const sanaFormatlar = new Map();
+function sanaFormati(tz) {
+  if (!sanaFormatlar.has(tz)) {
+    let f = null;
+    try { f = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }); } catch { /* Intl tanimaydigan TZ (masalan POSIX ':/etc/localtime') */ }
+    sanaFormatlar.set(tz, f);
+  }
+  return sanaFormatlar.get(tz);
+}
+/**
+ * Lahzaning mahalliy (jarayon TZ bo'yicha) kalendar sanasi — YYYY-MM-DD.
+ * Scheduler dailyAt ham mahalliy vaqtda (setHours) — Toshkent 00:00–04:59 da UTC sana hali kechagi kun bo'lgani uchun
+ * toISOString() ishlatilmaydi (01:00 REVENUE / 03:00 backup oldingi sana bilan ishlardi).
+ */
+export function localDate(d = new Date(), tz = appTimeZone()) {
+  const f = sanaFormati(tz);
+  if (f) {
+    const p = Object.fromEntries(f.formatToParts(d).map((x) => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+/** Bugungi biznes sana (mahalliy kalendar). Vaqt belgilari (created_at va h.k.) uchun — nowIso() (UTC) */
 export function today() {
-  return new Date().toISOString().slice(0, 10);
+  return localDate(new Date());
 }
 export function nowIso() {
   return new Date().toISOString();

@@ -36,16 +36,19 @@ export const ADAPTERS = {
   ERP: { name: 'ERP', description: 'Umumiy ERP REST (JSON) adapteri', config_schema: { base_url: '', endpoint: '/api/bank-transactions', bank_account_id: 1 }, secret_schema: { token: '' },
     async test(cfg, sec) { await fetchJson(`${cfg.base_url}${cfg.endpoint}?limit=1`, { Authorization: `Bearer ${sec.token}` }); return 'OK'; },
     async pull(cfg, sec, since) { return genericJsonRows(await fetchJson(`${cfg.base_url}${cfg.endpoint}?since=${since || ''}`, { Authorization: `Bearer ${sec.token}` })); } },
-  TELEGRAM: { name: 'Telegram', description: 'Bot orqali bildirishnomalar va buyruqlar (/balance, /debtors…)', config_schema: { alert_chat_id: '' }, secret_schema: { bot_token: '' },
-    async test(cfg, sec) {
-      const token = sec.bot_token || config.telegramToken;
-      if (!token) throw new Error('Bot tokeni kiritilmagan');
-      const res = await fetch(`https://api.telegram.org/bot${token}/getMe`); const j = await res.json().catch(() => ({}));
-      if (!j.ok) throw new Error('Bot tokeni noto‘g‘ri' + (j.description ? ` (${j.description})` : ''));
-      let msg = `Bot ulandi: @${j.result?.username}`;
-      if (cfg.alert_chat_id) {
-        const s = await (await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: cfg.alert_chat_id, text: '✅ UTAX Finance: Telegram ulanishi tekshirildi' }) })).json().catch(() => ({}));
-        msg += s.ok ? ' · test xabar chatga yuborildi' : ` · chatga yuborib bo‘lmadi (${s.description || 'chat ID noto‘g‘ri yoki bot chatga qo‘shilmagan'})`;
+  TELEGRAM: { name: 'Telegram', description: '4 ta bot: rahbar, buxgalter, so‘rov, signal (BOT_*_TOKEN .env); kritik ogohlantirishlar guruhi — alert_chat_id', config_schema: { alert_chat_id: '' }, secret_schema: {},
+    async test(cfg) {
+      const out = [];
+      for (const [key, token] of Object.entries(config.bots)) {
+        if (!token) { out.push(`${key}: token yo‘q`); continue; }
+        try { const j = await fetchJson(`https://api.telegram.org/bot${token}/getMe`); out.push(`${key}: @${j.result?.username}`); } catch (e) { out.push(`${key}: xato (${e.message})`); }
+      }
+      if (!out.some((x) => x.includes('@'))) throw new Error(out.join(' · '));
+      let msg = 'Botlar: ' + out.join(' · ');
+      const alertToken = config.bots.signal || Object.values(config.bots).find(Boolean);
+      if (cfg.alert_chat_id && alertToken) {
+        const s = await (await fetch(`https://api.telegram.org/bot${alertToken}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: cfg.alert_chat_id, text: '✅ UTAX Finance: kritik ogohlantirishlar guruhi ulandi' }) })).json().catch(() => ({}));
+        msg += s.ok ? ' · test xabar guruhga yuborildi' : ` · guruhga yuborib bo‘lmadi (${s.description || 'chat ID noto‘g‘ri yoki signal bot guruhga qo‘shilmagan'})`;
       }
       return msg;
     }, async pull() { return []; } },
@@ -57,39 +60,48 @@ export const ADAPTERS = {
       if (!res.ok) throw new Error(`Webhook javobi: HTTP ${res.status}`);
       return 'Webhook javob berdi (HTTP ' + res.status + ')';
     }, async pull() { return []; } },
-  GEMINI: { name: 'Gemini AI', description: 'Google Gemini — AI moliya chatiga erkin savollar (javoblar faqat tizimdagi real ma’lumotlar asosida)', config_schema: { model: 'gemini-flash-latest' }, secret_schema: { api_key: '' },
+  GEMINI: { name: 'Gemini AI', description: 'Google Gemini — AI javoblar uchun asosiy provayder (xato/limitda Groq). Javoblar faqat tizimdagi real ma’lumotlar asosida', config_schema: { model: 'gemini-3.6-flash' }, secret_schema: { api_key: '' },
     async test(cfg, sec) {
-      const key = sec.api_key || config.geminiKey;
+      const key = sec.api_key || config.ai.geminiKey;
       if (!key) throw new Error('API kalit kiritilmagan');
-      const model = cfg.model || 'gemini-flash-latest';
+      const model = cfg.model || config.ai.geminiModel;
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Faqat "OK" deb javob ber.' }] }] }) });
       const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`Gemini javobi: ${j.error?.message || 'HTTP ' + res.status}`);
+      if (!res.ok) throw new Error(`Gemini javobi: ${String(j.error?.message || 'HTTP ' + res.status).replaceAll(key, '***')}`);
       return `Gemini ulandi (${j.modelVersion || model})`;
+    }, async pull() { return []; } },
+  GROQ: { name: 'Groq AI', description: 'Groq — Gemini xato bersa yoki limitga yetsa AI javoblarini beradigan zaxira provayder (OpenAI-mos, tool calling)', config_schema: { model: 'openai/gpt-oss-120b' }, secret_schema: { api_key: '' },
+    async test(cfg, sec) {
+      const key = sec.api_key || config.ai.groqKey;
+      if (!key) throw new Error('API kalit kiritilmagan');
+      const model = cfg.model || config.ai.groqModel;
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Faqat "OK" deb javob ber.' }], max_tokens: 16 }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`Groq javobi: ${String(j.error?.message || 'HTTP ' + res.status).replaceAll(key, '***')}`);
+      return `Groq ulandi (${j.model || model})`;
     }, async pull() { return []; } },
   WEBHOOK_IN: { name: 'Inbound webhook', description: 'Tashqi tizim POST /api/integrations/webhook/:token orqali tranzaksiya yuboradi', config_schema: { bank_account_id: 1 }, secret_schema: { token: '' }, async test() { return 'OK'; }, async pull() { return []; } },
 };
 
 export function register(app) {
   const { r, db, audit } = app;
-  const ENV = { telegramToken: config.telegramToken, telegramAlertChat: config.telegramAlertChat, emailWebhook: config.emailWebhook, geminiKey: config.geminiKey, geminiModel: config.geminiModel };
-  /** Tizimda saqlangan Telegram/Email sozlamalarini ishga tushiradi (.env qiymatlaridan ustun); token o'zgarsa bot qayta ishga tushadi */
+  const ENV = { telegramAlertChat: config.telegramAlertChat, emailWebhook: config.emailWebhook, geminiKey: config.ai.geminiKey, geminiModel: config.ai.geminiModel, groqKey: config.ai.groqKey, groqModel: config.ai.groqModel };
+  /** Tizimda saqlangan sozlamalar .env qiymatlaridan ustun: Telegram kritik guruhi, Email webhook, Gemini/Groq kalitlari (shifrlangan). Bot tokenlari — faqat .env (BOT_*_TOKEN). */
   async function applyRuntime() {
     const tg = db.get("SELECT * FROM integrations WHERE type='TELEGRAM' AND is_active=1 ORDER BY id DESC LIMIT 1");
-    const tgCfg = tg ? parseJson(tg.config, {}) : {}, tgSec = tg ? parseJson(decryptSecret(tg.secret_config) || '{}', {}) : {};
-    const prevToken = config.telegramToken;
-    config.telegramToken = tgSec.bot_token || ENV.telegramToken;
+    const tgCfg = tg ? parseJson(tg.config, {}) : {};
     config.telegramAlertChat = tgCfg.alert_chat_id || ENV.telegramAlertChat;
     const em = db.get("SELECT * FROM integrations WHERE type='EMAIL' AND is_active=1 ORDER BY id DESC LIMIT 1");
     config.emailWebhook = (em && parseJson(em.config, {}).webhook_url) || ENV.emailWebhook;
     const gm = db.get("SELECT * FROM integrations WHERE type='GEMINI' AND is_active=1 ORDER BY id DESC LIMIT 1");
-    config.geminiKey = (gm && parseJson(decryptSecret(gm.secret_config) || '{}', {}).api_key) || ENV.geminiKey;
-    config.geminiModel = (gm && parseJson(gm.config, {}).model) || ENV.geminiModel;
-    if (app.botEnabled && prevToken !== config.telegramToken) {
-      app.telegram?.stop?.();
-      const { startTelegramBot } = await import('../telegram/bot.mjs');
-      app.telegram = startTelegramBot(app);
-    }
+    const gq = db.get("SELECT * FROM integrations WHERE type='GROQ' AND is_active=1 ORDER BY id DESC LIMIT 1");
+    const before = JSON.stringify([config.ai.geminiKey, config.ai.geminiModel, config.ai.groqKey, config.ai.groqModel]);
+    config.ai.geminiKey = (gm && parseJson(decryptSecret(gm.secret_config) || '{}', {}).api_key) || ENV.geminiKey;
+    config.ai.geminiModel = (gm && parseJson(gm.config, {}).model) || ENV.geminiModel;
+    config.ai.groqKey = (gq && parseJson(decryptSecret(gq.secret_config) || '{}', {}).api_key) || ENV.groqKey;
+    config.ai.groqModel = (gq && parseJson(gq.config, {}).model) || ENV.groqModel;
+    // Kalit yoki model o'zgarsa AI zanjiri yangi sozlama bilan qayta yaratiladi
+    if (JSON.stringify([config.ai.geminiKey, config.ai.geminiModel, config.ai.groqKey, config.ai.groqModel]) !== before) app.services.ai?.resetLlm?.();
   }
   app.services.applyIntegrationsRuntime = applyRuntime;
   applyRuntime();
@@ -114,7 +126,11 @@ export function register(app) {
       throw badRequest('Sync xato: ' + e.message);
     }
   }
-  app.services.integrations = { sync, ADAPTERS };
+  app.services.integrations = {
+    sync, ADAPTERS,
+    list() { return db.all('SELECT * FROM integrations ORDER BY id').map(view); },
+    get(id) { return db.get('SELECT * FROM integrations WHERE id=?', id); },
+  };
 
   r.get('/api/integrations', { perm: ['integrations', 'VIEW'], tags: ['integrations'], summary: 'Integratsiyalar' }, async () => db.all('SELECT * FROM integrations ORDER BY id').map(view));
   r.post('/api/integrations/ledger-upload', { perm: ['integrations', 'EDIT'], tags: ['integrations'], summary: 'Moliya jurnalini (Excel) yuklash: {xlsx_base64, file_name, preview?}' }, async (ctx) => {
@@ -168,7 +184,7 @@ export function register(app) {
     audit(ctx, { action: 'CREATE', entity: 'integration', entityId: id, newValue: { type: b.type, name: b.name } });
     const out = view(db.get('SELECT * FROM integrations WHERE id=?', id));
     if (b.type === 'WEBHOOK_IN') out.webhook_url = `/api/integrations/webhook/${sec.token}`;
-    if (['TELEGRAM', 'EMAIL', 'GEMINI'].includes(b.type)) await applyRuntime();
+    if (['TELEGRAM', 'EMAIL', 'GEMINI', 'GROQ'].includes(b.type)) await applyRuntime();
     return out;
   });
   r.patch('/api/integrations/:id', { perm: ['integrations', 'EDIT'], tags: ['integrations'], summary: 'Integratsiyani tahrirlash' }, async (ctx) => {
@@ -181,7 +197,7 @@ export function register(app) {
     if (b.secret_config !== undefined) { const old = parseJson(decryptSecret(i.secret_config) || '{}', {}); const merged = { ...old }; for (const [k, v] of Object.entries(b.secret_config)) if (v && !String(v).includes('••')) merged[k] = v; upd.secret_config = encryptSecret(JSON.stringify(merged)); }
     db.update('integrations', i.id, upd);
     audit(ctx, { action: 'UPDATE', entity: 'integration', entityId: i.id, newValue: { name: b.name, config: b.config, secrets_changed: !!b.secret_config } });
-    if (['TELEGRAM', 'EMAIL', 'GEMINI'].includes(i.type)) await applyRuntime();
+    if (['TELEGRAM', 'EMAIL', 'GEMINI', 'GROQ'].includes(i.type)) await applyRuntime();
     return view(db.get('SELECT * FROM integrations WHERE id=?', i.id));
   });
   r.post('/api/integrations/:id/test', { perm: ['integrations', 'EDIT'], tags: ['integrations'], summary: 'Ulanishni tekshirish' }, async (ctx) => {

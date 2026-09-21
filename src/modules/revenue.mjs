@@ -184,6 +184,21 @@ export function register(app) {
       }
       return out;
     },
+    /**
+     * Tan olish yozuvlari {status, from, to, limit?, offset?}. limit berilmasa — cheklovsiz (web «Hisobotlar» eksporti
+     * kesilmasligi uchun, refaktordan oldingi xulq); bot/AI kerak bo'lsa o'zi limit beradi. offset — sahifalash uchun.
+     */
+    listRecognitions(q = {}) {
+      const w = ['1=1'], p = [];
+      if (q.status) { w.push('rr.status=?'); p.push(q.status); }
+      if (q.from) { w.push('rr.recognized_at>=?'); p.push(q.from); }
+      if (q.to) { w.push('rr.recognized_at<=?'); p.push(q.to); }
+      const butun = (v) => Math.min(1e9, Number.parseInt(v, 10) || 0); // SQL ga faqat oqilona butun son tushadi
+      const limit = butun(q.limit), offset = butun(q.offset);
+      // SQLite: OFFSET faqat LIMIT bilan ishlaydi — limitsiz sahifa uchun LIMIT -1
+      const sahifa = limit > 0 || offset > 0 ? ` LIMIT ${limit > 0 ? limit : -1}${offset > 0 ? ` OFFSET ${offset}` : ''}` : '';
+      return db.all(`SELECT rr.*, c.contract_number, co.name AS company_name, st.code AS service_code FROM revenue_recognition rr JOIN contracts c ON c.id=rr.contract_id JOIN companies co ON co.id=c.company_id JOIN service_types st ON st.id=c.service_type_id WHERE ${w.join(' AND ')} ORDER BY rr.recognized_at DESC, rr.id DESC${sahifa}`, ...p);
+    },
   };
   app.services.revenue = svc;
 
@@ -197,13 +212,7 @@ export function register(app) {
       cash_received: round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE reversed_at IS NULL AND paid_at BETWEEN ? AND ?', p.from, p.to).s),
     };
   });
-  r.get('/api/revenue/recognitions', { perm: ['revenue', 'VIEW'], tags: ['revenue'], summary: 'Tan olish yozuvlari', query: ['status', 'from', 'to'] }, async (ctx) => {
-    const w = ['1=1'], p = [];
-    if (ctx.query.status) { w.push('rr.status=?'); p.push(ctx.query.status); }
-    if (ctx.query.from) { w.push('rr.recognized_at>=?'); p.push(ctx.query.from); }
-    if (ctx.query.to) { w.push('rr.recognized_at<=?'); p.push(ctx.query.to); }
-    return db.all(`SELECT rr.*, c.contract_number, co.name AS company_name, st.code AS service_code FROM revenue_recognition rr JOIN contracts c ON c.id=rr.contract_id JOIN companies co ON co.id=c.company_id JOIN service_types st ON st.id=c.service_type_id WHERE ${w.join(' AND ')} ORDER BY rr.recognized_at DESC, rr.id DESC`, ...p);
-  });
+  r.get('/api/revenue/recognitions', { perm: ['revenue', 'VIEW'], tags: ['revenue'], summary: 'Tan olish yozuvlari (limit berilmasa — hammasi)', query: ['status', 'from', 'to', 'limit', 'offset'] }, async (ctx) => svc.listRecognitions(ctx.query));
   r.get('/api/revenue/events', { perm: ['revenue', 'VIEW'], tags: ['revenue'], summary: 'Pul holati eventlari (advance/recognized/refund)', query: ['state'] }, async (ctx) =>
     db.all(`SELECT re.*, c.contract_number, co.name AS company_name FROM revenue_events re JOIN contracts c ON c.id=re.contract_id JOIN companies co ON co.id=c.company_id ${ctx.query.state ? 'WHERE re.state=?' : ''} ORDER BY re.event_date DESC, re.id DESC`, ...(ctx.query.state ? [ctx.query.state] : [])));
   r.post('/api/revenue/recognize', { perm: ['revenue', 'CREATE'], tags: ['revenue'], summary: 'Qo‘lda / milestone tan olish' }, async (ctx) => {

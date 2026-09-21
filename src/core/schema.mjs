@@ -202,6 +202,93 @@ CREATE INDEX IF NOT EXISTS ix_audit_entity ON audit_logs(entity, entity_id);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_logs(ts);
 `,
   },
+  {
+    version: 2,
+    name: 'telegram_bots',
+    sql: `
+ALTER TABLE users ADD COLUMN telegram_user_id TEXT;
+ALTER TABLE users ADD COLUMN telegram_username TEXT;
+ALTER TABLE users ADD COLUMN telegram_linked_at TEXT;
+ALTER TABLE users ADD COLUMN telegram_link_expires TEXT;
+ALTER TABLE users ADD COLUMN tg_quiet_from TEXT;
+ALTER TABLE users ADD COLUMN tg_quiet_to TEXT;
+UPDATE users SET telegram_user_id = telegram_chat_id
+  WHERE id IN (SELECT MAX(id) FROM users WHERE telegram_chat_id IS NOT NULL AND telegram_chat_id NOT LIKE '-%' GROUP BY telegram_chat_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_tg ON users(telegram_user_id);
+
+CREATE TABLE IF NOT EXISTS bot_chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER REFERENCES users(id), bot_key TEXT NOT NULL, chat_id TEXT NOT NULL,
+  tg_user_id TEXT, tg_username TEXT, started_at TEXT NOT NULL, last_seen_at TEXT, blocked_at TEXT, UNIQUE(bot_key, chat_id));
+CREATE INDEX IF NOT EXISTS ix_bot_chats_user ON bot_chats(user_id);
+CREATE TABLE IF NOT EXISTS bot_dialogs (key TEXT PRIMARY KEY, state TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS notification_prefs (
+  user_id INTEGER NOT NULL REFERENCES users(id), type TEXT NOT NULL, telegram INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, type));
+
+ALTER TABLE notifications ADD COLUMN bot_key TEXT;
+ALTER TABLE notifications ADD COLUMN parent_id INTEGER;
+ALTER TABLE notifications ADD COLUMN tg_chat_id TEXT;
+ALTER TABLE notifications ADD COLUMN tg_message_id TEXT;
+ALTER TABLE notifications ADD COLUMN attempts INTEGER DEFAULT 0;
+ALTER TABLE notifications ADD COLUMN next_try_at TEXT;
+CREATE INDEX IF NOT EXISTS ix_notif_channel ON notifications(channel, sent_at);
+`,
+  },
+  {
+    version: 3,
+    name: 'ai_memory',
+    sql: `
+ALTER TABLE ai_conversations ADD COLUMN provider TEXT;
+ALTER TABLE ai_conversations ADD COLUMN model TEXT;
+ALTER TABLE ai_conversations ADD COLUMN tools TEXT;
+CREATE INDEX IF NOT EXISTS ix_aiconv_user_channel ON ai_conversations(user_id, channel, id);
+`,
+  },
+  {
+    version: 4,
+    name: 'telegram_auth_hardening',
+    sql: `
+-- Sessiya qayerdan ochilgan: WEB (parol/2FA) | TELEGRAM (Mini App, tg_user_id bilan) — Telegram uzilsa/boshqa hisobga o'tsa shu sessiyalar yopiladi
+ALTER TABLE sessions ADD COLUMN source TEXT;
+ALTER TABLE sessions ADD COLUMN tg_user_id TEXT;
+CREATE INDEX IF NOT EXISTS ix_sessions_user_source ON sessions(user_id, source);
+-- main'dagi muddatsiz eski bog'lash kodlari (telegram_link_expires yo'q) — bekor qilinadi
+UPDATE users SET telegram_link_code=NULL WHERE telegram_link_code IS NOT NULL AND telegram_link_expires IS NULL;
+`,
+  },
+  {
+    version: 5,
+    name: 'excel_import_nullable',
+    // Excel jurnalida shartnoma sanasi, xizmat holati yo'q — o'ylab topilmaydi, NULL saqlanadi ('--').
+    // SQLite ustun cheklovini ALTER bilan olib tashlamaydi → jadval qayta quriladi (ma'lumot, id, indekslar, FK saqlanadi).
+    rebuild: ['contracts'],
+    sql: `
+CREATE TEMP TABLE _v5_seq AS SELECT seq FROM sqlite_sequence WHERE name='contracts';
+CREATE TABLE contracts_v5 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, contract_number TEXT UNIQUE NOT NULL,
+  company_id INTEGER NOT NULL REFERENCES companies(id), service_type_id INTEGER NOT NULL REFERENCES service_types(id),
+  title TEXT, amount REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'UZS',
+  contract_date TEXT, start_date TEXT, end_date TEXT,
+  advance_pct REAL DEFAULT 0, advance_amount REAL DEFAULT 0, expected_final_payment REAL DEFAULT 0,
+  advance_due_date TEXT, payment_due_date TEXT,
+  manager_user_id INTEGER REFERENCES users(id),
+  contract_status TEXT NOT NULL DEFAULT 'DRAFT', service_status TEXT DEFAULT 'NOT_STARTED',
+  payment_status TEXT NOT NULL DEFAULT 'EXPECTED',
+  service_completed_at TEXT, comments TEXT, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT);
+INSERT INTO contracts_v5 (id, contract_number, company_id, service_type_id, title, amount, currency, contract_date, start_date, end_date,
+  advance_pct, advance_amount, expected_final_payment, advance_due_date, payment_due_date, manager_user_id, contract_status, service_status,
+  payment_status, service_completed_at, comments, created_by, created_at, updated_at)
+SELECT id, contract_number, company_id, service_type_id, title, amount, currency, contract_date, start_date, end_date,
+  advance_pct, advance_amount, expected_final_payment, advance_due_date, payment_due_date, manager_user_id, contract_status, service_status,
+  payment_status, service_completed_at, comments, created_by, created_at, updated_at FROM contracts;
+DROP TABLE contracts;
+ALTER TABLE contracts_v5 RENAME TO contracts;
+CREATE INDEX IF NOT EXISTS ix_contracts_company ON contracts(company_id);
+CREATE INDEX IF NOT EXISTS ix_contracts_status ON contracts(contract_status);
+UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE((SELECT MAX(seq) FROM temp._v5_seq), 0)) WHERE name='contracts';
+DROP TABLE temp._v5_seq;
+`,
+  },
 ];
 
 export function migrate(db) {
@@ -209,9 +296,20 @@ export function migrate(db) {
   const applied = new Set(db.all('SELECT version FROM schema_migrations').map((r) => r.version));
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
-    db.tx(() => {
-      db.exec(m.sql);
-      db.run('INSERT INTO schema_migrations (version,name,applied_at) VALUES (?,?,?)', m.version, m.name, new Date().toISOString());
-    });
+    // Jadvalni qayta qurish (m.rebuild): SQLite hujjatidagi tartib — FK tekshiruvi tranzaksiyadan TASHQARIDA o'chiriladi
+    // (aks holda DROP TABLE bola jadvallardagi havolalarni buzadi), oxirida foreign_key_check bilan tekshiriladi.
+    if (m.rebuild) db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      db.tx(() => {
+        db.exec(m.sql);
+        if (m.rebuild) {
+          const bad = db.all('PRAGMA foreign_key_check').filter((x) => m.rebuild.includes(x.table) || m.rebuild.includes(x.parent));
+          if (bad.length) throw new Error(`Migratsiya ${m.version}: FK buzildi (${bad.length} ta, masalan ${bad[0].table}#${bad[0].rowid} → ${bad[0].parent})`);
+        }
+        db.run('INSERT INTO schema_migrations (version,name,applied_at) VALUES (?,?,?)', m.version, m.name, new Date().toISOString());
+      });
+    } finally {
+      if (m.rebuild) db.exec('PRAGMA foreign_keys = ON');
+    }
   }
 }

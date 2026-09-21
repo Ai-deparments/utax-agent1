@@ -32,9 +32,11 @@ import * as integrations from './modules/integrations.mjs';
 import * as ai from './modules/ai.mjs';
 import * as auditMod from './modules/audit.mjs';
 import * as settingsMod from './modules/settings.mjs';
-import { startTelegramBot } from './telegram/bot.mjs';
+import * as botsMod from './modules/bots.mjs';
+import { startBots, registerBotJobs, botCatalog } from './bots/index.mjs';
+import { ensureOwners } from './bots/shared/owners.mjs';
 
-const MODULES = [auth, users, companies, contracts, revenue, banking, reconciliation, approvals, expenses, receivables, payroll, budget, reports, forecast, notifications, integrations, ai, auditMod, settingsMod];
+const MODULES = [auth, users, companies, contracts, revenue, banking, reconciliation, approvals, expenses, receivables, payroll, budget, reports, forecast, notifications, integrations, ai, auditMod, settingsMod, botsMod];
 
 export function createApp({ dbPath = config.dbPath } = {}) {
   const db = openDb(dbPath);
@@ -45,9 +47,11 @@ export function createApp({ dbPath = config.dbPath } = {}) {
   const audit = createAudit(db);
   const scheduler = createScheduler({ db, log: console });
   const r = new Router();
-  const app = { r, db, rbac, settings, audit, scheduler, services: {}, config };
+  const app = { r, db, rbac, settings, audit, scheduler, services: {}, config, bots: null };
+  app.botCatalog = () => botCatalog(app);
   for (const m of MODULES) m.register(app);
   registerJobs(app);
+  registerBotJobs(app);
   return app;
 }
 
@@ -84,6 +88,8 @@ function frontendBuild() {
   try { walk(config.publicDir); } catch {}
   return Math.floor(max).toString(36);
 }
+// Telegram Mini App: web.telegram.org ilovani iframe'da ochadi — faqat Telegram domenlariga ruxsat (X-Frame-Options'dan ustun)
+const FRAME_ANCESTORS = "frame-ancestors 'self' https://web.telegram.org https://webk.telegram.org https://webz.telegram.org";
 function serveStatic(reqPath, res) {
   let versioned = false;
   const vm = /^\/v\/[a-z0-9]+(\/.*)$/.exec(reqPath);
@@ -98,10 +104,10 @@ function serveStatic(reqPath, res) {
   if (p === path.join(config.publicDir, 'index.html')) {
     const build = frontendBuild();
     const html = fs.readFileSync(p, 'utf8').replace(/(href|src)="\/(css|js)\//g, `$1="/v/${build}/$2/`).replace('<head>', `<head>\n<meta name="app-build" content="${build}">`);
-    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'Content-Security-Policy': FRAME_ANCESTORS });
     return res.end(html);
   }
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': versioned ? 'public, max-age=31536000, immutable' : 'no-cache' });
+  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': versioned ? 'public, max-age=31536000, immutable' : 'no-cache', ...(ext === '.html' ? { 'Content-Security-Policy': FRAME_ANCESTORS } : {}) });
   fs.createReadStream(p).pipe(res);
 }
 const SWAGGER = `<!doctype html><html><head><meta charset="utf-8"><title>UTAX Finance API</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="ui"></div><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/api/openapi.json',dom_id:'#ui',persistAuthorization:true})</script></body></html>`;
@@ -116,6 +122,10 @@ export function createServer(app) {
     res.setHeader('Referrer-Policy', 'same-origin');
     const { path: p, query } = parseUrl(req);
     try {
+      if (p.startsWith('/telegram/') && req.method === 'POST') {
+        if (!app.bots) { res.writeHead(404); return res.end(); }
+        return await app.bots.handleWebhook(p.slice('/telegram/'.length).replace(/\/$/, ''), req, res);
+      }
       if (!p.startsWith('/api/')) return serveStatic(p === '/' ? '/index.html' : p, res);
       if (p === '/api/health') return sendJson(res, 200, { ok: true, time: new Date().toISOString(), version: '1.0.0', build: frontendBuild() });
       if (p === '/api/openapi.json') { openapiCache ??= _buildOpenApi(app.r); return sendJson(res, 200, openapiCache); }
@@ -155,15 +165,21 @@ export async function main() {
     const { seed } = await import('./seed/seed.mjs');
     await seed(app);
   }
+  if (config.admin.email) {
+    const { ensureBootstrapAdmin } = await import('./core/bootstrap.mjs');
+    const a = ensureBootstrapAdmin(app, config.admin);
+    console.log(`[admin] ADMIN_EMAIL: ${a.action}${a.reason ? ' — ' + a.reason : ''}`);
+  }
   app.services.contracts.recomputeAll();
+  if (config.botOwnerIds.length) { ensureOwners(app, config.botOwnerIds); console.log(`[bots] egalar (FOUNDER): ${config.botOwnerIds.length} ta Telegram id`); }
   const server = createServer(app);
   server.listen(config.port, config.host, () => {
     console.log(`UTAX Finance CRM → http://${config.host}:${config.port}  (API docs: /api/docs)`);
     app.scheduler.start();
-    app.botEnabled = true;
-    app.telegram = startTelegramBot(app);
+    if (config.botMode === 'off') console.log('[bots] BOT_MODE=off — Telegram botlar o‘chirilgan');
+    else startBots(app).catch((e) => console.error('[bots] ishga tushmadi:', e));
   });
-  const shutdown = () => { console.log('shutting down'); app.scheduler.stop(); app.telegram?.stop?.(); server.close(() => { app.db.close(); process.exit(0); }); setTimeout(() => process.exit(0), 3000).unref(); };
+  const shutdown = () => { console.log('shutting down'); app.scheduler.stop(); Promise.resolve(app.bots?.stop()).catch(() => {}); server.close(() => { app.db.close(); process.exit(0); }); setTimeout(() => process.exit(0), 3000).unref(); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   return { app, server };

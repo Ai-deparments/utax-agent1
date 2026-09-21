@@ -13,7 +13,8 @@ Brauzer (SPA, public/)  ──HTTP/JSON──▶  src/server.mjs (node:http)
    ai (intent router | LLM gateway | 14 agents | ai_actions) ─▶ propose → human → execute → audit
                                           ▼
                               src/core/db.mjs (node:sqlite, WAL)  ·  scheduler  ·  audit_logs
-Telegram bot (long polling) ──▶ ai.chat / approvals.decide (source=TELEGRAM)
+4 Telegram bot (src/bots: polling | webhook) ──▶ o‘sha app.services + app.rbac (source=TELEGRAM) — docs/BOTS.md
+notifications.notify ──▶ CRM + TELEGRAM navbat ──▶ dispatcher ──▶ @utax_signal_bot (zaxira: foydalanuvchi ochgan boshqa bot)
 Integrations (adapters) ──▶ banking.importRows ──▶ reconciliation.autoMatch
 ```
 

@@ -3,6 +3,9 @@ import { nowIso, today, round2, monthRange, monthOf, addMonths, pct, addDays, da
 
 export function register(app) {
   const { r, db, audit, settings } = app;
+  // Pul qoldig'i: boshlang'ich qoldiq kiritilmagan hisob bo'lsa noma'lum (null) — reja/fakt 'NO_DATA', 0 deb solishtirilmaydi
+  const cashAsOf = (asOf) => { const b = app.services.banking.bankBalance(asOf).total, c = app.services.banking.cashBalance(asOf).total; return b === null || c === null ? null : round2(b + c); };
+  const cashItem = (planCash, cash, item) => (cash === null ? { key: 'Cash', name: 'Pul qoldig‘i', plan: round2(planCash), fact: null, pct: null, diff: null, status: 'NO_DATA' } : item('Pul qoldig‘i', 'Cash', planCash, cash));
   const svc = {
     planFact(period) {
       const plan = db.get('SELECT * FROM plans WHERE period=?', period) || { period, revenue_plan: 0, expense_plan: 0, profit_plan: 0, cash_plan: 0, collection_plan: 0 };
@@ -11,10 +14,10 @@ export function register(app) {
       const expense = round2(app.services.expenses.total(from, to));
       const profit = round2(revenue - expense);
       const asOf = to < today() ? to : today();
-      const cash = round2(app.services.banking.bankBalance(asOf).total + app.services.banking.cashBalance(asOf).total);
+      const cash = cashAsOf(asOf);
       const collection = round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE reversed_at IS NULL AND paid_at BETWEEN ? AND ?', from, to).s);
       const item = (name, key, p, f, lowerIsBetter = false) => ({ key, name, plan: round2(p), fact: f, pct: pct(f, p), diff: round2(f - p), status: !p ? 'NO_PLAN' : lowerIsBetter ? (f <= p ? 'OK' : (f <= p * (1 + Number(settings.get('planfact.tolerance_pct') || 10) / 100) ? 'WARN' : 'BAD')) : (f >= p ? 'OK' : (f >= p * (1 - Number(settings.get('planfact.tolerance_pct') || 10) / 100) ? 'WARN' : 'BAD')) });
-      return { period, items: [item('Daromad', 'Revenue', plan.revenue_plan, revenue), item('Xarajat', 'Expense', plan.expense_plan, expense, true), item('Foyda', 'Profit', plan.profit_plan, profit), item('Pul qoldig‘i', 'Cash', plan.cash_plan, cash), item('Undirish', 'Collection', plan.collection_plan, collection)], plan };
+      return { period, items: [item('Daromad', 'Revenue', plan.revenue_plan, revenue), item('Xarajat', 'Expense', plan.expense_plan, expense, true), item('Foyda', 'Profit', plan.profit_plan, profit), cashItem(plan.cash_plan, cash, item), item('Undirish', 'Collection', plan.collection_plan, collection)], plan };
     },
     /** Ixtiyoriy oraliq: oylik rejalar kunlar bo'yicha proporsional taqsimlanadi; pul rejasi — tugash sanasi oyining rejasi */
     planFactRange(from, to) {
@@ -30,17 +33,24 @@ export function register(app) {
       const revenue = round2(app.services.revenue.recognizedInPeriod(from, to));
       const expense = round2(app.services.expenses.total(from, to));
       const asOf = to < today() ? to : today();
-      const cash = round2(app.services.banking.bankBalance(asOf).total + app.services.banking.cashBalance(asOf).total);
+      const cash = cashAsOf(asOf);
       const collection = round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE reversed_at IS NULL AND paid_at BETWEEN ? AND ?', from, to).s);
       const tol = Number(settings.get('planfact.tolerance_pct') || 10) / 100;
       const item = (name, key, p, f, lowerIsBetter = false) => ({ key, name, plan: round2(p), fact: f, pct: pct(f, p), diff: round2(f - p), status: !p ? 'NO_PLAN' : lowerIsBetter ? (f <= p ? 'OK' : f <= p * (1 + tol) ? 'WARN' : 'BAD') : (f >= p ? 'OK' : f >= p * (1 - tol) ? 'WARN' : 'BAD') });
-      return { period: `${from} → ${to}`, from, to, months, items: [item('Daromad', 'Revenue', plan.revenue_plan, revenue), item('Xarajat', 'Expense', plan.expense_plan, expense, true), item('Foyda', 'Profit', plan.profit_plan, round2(revenue - expense)), item('Pul qoldig‘i', 'Cash', plan.cash_plan, cash), item('Undirish', 'Collection', plan.collection_plan, collection)], plan: Object.fromEntries(Object.entries(plan).map(([k, v]) => [k, round2(v)])) };
+      return { period: `${from} → ${to}`, from, to, months, items: [item('Daromad', 'Revenue', plan.revenue_plan, revenue), item('Xarajat', 'Expense', plan.expense_plan, expense, true), item('Foyda', 'Profit', plan.profit_plan, round2(revenue - expense)), cashItem(plan.cash_plan, cash, item), item('Undirish', 'Collection', plan.collection_plan, collection)], plan: Object.fromEntries(Object.entries(plan).map(([k, v]) => [k, round2(v)])) };
     },
     series(months = 6, asOf = today()) {
       const out = [];
       let p = addMonths(monthOf(asOf), -(months - 1));
       for (let i = 0; i < months; i++) { const pf = svc.planFact(p); out.push({ period: p, revenue_plan: pf.items[0].plan, revenue_fact: pf.items[0].fact, expense_plan: pf.items[1].plan, expense_fact: pf.items[1].fact, profit_plan: pf.items[2].plan, profit_fact: pf.items[2].fact }); p = addMonths(p, 1); }
       return out;
+    },
+    /** Bo'lim/kategoriya byudjeti va fakt bajarilishi */
+    budgets(period) {
+      const { from, to } = monthRange(period);
+      return db.all(`SELECT b.*, d.name AS department_name, ec.name AS category_name,
+          COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND (b.department_id IS NULL OR e.department_id=b.department_id) AND (b.category_id IS NULL OR e.category_id=b.category_id)),0) AS fact
+        FROM budgets b LEFT JOIN departments d ON d.id=b.department_id LEFT JOIN expense_categories ec ON ec.id=b.category_id WHERE b.period=? ORDER BY d.name`, from, to, period).map((x) => ({ ...x, pct: pct(x.fact, x.amount), exceeded: x.fact > x.amount }));
     },
   };
   app.services.budget = svc;
@@ -80,11 +90,7 @@ export function register(app) {
       }
       return [...groups.values()].map((x) => { const fact = db.get("SELECT COALESCE(SUM(e.amount),0) s FROM expenses e WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND (? IS NULL OR e.department_id=?) AND (? IS NULL OR e.category_id=?)", F, T, x.department_id, x.department_id, x.category_id, x.category_id).s; const amount = round2(x.amount); return { ...x, amount, fact, pct: pct(fact, amount), exceeded: fact > amount }; }).sort((a, b) => String(a.department_name || '').localeCompare(String(b.department_name || '')));
     }
-    const period = ctx.query.month || monthOf(today());
-    const { from, to } = monthRange(period);
-    return db.all(`SELECT b.*, d.name AS department_name, ec.name AS category_name,
-        COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND (b.department_id IS NULL OR e.department_id=b.department_id) AND (b.category_id IS NULL OR e.category_id=b.category_id)),0) AS fact
-      FROM budgets b LEFT JOIN departments d ON d.id=b.department_id LEFT JOIN expense_categories ec ON ec.id=b.category_id WHERE b.period=? ORDER BY d.name`, from, to, period).map((x) => ({ ...x, pct: pct(x.fact, x.amount), exceeded: x.fact > x.amount }));
+    return svc.budgets(ctx.query.month || monthOf(today()));
   });
   r.put('/api/budgets', { perm: ['planfact', 'EDIT'], tags: ['planfact'], summary: 'Byudjet qatori {period, department_id, category_id, amount}' }, async (ctx) => {
     const b = ctx.body || {};

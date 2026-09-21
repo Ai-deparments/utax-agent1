@@ -28,6 +28,7 @@ export function register(app) {
 
   const svc = {
     suggestCategory,
+    categories() { return db.all('SELECT id, code, name, pnl_group FROM expense_categories WHERE is_active=1 ORDER BY sort, name'); },
     nextCode() {
       const last = db.get("SELECT code FROM expenses WHERE code LIKE 'EXP-%' ORDER BY CAST(substr(code,5) AS INTEGER) DESC LIMIT 1");
       return padCode('EXP', last ? Number(last.code.slice(4)) + 1 : 1);
@@ -41,11 +42,21 @@ export function register(app) {
       if (f.to) { w.push('e.expense_date<=?'); p.push(f.to); }
       if (f.contract_id) { w.push('e.contract_id=?'); p.push(f.contract_id); }
       if (f.q) { w.push('(e.purpose LIKE ? OR e.code LIKE ? OR e.counterparty LIKE ?)'); p.push(`%${f.q}%`, `%${f.q}%`, `%${f.q}%`); }
+      // Scope — svc.visibleTo bilan bir xil (bitta xarajat kartasi ham shu qoida bilan ochiladi)
       if (user?.role_code === 'EMPLOYEE') { w.push('e.requested_by=?'); p.push(user.id); }
       if (user?.role_code === 'DEPARTMENT_HEAD' && user.department_id) { w.push('(e.department_id=? OR e.requested_by=?)'); p.push(user.department_id, user.id); }
       return db.all(`${SELECT} WHERE ${w.join(' AND ')} ORDER BY e.expense_date DESC, e.id DESC LIMIT 2000`, ...p).map((e) => ({ ...e, approval_steps: parseJson(e.approval_steps, null) }));
     },
     get(id) { const e = db.get(`${SELECT} WHERE e.id=?`, id); return e ? { ...e, approval_steps: parseJson(e.approval_steps, null) } : null; },
+    /** Xarajatni shu foydalanuvchi ko'ra oladimi — list() dagi scope: EMPLOYEE → o'z so'rovi, DEPARTMENT_HEAD → o'z bo'limi yoki o'zi */
+    visibleTo(e, user) {
+      if (!e || !user) return false;
+      if (user.role_code === 'EMPLOYEE') return e.requested_by === user.id;
+      if (user.role_code === 'DEPARTMENT_HEAD' && user.department_id) return e.department_id === user.department_id || e.requested_by === user.id;
+      return true;
+    },
+    /** Bitta xarajat (scope bilan): ko'rinmasa null — "topilmadi" */
+    getFor(id, user) { const e = svc.get(id); return svc.visibleTo(e, user) ? e : null; },
     /** Xodim so'rovi → approval engine */
     request(b, ctx) {
       if (!b.amount || !b.purpose) throw badRequest('amount va purpose majburiy');
@@ -129,14 +140,14 @@ export function register(app) {
     },
     /** Davr bo'yicha xarajatlar (accrual: APPROVED+PAID, expense_date bo'yicha) */
     totalsByGroup(from, to) {
-      return db.all(`SELECT COALESCE(ec.pnl_group,'OTHER_OPEX') AS pnl_group, COALESCE(SUM(e.amount),0) AS amount, COUNT(*) AS n FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id
+      // Kategoriyasiz xarajat (masalan Excel'dagi erkin matn) — taxminan boshqa guruhga qo'shilmaydi, alohida UNCATEGORIZED
+      return db.all(`SELECT COALESCE(ec.pnl_group,'UNCATEGORIZED') AS pnl_group, COALESCE(SUM(e.amount),0) AS amount, COUNT(*) AS n FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id
         WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? GROUP BY 1`, from, to);
     },
     totalsByCategory(from, to) {
       return db.all(`SELECT ec.id, ec.code, ec.name, ec.pnl_group, COALESCE(SUM(e.amount),0) AS amount, COUNT(e.id) AS n FROM expense_categories ec LEFT JOIN expenses e ON e.category_id=ec.id AND e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ?
-        WHERE ec.is_active=1 GROUP BY ec.id ORDER BY amount DESC`, from, to)
-        .concat((() => { const u = db.get("SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*) AS n FROM expenses WHERE category_id IS NULL AND reversed_at IS NULL AND status IN ('APPROVED','PAID') AND expense_date BETWEEN ? AND ?", from, to); return u.n ? [{ id: null, code: 'UNCATEGORIZED', name: 'Kategoriyasiz (belgilash kerak)', pnl_group: 'OTHER_OPEX', amount: u.amount, n: u.n }] : []; })())
-        .sort((a, b) => b.amount - a.amount);
+        WHERE ec.is_active=1 GROUP BY ec.id ORDER BY amount DESC`, from, to).concat(db.all(`SELECT NULL AS id, NULL AS code, 'Kategoriyasiz' AS name, 'UNCATEGORIZED' AS pnl_group, SUM(e.amount) AS amount, COUNT(*) AS n FROM expenses e
+        WHERE e.category_id IS NULL AND e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? HAVING COUNT(*) > 0`, from, to));
     },
     total(from, to) { return db.get("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE reversed_at IS NULL AND status IN ('APPROVED','PAID') AND expense_date BETWEEN ? AND ?", from, to).s; },
     /** asOf berilsa: shu sanagacha sanalangan, shu sanada hali to'lanmagan tasdiqlangan xarajatlar */
@@ -206,7 +217,7 @@ export function register(app) {
   r.post('/api/expenses/categorize', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'AI kategoriya taklifi {text}' }, async (ctx) => suggestCategory(ctx.body?.text));
   r.post('/api/expenses/request', { perm: ['expenses', 'CREATE'], tags: ['expenses'], summary: 'Xarajat so‘rovi (approval engine ishga tushadi)' }, async (ctx) => svc.request(ctx.body || {}, ctx));
   r.post('/api/expenses', { perm: ['expenses', 'EDIT'], tags: ['expenses'], summary: 'Buxgalter: xarajatni to‘g‘ridan-to‘g‘ri kiritish (APPROVED/PAID)' }, async (ctx) => svc.createDirect(ctx.body || {}, ctx));
-  r.get('/api/expenses/:id', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'Xarajat kartasi' }, async (ctx) => { const e = svc.get(ctx.params.id); if (!e) throw notFound(); return { ...e, audit: db.all("SELECT a.*, u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity='expense' AND a.entity_id=? ORDER BY a.ts DESC", e.id) }; });
+  r.get('/api/expenses/:id', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'Xarajat kartasi (ro‘yxat bilan bir xil scope: xodim — o‘ziniki, bo‘lim rahbari — bo‘limi)' }, async (ctx) => { const e = svc.getFor(ctx.params.id, ctx.user); if (!e) throw notFound('Xarajat topilmadi'); return { ...e, audit: db.all("SELECT a.*, u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity='expense' AND a.entity_id=? ORDER BY a.ts DESC", e.id) }; });
   r.patch('/api/expenses/:id', { perm: ['expenses', 'EDIT'], tags: ['expenses'], summary: 'Xarajatni tahrirlash' }, async (ctx) => svc.update(ctx.params.id, ctx.body || {}, ctx));
   r.post('/api/expenses/:id/pay', { perm: ['expenses', 'EDIT'], tags: ['expenses'], summary: 'To‘langan deb belgilash (kassa/bank)' }, async (ctx) => { svc.markPaid(ctx.params.id, ctx.body || {}, ctx); return svc.get(ctx.params.id); });
   r.post('/api/expenses/:id/reverse', { perm: ['expenses', 'DELETE'], tags: ['expenses'], summary: 'Xarajatni reversal qilish (o‘chirish o‘rniga)' }, async (ctx) => svc.reverse(ctx.params.id, ctx, ctx.body?.reason));
