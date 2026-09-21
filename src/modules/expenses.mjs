@@ -137,6 +137,8 @@ export function register(app) {
         WHERE ec.is_active=1 GROUP BY ec.id ORDER BY amount DESC`, from, to);
     },
     total(from, to) { return db.get("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE reversed_at IS NULL AND status IN ('APPROVED','PAID') AND expense_date BETWEEN ? AND ?", from, to).s; },
+    /** asOf berilsa: shu sanagacha sanalangan, shu sanada hali to'lanmagan tasdiqlangan xarajatlar */
+    approvedUnpaidAsOf(asOf) { return db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status IN ('APPROVED','PAID') AND expense_date<=? AND (paid_at IS NULL OR paid_at>?)", asOf, asOf); },
     approvedUnpaid() { return db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status='APPROVED'"); },
     expectedOutflow(from, to) {
       // tasdiqlangan to'lanmagan (required_date oynada yoki muddati o'tgan) + recurring

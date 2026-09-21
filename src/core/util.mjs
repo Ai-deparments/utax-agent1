@@ -41,7 +41,7 @@ export function monthsBetween(fromDate, toDate) {
 /** Davr → {from,to}. period: day|week|month|quarter|year|custom */
 export function resolvePeriod(q, base = today()) {
   const p = (q.period || 'month').toLowerCase();
-  if (p === 'custom' && q.from && q.to) return { from: q.from, to: q.to, label: `${q.from} → ${q.to}` };
+  if (p === 'custom' && q.from && q.to) { const dmy = (d) => d.split('-').reverse().join('.'); return { from: q.from, to: q.to, label: `${dmy(q.from)} — ${dmy(q.to)}` }; }
   if (q.month) {
     const r = monthRange(q.month);
     return { ...r, label: q.month };

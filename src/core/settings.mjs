@@ -23,13 +23,13 @@ export const DEFAULT_SETTINGS = {
   'expense.category_confidence_threshold': 0.8,
   // Collection agent bosqichlari (kun, due date'ga nisbatan)
   'collection.stages': [
-    { code: 'T-7', days: -7, label: 'Upcoming payment' },
-    { code: 'T-3', days: -3, label: 'Reminder' },
-    { code: 'T-0', days: 0, label: 'Payment expected' },
-    { code: 'T+1', days: 1, label: 'OVERDUE' },
-    { code: 'T+3', days: 3, label: 'Collection task' },
-    { code: 'T+7', days: 7, label: 'Escalation' },
-    { code: 'T+15', days: 15, label: 'Critical debt' },
+    { code: 'T-7', days: -7, label: 'Muddat yaqinlashmoqda' },
+    { code: 'T-3', days: -3, label: 'Eslatma' },
+    { code: 'T-0', days: 0, label: 'To‘lov kuni' },
+    { code: 'T+1', days: 1, label: 'Muddati o‘tdi' },
+    { code: 'T+3', days: 3, label: 'Undiruv vazifasi' },
+    { code: 'T+7', days: 7, label: 'Eskalatsiya' },
+    { code: 'T+15', days: 15, label: 'Kritik qarz' },
   ],
   'collection.critical_days': 15,
   // Forecast scenariylari

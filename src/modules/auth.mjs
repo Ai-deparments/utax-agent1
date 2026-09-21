@@ -43,7 +43,8 @@ export function register(app) {
   };
 
   r.post('/api/auth/login', { auth: false, tags: ['auth'], summary: 'Login (email + parol); 2FA yoqilgan bo‘lsa temp token qaytaradi' }, async (ctx) => {
-    if (!loginLimit(ctx.ip)) throw new Error('RATE_LIMIT');
+    // Cheklov IP + email bo'yicha: bir ofis (bitta IP) xodimlari bir-birini bloklamaydi, bitta hisobni parol tanlash bilan buzish esa to'xtatiladi
+    if (!loginLimit(`${ctx.ip}|${String(ctx.body?.email || '').toLowerCase()}`)) throw new Error('RATE_LIMIT');
     const { email, password } = ctx.body || {};
     if (!email || !password) throw badRequest('Email va parol talab qilinadi');
     const u = db.get('SELECT * FROM users WHERE lower(email)=lower(?)', String(email).trim());

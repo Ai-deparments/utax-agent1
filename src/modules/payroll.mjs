@@ -1,5 +1,5 @@
 import { badRequest, notFound } from '../core/http.mjs';
-import { nowIso, today, round2, parseJson, monthRange, sum } from '../core/util.mjs';
+import { nowIso, today, round2, parseJson, monthRange, sum, addMonths } from '../core/util.mjs';
 
 /** KPI & PAYROLL RULE ENGINE — formulalar kpi_rules jadvalida, hard-code emas. */
 export function register(app) {
@@ -88,8 +88,9 @@ export function register(app) {
       });
       app.services.notifications?.notify({ roles: ['ACCOUNTANT', 'CFO'], type: 'PAYROLL_READY', title: `Oylik ${period} tasdiqlandi — to‘lovga tayyor`, body: `Jami: ${round2(sum(rows, (x) => x.net)).toLocaleString('ru-RU')}`, entity_type: 'payroll', entity_id: null, dedupe_key: `payroll-ready:${period}` });
     },
+    /** Tasdiqlashda turgan oylik. Tasdiqlangan oylik xarajat (APPROVED) sifatida yaratiladi va kreditorlikka kiradi — shuning uchun bu yerda faqat SUBMITTED */
     pendingPayrollReserve() {
-      return db.get("SELECT COALESCE(SUM(net),0) s FROM payrolls WHERE status IN ('SUBMITTED','APPROVED')").s;
+      return db.get("SELECT COALESCE(SUM(net),0) s FROM payrolls WHERE status='SUBMITTED'").s;
     },
   };
   app.services.payroll = svc;
@@ -137,6 +138,19 @@ export function register(app) {
     db.run('INSERT INTO employee_kpis (employee_id, period, kpi_rule_id, metric_value, kpi_amount, note) VALUES (?,?,?,?,?,?) ON CONFLICT(employee_id, period, kpi_rule_id) DO UPDATE SET metric_value=excluded.metric_value, kpi_amount=excluded.kpi_amount, note=excluded.note', b.employee_id, b.period, b.kpi_rule_id, b.metric_value ?? null, b.kpi_amount ?? null, b.note || null);
     audit(ctx, { action: 'KPI_SET', entity: 'employee', entityId: b.employee_id, newValue: b });
     return { ok: true };
+  });
+  r.get('/api/payroll-range', { perm: ['payroll', 'VIEW'], tags: ['payroll'], summary: 'Oylik — sana oralig‘iga tushgan oylar bo‘yicha jamlanma', query: ['from', 'to'] }, async (ctx) => {
+    const { from, to } = ctx.query;
+    if (!from || !to) throw badRequest('from va to kerak');
+    if (from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas');
+    const months = []; for (let p = from.slice(0, 7); p <= to.slice(0, 7); p = addMonths(p, 1)) months.push(p);
+    const scope = (x) => ctx.user.role_code !== 'DEPARTMENT_HEAD' || x.department_id === ctx.user.department_id;
+    const items = months.flatMap((p) => svc.list(p).filter(scope));
+    const per = months.map((p) => { const s = svc.summary(p); return { period: p, rows: s.rows, gross: s.gross, kpi: s.kpi, net: s.net, status: s.status }; });
+    const byDept = {};
+    for (const x of items) { const k = x.department_name || '—'; byDept[k] ??= { department: k, gross: 0, net: 0, kpi: 0, n: new Set() }; const d = byDept[k]; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n.add(x.employee_id); }
+    return { from, to, months, per_month: per, items, employees: new Set(items.map((x) => x.employee_id)).size, gross: round2(sum(items, (x) => x.gross)), kpi: round2(sum(items, (x) => x.kpi)), net: round2(sum(items, (x) => x.net)),
+      by_department: Object.values(byDept).map((d) => ({ department: d.department, n: d.n.size, gross: round2(d.gross), kpi: round2(d.kpi), net: round2(d.net) })) };
   });
   r.get('/api/payroll/:period', { perm: ['payroll', 'VIEW'], tags: ['payroll'], summary: 'Davr oyligi (jadval + xulosa)' }, async (ctx) => ({ ...svc.summary(ctx.params.period), items: svc.list(ctx.params.period).filter((x) => ctx.user.role_code !== 'DEPARTMENT_HEAD' || x.department_id === ctx.user.department_id) }));
   r.post('/api/payroll/:period/compute', { perm: ['payroll', 'CREATE'], tags: ['payroll'], summary: 'Oylikni hisoblash (rule engine)' }, async (ctx) => ({ items: svc.compute(ctx.params.period, ctx), ...svc.summary(ctx.params.period) }));

@@ -20,7 +20,7 @@ const logoMark = () => h('div', { class: 'mark' }, icon('x_mark', 20));
 
 // ---------- LOGIN ----------
 function renderLogin() {
-  const email = h('input', { class: 'input', type: 'email', placeholder: 'Elektron pochta', autocomplete: 'username', value: 'founder@utax.uz' });
+  const email = h('input', { class: 'input', type: 'email', placeholder: 'Elektron pochta', autocomplete: 'username' });
   const pass = h('input', { class: 'input', type: 'password', placeholder: 'Parol', autocomplete: 'current-password' });
   const code = h('input', { class: 'input', placeholder: '2FA kodi (6 raqam)', inputmode: 'numeric', style: { display: 'none' } });
   const msg = h('div', { class: 'small neg mt8' });
@@ -37,8 +37,7 @@ function renderLogin() {
   };
   clear(root).append(h('div', { class: 'login' }, h('form', { class: 'card box', onSubmit: submit, style: { padding: '28px' } },
     h('div', { class: 'brand' }, logoMark(), h('div', {}, h('div', { class: 'nm' }, 'UTAX Finance'), h('small', {}, 'Moliya boshqaruv tizimi'))),
-    h('div', { class: 'field mt8' }, h('label', {}, 'Elektron pochta'), email), h('div', { class: 'field mt12' }, h('label', {}, 'Parol'), pass), h('div', { class: 'field mt8' }, code), msg, btn,
-    h('div', { class: 'xs muted mt16' }, 'Pilot foydalanuvchilar: founder@ · ceo@ · cfo@ · finance@ · accountant@ · sales@ · head.marketing@ · employee@ · auditor@ · admin@ (utax.uz). Parol: ', h('code', {}, 'Utax2026!')))));
+    h('div', { class: 'field mt8' }, h('label', {}, 'Elektron pochta'), email), h('div', { class: 'field mt12' }, h('label', {}, 'Parol'), pass), h('div', { class: 'field mt8' }, code), msg, btn)));
   setTimeout(() => pass.focus(), 50);
 }
 

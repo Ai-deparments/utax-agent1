@@ -1,3 +1,4 @@
+import { badRequest } from '../core/http.mjs';
 import { today, round2, addDays, daysBetween, resolvePeriod, monthOf, addMonths, monthRange, pct, sum } from '../core/util.mjs';
 
 export const GROUP_LABELS = { DIRECT: 'To‘g‘ridan-to‘g‘ri xarajatlar', PAYROLL: 'Oylik (xodimlar)', MARKETING: 'Marketing', ADMIN: 'Ma’muriy', IT: 'IT va aloqa', OFFICE: 'Ofis xarajatlari', OTHER_OPEX: 'Boshqa operatsion', TAX: 'Soliqlar', OTHER: 'Boshqa' };
@@ -10,11 +11,12 @@ export function register(app) {
     treasury(asOf = today()) {
       const bank = S().banking.bankBalance(asOf), cash = S().banking.cashBalance(asOf);
       const total = round2(bank.total + cash.total);
-      const advances = round2(S().revenue.advancesBalance());
+      const hist = asOf < today();
+      const advances = round2(hist ? S().revenue.advancesBalance(asOf) : S().revenue.advancesBalance());
       const restrictionPct = Number(settings.get('cash.advance_restriction_pct') ?? 100);
       const restricted = round2(advances * restrictionPct / 100);
-      const approvedUnpaid = settings.get('cash.reserve_approved_unpaid_expenses') ? round2(S().expenses.approvedUnpaid().s) : 0;
-      const payrollReserve = settings.get('cash.reserve_pending_payroll') ? round2(S().payroll.pendingPayrollReserve()) : 0;
+      const approvedUnpaid = settings.get('cash.reserve_approved_unpaid_expenses') ? round2((hist ? S().expenses.approvedUnpaidAsOf(asOf) : S().expenses.approvedUnpaid()).s) : 0;
+      const payrollReserve = settings.get('cash.reserve_pending_payroll') && !hist ? round2(S().payroll.pendingPayrollReserve()) : 0;
       const safety = round2(Number(settings.get('cash.safety_reserve') || 0));
       const reserved = round2(approvedUnpaid + payrollReserve + safety);
       const available = round2(total - restricted - reserved);
@@ -98,19 +100,26 @@ export function register(app) {
       };
       const operating = cls('OPERATING'), investing = cls('INVESTING'), financing = cls('FINANCING');
       const IGN = { LOAN: 'Kredit / ta’sischi mablag‘i', REFUND: 'Qaytarilgan mablag‘', INTEREST: 'Bank foizlari', OTHER_INCOME: 'Boshqa kirim', OTHER: 'Boshqa kirim', REVERSAL: 'Tuzatish yozuvi', PAYROLL: 'Oylik', NON_CONTRACT: 'Shartnomasiz kirim' };
-      const inflowDetail = db.all(`SELECT CASE WHEN matching_status='MATCHED' AND matched_contract_id IS NOT NULL THEN 'Mijoz to‘lovlari' WHEN matching_status='IGNORED' THEN COALESCE(ignore_reason,'OTHER') ELSE 'Bog‘lanmagan kirim' END AS name, SUM(amount) amount FROM bank_transactions WHERE reversed_at IS NULL AND direction='INCOME' AND tx_date BETWEEN ? AND ? GROUP BY 1 ORDER BY amount DESC`, p.from, p.to).map((x) => ({ ...x, name: IGN[x.name] || x.name }));
-      const outflowDetail = db.all(`SELECT COALESCE(ec.name, CASE WHEN t.matching_status='IGNORED' THEN COALESCE(t.ignore_reason,'OTHER') ELSE 'Bog‘lanmagan chiqim' END) AS name, SUM(t.amount) amount FROM bank_transactions t LEFT JOIN expenses e ON e.id=t.matched_expense_id LEFT JOIN expense_categories ec ON ec.id=e.category_id WHERE t.reversed_at IS NULL AND t.direction='EXPENSE' AND t.tx_date BETWEEN ? AND ? GROUP BY 1 ORDER BY amount DESC`, p.from, p.to).map((x) => ({ ...x, name: IGN[x.name] || x.name }));
+      const inflowDetail = db.all(`SELECT name, SUM(amount) amount FROM (
+          SELECT CASE WHEN matching_status='MATCHED' AND matched_contract_id IS NOT NULL THEN 'Mijoz to‘lovlari' WHEN matching_status='IGNORED' THEN COALESCE(ignore_reason,'OTHER') ELSE 'Bog‘lanmagan kirim' END AS name, amount FROM bank_transactions WHERE reversed_at IS NULL AND direction='INCOME' AND tx_date BETWEEN ? AND ?
+          UNION ALL SELECT CASE WHEN contract_id IS NOT NULL THEN 'Mijoz to‘lovlari' ELSE 'Kassaga boshqa kirim' END, amount FROM cash_transactions WHERE reversed_at IS NULL AND direction='INCOME' AND tx_date BETWEEN ? AND ?
+        ) GROUP BY name ORDER BY amount DESC`, p.from, p.to, p.from, p.to).map((x) => ({ ...x, name: IGN[x.name] || x.name }));
+      const outflowDetail = db.all(`SELECT name, SUM(amount) amount FROM (
+          SELECT COALESCE(ec.name, CASE WHEN t.matching_status='IGNORED' THEN COALESCE(t.ignore_reason,'OTHER') ELSE 'Bog‘lanmagan chiqim' END) AS name, t.amount FROM bank_transactions t LEFT JOIN expenses e ON e.id=t.matched_expense_id LEFT JOIN expense_categories ec ON ec.id=e.category_id WHERE t.reversed_at IS NULL AND t.direction='EXPENSE' AND t.tx_date BETWEEN ? AND ?
+          UNION ALL SELECT COALESCE(ec.name, 'Kassadan boshqa chiqim'), k.amount FROM cash_transactions k LEFT JOIN expenses e ON e.id=k.expense_id LEFT JOIN expense_categories ec ON ec.id=e.category_id WHERE k.reversed_at IS NULL AND k.direction='EXPENSE' AND k.tx_date BETWEEN ? AND ?
+        ) GROUP BY name ORDER BY amount DESC`, p.from, p.to, p.from, p.to).map((x) => ({ ...x, name: IGN[x.name] || x.name }));
       return { period: p, opening_cash: opening, operating, investing, financing, total_inflow: round2(operating.inflow + investing.inflow + financing.inflow), total_outflow: round2(operating.outflow + investing.outflow + financing.outflow), closing_cash: closing, net_change: round2(closing - opening), inflow_detail: inflowDetail, outflow_detail: outflowDetail, monthly: S().banking.monthlyFlows(6, p.to) };
     },
     /** BALANS (soddalashtirilgan boshqaruv balansi) */
     balance(asOf = today()) {
       const bank = S().banking.bankBalance(asOf).total, cash = S().banking.cashBalance(asOf).total;
       // AR: tan olingan lekin pul kelmagan qism
-      const ar = round2(db.get(`SELECT COALESCE(SUM(x.ar),0) s FROM (SELECT c.id, MAX(0, COALESCE((SELECT SUM(rr.amount) FROM revenue_recognition rr WHERE rr.contract_id=c.id AND rr.status='RECOGNIZED' AND rr.recognized_at<=?),0) - COALESCE((SELECT SUM(re.amount) FROM revenue_events re WHERE re.contract_id=c.id AND re.state='RECOGNIZED_REVENUE' AND re.event_date<=?),0)) AS ar FROM contracts c) x`, asOf, asOf).s);
+      const hist = asOf < today();
+      const ar = round2(S().revenue.positionAsOf(asOf).ar);
       const contractBacklog = round2(S().receivables.summary(asOf).total_receivable);
-      const advances = round2(S().revenue.advancesBalance(asOf));
-      const ap = round2(S().expenses.approvedUnpaid().s);
-      const payrollPayable = round2(S().payroll.pendingPayrollReserve());
+      const advances = round2(hist ? S().revenue.advancesBalance(asOf) : S().revenue.advancesBalance());
+      const ap = round2((hist ? S().expenses.approvedUnpaidAsOf(asOf) : S().expenses.approvedUnpaid()).s);
+      const payrollPayable = hist ? 0 : round2(S().payroll.pendingPayrollReserve());
       const assets = round2(bank + cash + ar);
       const liabilities = round2(advances + ap + payrollPayable);
       return {
@@ -147,32 +156,44 @@ export function register(app) {
       for (let i = 0; i < months; i++) { const { from, to } = monthRange(mp); const rv = round2(S().revenue.recognizedInPeriod(from, to)); const ex = round2(S().expenses.total(from, to)); pnl.push({ period: mp, revenue: rv, expense: ex, profit: round2(rv - ex) }); mp = addMonths(mp, 1); }
       return { months, cash_flow: S().banking.monthlyFlows(months), revenue: S().revenue.monthlySeries(months), pnl };
     },
-    dashboard() {
-      const asOf = today();
-      const tr = svc.treasury();
+    /** range = {from, to} ixtiyoriy. Berilmasa — joriy oy va o'tgan oy bilan taqqoslash (avvalgi xatti-harakat, o'zgarishsiz) */
+    dashboard(range = null) {
+      const R = !!(range && range.from && range.to);
+      const realToday = today();
+      const asOf = R ? (range.to < realToday ? range.to : realToday) : realToday;
+      const tr = svc.treasury(asOf);
       const month = monthOf(asOf);
-      const { from, to } = monthRange(month);
+      const { from, to } = R ? { from: range.from, to: range.to } : monthRange(month);
       const prevM = addMonths(month, -1);
-      const prevR = monthRange(prevM);
-      const pnl = svc.pnl({ month });
-      const pnlPrev = svc.pnl({ month: prevM });
-      const rc = S().receivables.summary();
+      // Taqqoslash davri: oraliqda — xuddi shu uzunlikdagi oldingi davr; aks holda o'tgan oy
+      const prevR = R ? (() => { const len = daysBetween(from, to) + 1; return { from: addDays(from, -len), to: addDays(from, -1) }; })() : monthRange(prevM);
+      const pnl = R ? svc.pnl({ period: 'custom', from, to }) : svc.pnl({ month });
+      const pnlPrev = R ? svc.pnl({ period: 'custom', from: prevR.from, to: prevR.to }) : svc.pnl({ month: prevM });
+      const rc = S().receivables.summary(asOf);
       const rcPrev = S().receivables.summary(prevR.to);
-      const aging = S().receivables.aging();
-      const pf = S().budget.planFact(month);
+      const aging = S().receivables.aging(asOf);
+      const pf = R ? S().budget.planFactRange(from, to) : S().budget.planFact(month);
       const recon = S().reconciliation.stats();
       const expByGroup = S().expenses.totalsByGroup(from, to);
       const dq = svc.dataQuality();
       const pctChange = (cur, prev) => (prev ? round2(((cur - prev) / Math.abs(prev)) * 100) : null);
-      // O'tgan oy oxiridagi holat bilan taqqoslash
+      // Qoldiqlar: o'tgan oy oxiri (standart) yoki davr boshi (oraliqda) bilan taqqoslanadi
       const bankPrev = S().banking.bankBalance(prevR.to).total, cashPrev = S().banking.cashBalance(prevR.to).total;
       const advPrev = S().revenue.advancesBalance(prevR.to);
       const expPrev = S().expenses.total(prevR.from, prevR.to), expCur = S().expenses.total(from, to);
-      // Sparkline: oxirgi 12 hafta (haftalik nuqtalar)
-      const weeks = []; for (let i = 11; i >= 0; i--) weeks.push(addDays(asOf, -7 * i));
+      // Sparkline: standart — oxirgi 12 hafta; oraliqda — davr bo'ylab 12 ta nuqta
+      let points = [], win = 7;
+      if (!R) { for (let i = 11; i >= 0; i--) points.push(addDays(asOf, -7 * i)); }
+      else {
+        const span = Math.max(0, daysBetween(from, asOf));
+        const n = Math.min(12, span + 1);
+        for (let i = 0; i < n; i++) points.push(addDays(from, n > 1 ? Math.round((span * i) / (n - 1)) : 0));
+        points = [...new Set(points)];
+        win = Math.max(1, Math.round(span / Math.max(1, points.length - 1)));
+      }
       const sparklines = {
-        bank: weeks.map((d) => round2(S().banking.bankBalance(d).total)), cash: weeks.map((d) => round2(S().banking.cashBalance(d).total)),
-        advances: weeks.map((d) => round2(S().revenue.advancesBalance(d))), expenses: weeks.map((d) => round2(S().expenses.total(addDays(d, -6), d))),
+        bank: points.map((d) => round2(S().banking.bankBalance(d).total)), cash: points.map((d) => round2(S().banking.cashBalance(d).total)),
+        advances: points.map((d) => round2(S().revenue.advancesBalance(d))), expenses: points.map((d) => round2(S().expenses.total(addDays(d, -(win - 1)), d))),
       };
       sparklines.total = sparklines.bank.map((v, i) => round2(v + sparklines.cash[i]));
       const bal = svc.balance(asOf);
@@ -181,35 +202,57 @@ export function register(app) {
         active_clients: new Set(activeContracts.map((c) => c.company_id)).size,
         new_clients_month: db.get('SELECT COUNT(*) n FROM (SELECT company_id, MIN(contract_date) d FROM contracts GROUP BY company_id) x WHERE x.d BETWEEN ? AND ?', from, to).n,
         active_contracts: activeContracts.length, new_contracts_month: db.get("SELECT COUNT(*) n FROM contracts WHERE contract_date BETWEEN ? AND ? AND contract_status<>'CANCELLED'", from, to).n,
-        transactions_total: db.get('SELECT COUNT(*) n FROM bank_transactions WHERE reversed_at IS NULL').n, transactions_month: db.get('SELECT COUNT(*) n FROM bank_transactions WHERE reversed_at IS NULL AND tx_date BETWEEN ? AND ?', from, to).n,
+        transactions_total: R ? db.get('SELECT COUNT(*) n FROM bank_transactions WHERE reversed_at IS NULL AND tx_date BETWEEN ? AND ?', from, to).n : db.get('SELECT COUNT(*) n FROM bank_transactions WHERE reversed_at IS NULL').n,
+        transactions_month: R ? null : db.get('SELECT COUNT(*) n FROM bank_transactions WHERE reversed_at IS NULL AND tx_date BETWEEN ? AND ?', from, to).n,
         overdue_count: rc.overdue_count, overdue_count_prev: rcPrev.overdue_count,
       };
+      // Grafiklar: oraliq 2+ oyni qamrasa — shu oylar; aks holda tugash sanasigacha oxirgi 6 oy
+      let nMonths = 0; for (let p = monthOf(from); p <= monthOf(to); p = addMonths(p, 1)) nMonths++;
+      const chartMonths = R && nMonths >= 2 ? nMonths : 6;
+      const chartEnd = R ? to : realToday;
+      let pnlMonthly = pnl.monthly;
+      if (R && nMonths >= 2) { pnlMonthly = []; for (let p = monthOf(from); p <= monthOf(to); p = addMonths(p, 1)) { const mr = monthRange(p); const rv = round2(S().revenue.recognizedInPeriod(mr.from, mr.to)); const ex = round2(S().expenses.total(mr.from, mr.to)); pnlMonthly.push({ period: p, revenue: rv, expense: ex, profit: round2(rv - ex) }); } }
+      const rangeSql = R ? ' AND t.tx_date BETWEEN ? AND ?' : '', rangeSqlE = R ? ' AND e.expense_date BETWEEN ? AND ?' : '', rp = R ? [from, to] : [];
       return {
-        as_of: asOf, month,
+        as_of: asOf, month, range: R ? { from, to } : null,
         kpi: { bank_balance: tr.bank_balance, cash_balance: tr.cash_balance, total_cash: tr.total_cash, available_cash: tr.available_cash, customer_advances: tr.customer_advances, recognized_revenue: pnl.totals.revenue, accounts_receivable: rc.total_receivable, expected_income: tr.expected_30d_income, expected_expenses: tr.expected_30d_expense, net_profit: pnl.totals.net, overdue_receivable: rc.overdue, low_liquidity: tr.low_liquidity, reserved: tr.reserved.total, expenses_month: round2(expCur) },
         deltas: { bank_balance: pctChange(tr.bank_balance, bankPrev), cash_balance: pctChange(tr.cash_balance, cashPrev), total_cash: pctChange(tr.total_cash, bankPrev + cashPrev), customer_advances: pctChange(tr.customer_advances, advPrev), expenses_month: pctChange(expCur, expPrev), recognized_revenue: pctChange(pnl.totals.revenue, pnlPrev.totals.revenue), net_profit: pctChange(pnl.totals.net, pnlPrev.totals.net), accounts_receivable: pctChange(rc.total_receivable, rcPrev.total_receivable) },
         sparklines,
         charts: {
-          cash_flow: S().banking.monthlyFlows(6), revenue: S().revenue.monthlySeries(6),
+          cash_flow: S().banking.monthlyFlows(chartMonths, chartEnd), revenue: S().revenue.monthlySeries(chartMonths, chartEnd),
           expense_structure: expByGroup.map((g) => ({ name: GROUP_LABELS[g.pnl_group] || g.pnl_group, group: g.pnl_group, amount: round2(g.amount) })).sort((a, b) => b.amount - a.amount),
           revenue_by_service: pnl.by_service.filter((x) => x.revenue > 0).map((x) => ({ name: x.name, code: x.code, amount: round2(x.revenue), color: x.color })),
           cash_composition: [{ name: 'Bank hisoblari', amount: round2(tr.bank_balance) }, { name: 'Kassa', amount: round2(tr.cash_balance) }, { name: 'Debitorlik (tan olingan)', amount: bal.assets[2].amount }],
-          plan_fact: pf.items, aging: aging.buckets, pnl_monthly: pnl.monthly,
+          plan_fact: pf.items, aging: aging.buckets, pnl_monthly: pnlMonthly,
         },
-        recent_income: db.all(`SELECT t.id, t.tx_date, t.amount, t.counterparty_name, t.matching_status, c.contract_number, c.id AS contract_id, st.name AS service_name FROM bank_transactions t LEFT JOIN contracts c ON c.id=t.matched_contract_id LEFT JOIN service_types st ON st.id=c.service_type_id WHERE t.direction='INCOME' AND t.reversed_at IS NULL ORDER BY t.tx_date DESC, t.amount DESC LIMIT 6`),
-        recent_expenses: db.all(`SELECT e.id, e.code, e.expense_date, e.amount, e.purpose, e.status, ec.name AS category, d.name AS department FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id LEFT JOIN departments d ON d.id=e.department_id WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') ORDER BY e.expense_date DESC, e.amount DESC LIMIT 6`),
+        recent_income: db.all(`SELECT t.id, t.tx_date, t.amount, t.counterparty_name, t.matching_status, c.contract_number, c.id AS contract_id, st.name AS service_name FROM bank_transactions t LEFT JOIN contracts c ON c.id=t.matched_contract_id LEFT JOIN service_types st ON st.id=c.service_type_id WHERE t.direction='INCOME' AND t.reversed_at IS NULL${rangeSql} ORDER BY t.tx_date DESC, t.amount DESC LIMIT 6`, ...rp),
+        recent_expenses: db.all(`SELECT e.id, e.code, e.expense_date, e.amount, e.purpose, e.status, ec.name AS category, d.name AS department FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id LEFT JOIN departments d ON d.id=e.department_id WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID')${rangeSqlE} ORDER BY e.expense_date DESC, e.amount DESC LIMIT 6`, ...rp),
         indicators,
         receivables: { total: rc.total_receivable, overdue: rc.overdue, critical: rc.critical, top: rc.top_debtors.slice(0, 5) },
         pending: { approvals: db.get("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM approvals WHERE status='PENDING'"), unmatched_transactions: (recon.unmatched || 0) + (recon.suggested || 0), unmatched_income_amount: round2(recon.unmatched_income_amount || 0), data_quality: dq.total, expense_requests: db.get("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM expenses WHERE status='PENDING' AND reversed_at IS NULL") },
-        service_profitability: svc.serviceProfitability({ month }).rows,
+        service_profitability: svc.serviceProfitability(R ? { period: 'custom', from, to } : { month }).rows,
       };
     },
   };
   app.services.reports = svc;
 
-  r.get('/api/dashboard', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar' }, async () => svc.dashboard());
+  r.get('/api/dashboard', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr)', query: ['from', 'to'] }, async (ctx) => { const { from, to } = ctx.query; if (from && to && from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas'); return svc.dashboard(from && to ? { from, to } : null); });
   r.get('/api/reports/trends', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'Oylik trendlar (pul oqimi, daromad, P&L)', query: ['months'] }, async (ctx) => svc.trends(ctx.query.months));
-  r.get('/api/treasury', { perm: ['treasury', 'VIEW'], tags: ['reports'], summary: 'Pul boshqaruvi: bank/kassa/avans/available/kutilayotgan', query: ['as_of'] }, async (ctx) => svc.treasury(ctx.query.as_of || today()));
+  r.get('/api/treasury', { perm: ['treasury', 'VIEW'], tags: ['reports'], summary: 'Pul boshqaruvi: bank/kassa/avans/available/kutilayotgan; from+to berilsa — shu davrdagi kirim/chiqim', query: ['as_of', 'from', 'to'] }, async (ctx) => {
+    const to = ctx.query.to || ctx.query.as_of || today();
+    const t = svc.treasury(to);
+    if (ctx.query.from) {
+      const from = ctx.query.from;
+      if (from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas');
+      const q = (table) => db.get(`SELECT COALESCE(SUM(CASE WHEN direction='INCOME' THEN amount END),0) income, COALESCE(SUM(CASE WHEN direction='EXPENSE' THEN amount END),0) expense, SUM(direction='INCOME') n_in, SUM(direction='EXPENSE') n_out FROM ${table} WHERE reversed_at IS NULL AND tx_date BETWEEN ? AND ?`, from, to);
+      const b = q('bank_transactions'), c = q('cash_transactions');
+      const row = (x) => ({ income: round2(x.income), expense: round2(x.expense), net: round2(x.income - x.expense), count_in: x.n_in || 0, count_out: x.n_out || 0 });
+      const bank = row(b), cash = row(c);
+      t.period = { from, to, bank, cash, total: { income: round2(bank.income + cash.income), expense: round2(bank.expense + cash.expense), net: round2(bank.net + cash.net) },
+        opening_cash: round2(S().banking.bankBalance(addDays(from, -1)).total + S().banking.cashBalance(addDays(from, -1)).total), closing_cash: t.total_cash };
+    }
+    return t;
+  });
   r.get('/api/reports/pnl', { perm: ['pnl', 'VIEW'], tags: ['reports'], summary: 'P&L (day/week/month/quarter/year/custom)', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.pnl(ctx.query));
   r.get('/api/reports/service-profitability', { perm: ['pnl', 'VIEW'], tags: ['reports'], summary: 'Xizmat turlari rentabelligi', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.serviceProfitability(ctx.query));
   r.get('/api/reports/cash-flow', { perm: ['cashflow', 'VIEW'], tags: ['reports'], summary: 'Cash Flow (operating/investing/financing)', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.cashFlow(ctx.query));

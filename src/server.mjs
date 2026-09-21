@@ -143,6 +143,7 @@ export async function main() {
   server.listen(config.port, config.host, () => {
     console.log(`UTAX Finance CRM → http://${config.host}:${config.port}  (API docs: /api/docs)`);
     app.scheduler.start();
+    app.botEnabled = true;
     app.telegram = startTelegramBot(app);
   });
   const shutdown = () => { console.log('shutting down'); app.scheduler.stop(); app.telegram?.stop?.(); server.close(() => { app.db.close(); process.exit(0); }); setTimeout(() => process.exit(0), 3000).unref(); };

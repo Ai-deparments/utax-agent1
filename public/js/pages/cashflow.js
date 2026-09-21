@@ -1,13 +1,15 @@
 import { get, qs } from '../api.js';
-import { h, kpiCard, card, fmt, periodPicker, monthLabel } from '../ui.js';
+import { dateRange, monthStartISO, monthEndISO, h, kpiCard, card, fmt, periodPicker, monthLabel } from '../ui.js';
 import { lineChart } from '../charts.js';
 
 export default async function render(root, { setTitle }) {
   let q = { month: new Date().toISOString().slice(0, 7) };
+  const rng = dateRange({ from: monthStartISO(), to: monthEndISO(), onChange: (v) => { q = { period: 'custom', from: v.from, to: v.to }; load(); } });
   const body = h('div', {});
   async function load() {
     const c = await get('/api/reports/cash-flow' + qs(q));
-    setTitle('Pul oqimi', `Operatsion · investitsion · moliyaviy faoliyat · ${c.period.label}`);
+    rng.set(c.period.from, c.period.to);
+    setTitle('Pul oqimi', `Operatsion · investitsion · moliyaviy faoliyat · ${c.period.label}`, [rng.el]);
     const row = (label, v, cls = '') => h('tr', { class: cls }, h('td', {}, label), h('td', { class: 'right tnum ' + (v < 0 ? 'neg' : '') }, fmt(v)));
     const sec = (label) => h('tr', { class: 'sec' }, h('td', { colspan: 2 }, label));
     body.replaceChildren(

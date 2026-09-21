@@ -16,7 +16,10 @@ export function register(app) {
     bucketOf,
     list(f = {}, asOf = today()) {
       const critDays = Number(settings.get('collection.critical_days') || 15);
-      let rows = app.services.contracts.list({ active: true, service_code: f.service, manager_user_id: f.manager_user_id, company_id: f.company_id }).filter((c) => c.remaining > 0.005);
+      let rows = app.services.contracts.list({ active: true, service_code: f.service, manager_user_id: f.manager_user_id, company_id: f.company_id });
+      // O'tgan sana: shu sanagacha tuzilgan shartnomalar va shu sanagacha kelgan to'lovlar bo'yicha
+      if (asOf < today()) rows = rows.filter((c) => c.contract_date <= asOf).map((c) => { const paid = round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE contract_id=? AND reversed_at IS NULL AND paid_at<=?', c.id, asOf).s); return { ...c, paid, remaining: round2(Math.max(0, c.amount - paid)) }; });
+      rows = rows.filter((c) => c.remaining > 0.005);
       rows = rows.map((c) => {
         // To'lovlarni jadvalga FIFO taqsimlash → to'lanmagan qismlar (portions) va ularning muddati
         const schedules = db.all('SELECT * FROM payment_schedules WHERE contract_id=? ORDER BY due_date, id', c.id);
@@ -49,7 +52,26 @@ export function register(app) {
       if (f.min_amount) rows = rows.filter((x) => x.debt >= Number(f.min_amount));
       if (f.max_amount) rows = rows.filter((x) => x.debt <= Number(f.max_amount));
       if (f.q) { const q = f.q.toLowerCase(); rows = rows.filter((x) => `${x.client} ${x.contract_number} ${x.inn || ''}`.toLowerCase().includes(q)); }
+      if (f.due_from && f.due_to) rows = rows.map((x) => ({ ...x, range_amount: round2(sum(x.portions.filter((p) => p.due && p.due >= f.due_from && p.due <= f.due_to), (p) => p.amount)) })).filter((x) => x.range_amount > 0);
       return rows.sort((a, b) => b.days_overdue - a.days_overdue || b.overdue_amount - a.overdue_amount || b.debt - a.debt);
+    },
+    /** To'lov muddati [from; to] oralig'iga tushgan to'lanmagan qismlar */
+    portionsInRange(from, to, asOf = today()) {
+      return svc.list({}, asOf).flatMap((r) => r.portions.filter((p) => p.due && p.due >= from && p.due <= to).map((p) => ({ ...p, contract_id: r.contract_id, days: p.due < asOf ? daysBetween(p.due, asOf) : 0 })));
+    },
+    agingRange(from, to, asOf = today()) {
+      const ps = svc.portionsInRange(from, to, asOf);
+      const bk = (p) => (p.days > 0 ? bucketOf(p.days) : 'CURRENT');
+      const buckets = ['CURRENT', '0-7', '8-15', '16-30', '31-60', '60+'].map((b) => { const xs = ps.filter((p) => bk(p) === b); return { bucket: b, label: b === 'CURRENT' ? 'Muddati kelmagan' : b + ' kun', amount: round2(sum(xs, (p) => p.amount)), count: new Set(xs.map((p) => p.contract_id)).size }; });
+      return { as_of: asOf, from, to, buckets, total: round2(sum(ps, (p) => p.amount)), overdue: round2(sum(ps.filter((p) => p.days > 0), (p) => p.amount)) };
+    },
+    summaryRange(from, to, asOf = today()) {
+      const crit = Number(settings.get('collection.critical_days') || 15);
+      const ps = svc.portionsInRange(from, to, asOf);
+      const od = ps.filter((p) => p.days > 0), cr = ps.filter((p) => p.days >= crit);
+      const win = (n) => round2(sum(ps.filter((p) => p.due >= asOf && p.due <= addDays(asOf, n)), (p) => p.amount));
+      const cnt = (xs) => new Set(xs.map((p) => p.contract_id)).size;
+      return { from, to, total_receivable: round2(sum(ps, (p) => p.amount)), overdue: round2(sum(od, (p) => p.amount)), critical: round2(sum(cr, (p) => p.amount)), expected_7d: win(7), expected_30d: win(30), count: cnt(ps), overdue_count: cnt(od), critical_count: cnt(cr) };
     },
     aging(asOf = today()) {
       const rows = svc.list({}, asOf);
@@ -91,9 +113,9 @@ export function register(app) {
   };
   app.services.receivables = svc;
 
-  r.get('/api/receivables', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Debitorlik jadvali', query: ['filter', 'service', 'manager_user_id', 'company_id', 'min_amount', 'max_amount', 'q', 'as_of'] }, async (ctx) => svc.list(ctx.query, ctx.query.as_of || today()).map(({ portions, ...x }) => x));
-  r.get('/api/receivables/aging', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Aging: 0–7, 8–15, 16–30, 31–60, 60+' }, async (ctx) => svc.aging(ctx.query.as_of || today()));
-  r.get('/api/receivables/summary', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'TOTAL / OVERDUE / CRITICAL + kutilayotgan 7/30 kun' }, async (ctx) => svc.summary(ctx.query.as_of || today()));
+  r.get('/api/receivables', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Debitorlik jadvali (due_from/due_to — to‘lov muddati oralig‘i)', query: ['filter', 'service', 'manager_user_id', 'company_id', 'min_amount', 'max_amount', 'q', 'as_of', 'due_from', 'due_to'] }, async (ctx) => svc.list(ctx.query, ctx.query.as_of || today()).map(({ portions, ...x }) => x));
+  r.get('/api/receivables/aging', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'Aging: 0–7, 8–15, 16–30, 31–60, 60+ (from/to — to‘lov muddati oralig‘i)', query: ['as_of', 'from', 'to'] }, async (ctx) => (ctx.query.from && ctx.query.to ? svc.agingRange(ctx.query.from, ctx.query.to, ctx.query.as_of || today()) : svc.aging(ctx.query.as_of || today())));
+  r.get('/api/receivables/summary', { perm: ['receivables', 'VIEW'], tags: ['receivables'], summary: 'TOTAL / OVERDUE / CRITICAL + kutilayotgan 7/30 kun (from/to — to‘lov muddati oralig‘i)', query: ['as_of', 'from', 'to'] }, async (ctx) => (ctx.query.from && ctx.query.to ? svc.summaryRange(ctx.query.from, ctx.query.to, ctx.query.as_of || today()) : svc.summary(ctx.query.as_of || today())));
   r.get('/api/collections', { perm: ['collections', 'VIEW'], tags: ['receivables'], summary: 'Undiruv vazifalari', query: ['status'] }, async (ctx) =>
     db.all(`SELECT k.*, c.contract_number, co.name AS client, u.name AS assigned_name FROM collections k JOIN contracts c ON c.id=k.contract_id JOIN companies co ON co.id=c.company_id LEFT JOIN users u ON u.id=k.assigned_to WHERE ${ctx.query.status ? 'k.status=?' : "k.status<>'SUPERSEDED'"} ORDER BY k.task_date DESC, k.id DESC LIMIT 500`, ...(ctx.query.status ? [ctx.query.status] : [])));
   r.patch('/api/collections/:id', { perm: ['collections', 'EDIT'], tags: ['receivables'], summary: 'Vazifa holati/izoh' }, async (ctx) => {

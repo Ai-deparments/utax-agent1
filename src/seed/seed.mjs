@@ -178,7 +178,7 @@ export async function seed(app, { log = console.log } = {}) {
   req('2026-08-28', 'employee@utax.uz', 'MARKETING', 6e6, 'Korporativ tadbir (team building)', '2026-09-05', [['head.marketing@utax.uz', 'APPROVE'], ['finance@utax.uz', 'REJECT', 'Byudjetdan tashqari']]);
   req('2026-09-10', 'head.legal@utax.uz', 'LEGAL', 18e6, 'Yuridik adabiyot va huquqiy baza obunasi', '2026-09-30', [['head.legal@utax.uz', 'APPROVE'], ['finance@utax.uz', 'POSTPONE', 'Oktabr byudjetiga ko‘chirish']]);
   req('2026-09-13', 'sales2@utax.uz', 'SALES', 45e6, 'Ofis ta‘mirlash (sotuv bo‘limi)', '2026-10-05', [['founder@utax.uz', 'APPROVE']]);
-  req('2026-09-14', 'employee@utax.uz', 'MARKETING', 12e6, 'Advertising campaign — sentabr-oktabr Telegram Ads', '2026-09-25', [['head.marketing@utax.uz', 'APPROVE']]);
+  req('2026-09-14', 'employee@utax.uz', 'MARKETING', 12e6, 'Reklama kampaniyasi — sentabr-oktabr Telegram Ads', '2026-09-25', [['head.marketing@utax.uz', 'APPROVE']]);
   req('2026-09-16', 'head.it@utax.uz', 'IT', 3.5e6, 'Dizayner uchun 27" monitor', '2026-09-30');
   req('2026-09-18', 'head.it@utax.uz', 'IT', 120e6, 'Server klaster (yangi CRM + backup)', '2026-10-15');
   req('2026-09-19', 'head.audit@utax.uz', 'AUDIT', 4.2e6, 'Audit bo‘limi uchun ISO standartlar to‘plami', '2026-10-01');
@@ -256,7 +256,7 @@ export async function seed(app, { log = console.log } = {}) {
 
   // ---------- 12. Integratsiyalar (namuna) ----------
   const { encryptSecret } = await import('../core/auth.mjs');
-  db.insert('integrations', { type: 'EXCEL', name: 'Bank ko‘chirmasi (Excel/CSV)', config: JSON.stringify({ bank_account_id: 1 }), secret_config: encryptSecret('{}'), created_at: nowIso(), last_status: 'Manual' });
+  db.insert('integrations', { type: 'EXCEL', name: 'Bank ko‘chirmasi (Excel/CSV)', config: JSON.stringify({ bank_account_id: 1 }), secret_config: encryptSecret('{}'), created_at: nowIso(), last_status: 'Qo‘lda yuklanadi' });
   db.insert('integrations', { type: 'WEBHOOK_IN', name: 'Kapitalbank webhook (inbound)', config: JSON.stringify({ bank_account_id: 1 }), secret_config: encryptSecret(JSON.stringify({ token: 'demo-webhook-token-change-me' })), created_at: nowIso() });
   db.insert('integrations', { type: 'GOOGLE_SHEETS', name: 'Google Sheets — kassa jadvali', config: JSON.stringify({ sheet_id: '', gid: '0', bank_account_id: 2 }), secret_config: encryptSecret('{}'), is_active: 0, created_at: nowIso() });
   db.insert('integrations', { type: 'TELEGRAM', name: 'Telegram Finance Bot', config: '{}', secret_config: encryptSecret('{}'), created_at: nowIso() });
