@@ -1,0 +1,57 @@
+import { badRequest } from '../core/http.mjs';
+import { nowIso, today, round2, monthRange, monthOf, addMonths, pct, addDays } from '../core/util.mjs';
+
+export function register(app) {
+  const { r, db, audit, settings } = app;
+  const svc = {
+    planFact(period) {
+      const plan = db.get('SELECT * FROM plans WHERE period=?', period) || { period, revenue_plan: 0, expense_plan: 0, profit_plan: 0, cash_plan: 0, collection_plan: 0 };
+      const { from, to } = monthRange(period);
+      const revenue = round2(app.services.revenue.recognizedInPeriod(from, to));
+      const expense = round2(app.services.expenses.total(from, to));
+      const profit = round2(revenue - expense);
+      const asOf = to < today() ? to : today();
+      const cash = round2(app.services.banking.bankBalance(asOf).total + app.services.banking.cashBalance(asOf).total);
+      const collection = round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE reversed_at IS NULL AND paid_at BETWEEN ? AND ?', from, to).s);
+      const item = (name, p, f, lowerIsBetter = false) => ({ name, plan: round2(p), fact: f, pct: pct(f, p), diff: round2(f - p), status: !p ? 'NO_PLAN' : lowerIsBetter ? (f <= p ? 'OK' : (f <= p * (1 + Number(settings.get('planfact.tolerance_pct') || 10) / 100) ? 'WARN' : 'BAD')) : (f >= p ? 'OK' : (f >= p * (1 - Number(settings.get('planfact.tolerance_pct') || 10) / 100) ? 'WARN' : 'BAD')) });
+      return { period, items: [item('Revenue', plan.revenue_plan, revenue), item('Expense', plan.expense_plan, expense, true), item('Profit', plan.profit_plan, profit), item('Cash', plan.cash_plan, cash), item('Collection', plan.collection_plan, collection)], plan };
+    },
+    series(months = 6, asOf = today()) {
+      const out = [];
+      let p = addMonths(monthOf(asOf), -(months - 1));
+      for (let i = 0; i < months; i++) { const pf = svc.planFact(p); out.push({ period: p, revenue_plan: pf.items[0].plan, revenue_fact: pf.items[0].fact, expense_plan: pf.items[1].plan, expense_fact: pf.items[1].fact, profit_plan: pf.items[2].plan, profit_fact: pf.items[2].fact }); p = addMonths(p, 1); }
+      return out;
+    },
+  };
+  app.services.budget = svc;
+
+  r.get('/api/plans', { perm: ['planfact', 'VIEW'], tags: ['planfact'], summary: 'Oylik rejalar' }, async () => db.all('SELECT * FROM plans ORDER BY period DESC'));
+  r.put('/api/plans/:period', { perm: ['planfact', 'EDIT'], tags: ['planfact'], summary: 'Reja kiritish/yangilash' }, async (ctx) => {
+    const period = ctx.params.period;
+    if (!/^\d{4}-\d{2}$/.test(period)) throw badRequest('period YYYY-MM');
+    const b = ctx.body || {};
+    const old = db.get('SELECT * FROM plans WHERE period=?', period);
+    const vals = { revenue_plan: round2(b.revenue_plan ?? old?.revenue_plan ?? 0), expense_plan: round2(b.expense_plan ?? old?.expense_plan ?? 0), profit_plan: round2(b.profit_plan ?? (b.revenue_plan !== undefined && b.expense_plan !== undefined ? b.revenue_plan - b.expense_plan : old?.profit_plan ?? 0)), cash_plan: round2(b.cash_plan ?? old?.cash_plan ?? 0), collection_plan: round2(b.collection_plan ?? old?.collection_plan ?? 0), note: b.note ?? old?.note ?? null, updated_at: nowIso() };
+    if (old) db.update('plans', old.id, vals); else db.insert('plans', { period, ...vals });
+    audit(ctx, { action: old ? 'PLAN_UPDATED' : 'PLAN_CREATED', entity: 'plan', entityId: old?.id, oldValue: old, newValue: vals });
+    return db.get('SELECT * FROM plans WHERE period=?', period);
+  });
+  r.get('/api/planfact', { perm: ['planfact', 'VIEW'], tags: ['planfact'], summary: 'Plan/Fakt (joriy oy + 6 oy seriya)', query: ['month'] }, async (ctx) => {
+    const period = ctx.query.month || monthOf(today());
+    return { ...svc.planFact(period), series: svc.series(6, monthRange(period).to) };
+  });
+  r.get('/api/budgets', { perm: ['planfact', 'VIEW'], tags: ['planfact'], summary: 'Bo‘lim/kategoriya byudjeti va bajarilishi', query: ['month'] }, async (ctx) => {
+    const period = ctx.query.month || monthOf(today());
+    const { from, to } = monthRange(period);
+    return db.all(`SELECT b.*, d.name AS department_name, ec.name AS category_name,
+        COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND (b.department_id IS NULL OR e.department_id=b.department_id) AND (b.category_id IS NULL OR e.category_id=b.category_id)),0) AS fact
+      FROM budgets b LEFT JOIN departments d ON d.id=b.department_id LEFT JOIN expense_categories ec ON ec.id=b.category_id WHERE b.period=? ORDER BY d.name`, from, to, period).map((x) => ({ ...x, pct: pct(x.fact, x.amount), exceeded: x.fact > x.amount }));
+  });
+  r.put('/api/budgets', { perm: ['planfact', 'EDIT'], tags: ['planfact'], summary: 'Byudjet qatori {period, department_id, category_id, amount}' }, async (ctx) => {
+    const b = ctx.body || {};
+    if (!b.period || b.amount === undefined) throw badRequest('period, amount majburiy');
+    db.run('INSERT INTO budgets (period, department_id, category_id, amount) VALUES (?,?,?,?) ON CONFLICT(period, department_id, category_id) DO UPDATE SET amount=excluded.amount', b.period, b.department_id || null, b.category_id || null, round2(b.amount));
+    audit(ctx, { action: 'BUDGET_SET', entity: 'budget', newValue: b });
+    return { ok: true };
+  });
+}

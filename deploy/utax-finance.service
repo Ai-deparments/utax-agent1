@@ -1,0 +1,20 @@
+[Unit]
+Description=UTAX Finance CRM (Node.js)
+After=network.target
+
+[Service]
+Type=simple
+User=finance
+WorkingDirectory=/opt/utax-finance-crm
+EnvironmentFile=/opt/utax-finance-crm/.env
+ExecStart=/usr/bin/node src/server.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/utax-finance-crm/data /opt/utax-finance-crm/uploads
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+{
+  "name": "utax-finance-crm",
+  "version": "1.0.0",
+  "description": "UTAX AI Moliya CRM — Finance Operating System (MVP)",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "seed": "node src/seed/seed.mjs",
+    "seed:reset": "node src/seed/seed.mjs --reset",
+    "test": "node --test tests/",
+    "backup": "bash deploy/backup.sh",
+    "openapi": "node -e \"import('./src/server.mjs').then(m=>console.log(JSON.stringify(m.buildOpenApi(),null,2)))\""
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.110.0"
+  },
+  "license": "UNLICENSED"
+}
