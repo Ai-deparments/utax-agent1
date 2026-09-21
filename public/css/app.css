@@ -223,3 +223,6 @@ a.kpi-card.link:hover { border-color: var(--primary); box-shadow: 0 6px 18px rgb
 a.stat-tile.link { border-radius: 10px; }
 a.stat-tile.link:hover { background: var(--primary-bg); }
 a.kpi-card.link:focus-visible, a.stat-tile.link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* PWA o'rnatish ko'rsatmasi */
+.guide { margin: 0 0 14px; padding-left: 20px; display: grid; gap: 8px; font-size: 13px; color: var(--text-2); }

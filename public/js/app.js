@@ -1,5 +1,6 @@
 import { api, get, post, setTokens, isLoggedIn, qs } from './api.js';
 import { h, clear, toast, err, icon, fmt, date, alert } from './ui.js';
+import { installMenuItem, registerSW } from './pwa.js';
 
 export const NAV = [
   ['dashboard', 'Bosh sahifa', 'dashboard', 'home'], ['treasury', 'Pul boshqaruvi', 'treasury', 'wallet'], ['contracts', 'Shartnomalar', 'contracts', 'contract'], ['transactions', 'Tushumlar', 'transactions', 'inflow'],
@@ -79,7 +80,7 @@ function renderLayout() {
   const searchBox = h('div', { class: 'search' }, icon('search', 16), sInput, res);
   document.addEventListener('click', (e) => { if (!searchBox.contains(e.target)) res.classList.remove('show'); });
   const bell = h('button', { class: 'iconbtn', title: 'Bildirishnomalar', onClick: () => App.navigate('notifications') }, icon('bell', 18));
-  const umenu = h('div', { class: 'menu' }, h('div', { class: 'mh' }, me.email), h('a', { href: '#/settings/profile', onClick: () => umenu.classList.remove('show') }, icon('user', 16), 'Profil, 2FA, Telegram'), h('button', { onClick: () => App.logout() }, icon('logout', 16), 'Chiqish'));
+  const umenu = h('div', { class: 'menu' }, h('div', { class: 'mh' }, me.email), h('a', { href: '#/settings/profile', onClick: () => umenu.classList.remove('show') }, icon('user', 16), 'Profil, 2FA, Telegram'), installMenuItem(() => umenu.classList.remove('show')), h('button', { onClick: () => App.logout() }, icon('logout', 16), 'Chiqish'));
   const chip = h('div', { style: { position: 'relative' } }, h('div', { class: 'userchip', onClick: (e) => { e.stopPropagation(); umenu.classList.toggle('show'); } }, h('div', { class: 'av' }, me.name.split(' ').map((x) => x[0]).slice(0, 2).join('').toUpperCase()), h('div', {}, h('div', { class: 'nm' }, me.name), h('div', { class: 'rl' }, roleLabel(me.role_code))), icon('chevronDown', 14)), umenu);
   document.addEventListener('click', () => umenu.classList.remove('show'));
   const top = h('header', { class: 'topbar' }, h('button', { class: 'iconbtn menu-btn', onClick: () => { sidebar.classList.toggle('open'); overlay.classList.toggle('show'); } }, icon('menu', 18)), searchBox, h('span', { class: 'spacer' }), bell, chip);
@@ -226,3 +227,5 @@ telegramLaunch().catch(() => ({ notice: null, twoFa: null })).then(({ notice, tw
   boot(notice, twoFa);
   if (notice && isLoggedIn()) toast(notice, 'err'); // eski sessiya bilan davom etilsa ham sababi ko'rinsin
 });
+
+registerSW();
