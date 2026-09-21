@@ -167,11 +167,20 @@ export function register(app) {
 
   r.get('/api/expenses', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'Xarajatlar', query: ['status', 'department_id', 'category_id', 'from', 'to', 'q'] }, async (ctx) => svc.list(ctx.query, ctx.user));
   r.get('/api/expenses/summary', { perm: ['expenses', 'VIEW'], tags: ['expenses'], summary: 'Xarajat xulosasi: kategoriya/bo‘lim/davr', query: ['period', 'month', 'from', 'to'] }, async (ctx) => {
-    const p = resolvePeriod(ctx.query);
+    const isoD = /^\d{4}-\d{2}-\d{2}$/;
+    const R = ctx.query.from && ctx.query.to && isoD.test(ctx.query.from) && isoD.test(ctx.query.to);
+    if ((ctx.query.from || ctx.query.to) && !R) throw badRequest('from va to YYYY-MM-DD formatida bo‘lishi kerak');
+    if (R && ctx.query.from > ctx.query.to) throw badRequest('from sanasi to sanasidan keyin bo‘lishi mumkin emas');
+    const p = R ? resolvePeriod({ period: 'custom', from: ctx.query.from, to: ctx.query.to }) : resolvePeriod(ctx.query);
+    // Oraliq berilsa: kutilayotgan/to'lanmagan so'rovlar ham shu davrdagi xarajat sanasi bo'yicha; oylik grafik davr oylarini qamraydi (max 24)
+    let monthly;
+    if (R) { const n = Math.min(24, (Number(p.to.slice(0, 4)) - Number(p.from.slice(0, 4))) * 12 + Number(p.to.slice(5, 7)) - Number(p.from.slice(5, 7)) + 1); monthly = svc.monthlyTotals(n, p.to); }
+    else monthly = svc.monthlyTotals(6);
     return {
-      period: p, total: round2(svc.total(p.from, p.to)), by_group: svc.totalsByGroup(p.from, p.to), by_category: svc.totalsByCategory(p.from, p.to),
+      period: p, range: R ? { from: p.from, to: p.to } : null, total: round2(svc.total(p.from, p.to)), by_group: svc.totalsByGroup(p.from, p.to), by_category: svc.totalsByCategory(p.from, p.to),
       by_department: db.all(`SELECT d.name, COALESCE(SUM(e.amount),0) amount FROM departments d LEFT JOIN expenses e ON e.department_id=d.id AND e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? GROUP BY d.id ORDER BY amount DESC`, p.from, p.to),
-      pending: db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status='PENDING'"), approved_unpaid: svc.approvedUnpaid(), monthly: svc.monthlyTotals(6),
+      pending: R ? db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status='PENDING' AND expense_date BETWEEN ? AND ?", p.from, p.to) : db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status='PENDING'"),
+      approved_unpaid: R ? db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status='APPROVED' AND expense_date BETWEEN ? AND ?", p.from, p.to) : svc.approvedUnpaid(), monthly,
     };
   });
   r.get('/api/expenses/categories', { tags: ['expenses'], summary: 'Xarajat kategoriyalari' }, async () => db.all('SELECT * FROM expense_categories ORDER BY sort, name').map((c) => ({ ...c, keywords: parseJson(c.keywords, []) })));

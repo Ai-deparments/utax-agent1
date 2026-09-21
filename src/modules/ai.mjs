@@ -237,6 +237,70 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
     return { answer: 'Javob juda uzun bo‘lib ketdi, savolni aniqlashtiring.', data: firstData, engine: 'LLM' };
   }
 
+  // ---------------- GEMINI GATEWAY (Google Generative Language API, fetch orqali — paketsiz) ----------------
+  // Gemini function-calling sxemasi OpenAPI subset: bo‘sh obyekt parametrlari qo‘llab-quvvatlanmaydi.
+  const gemSchema = (sch) => {
+    if (!sch || sch.type !== 'object') return sch;
+    const props = {};
+    for (const [k, v] of Object.entries(sch.properties || {})) props[k] = v.type === 'object' && !Object.keys(v.properties || {}).length ? { type: 'string', description: 'JSON obyekt (matn ko‘rinishida)' } : v;
+    return Object.keys(props).length ? { type: 'object', properties: props, ...(sch.required ? { required: sch.required } : {}) } : undefined;
+  };
+  const TOOL_LABEL = { get_treasury: 'Pul boshqaruvi', get_receivables: 'Debitorlik', get_pnl: 'Foyda va zarar', get_expenses: 'Xarajatlar', get_revenue: 'Tushumlar', get_forecast: 'Prognoz', get_service_profitability: 'Xizmatlar rentabelligi', get_plan_fact: 'Reja/Fakt', get_pending_approvals: 'Tasdiqlashlar', get_unmatched_transactions: 'Bog‘lanmagan tranzaksiyalar', get_contracts: 'Shartnomalar', get_data_quality: 'Ma’lumot sifati', get_cash_flow: 'Pul oqimi' };
+  const gemDown = new Map(); // model → qachongacha chetlab o'tiladi (band / mavjud emas)
+  async function geminiChat(question, ctx, history = []) {
+    let model = config.geminiModel || 'gemini-flash-latest';
+    // Vaqtinchalik xatolarda (503 yuklama, 429 limit, 500) qayta urinish, so'ng zaxira modelga o'tish
+    const chain = [model, model, ...['gemini-3.5-flash', 'gemini-flash-lite-latest', 'gemini-pro-latest'].filter((m) => m !== model)];
+    async function callGemini(body) {
+      let lastErr;
+      for (let k = 0; k < chain.length; k++) {
+        const m = chain[k];
+        if ((gemDown.get(m) || 0) > Date.now() && k < chain.length - 1) continue;
+        const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), 60_000);
+        try {
+          const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`, { method: 'POST', signal: ac.signal, headers: { 'content-type': 'application/json', 'x-goog-api-key': config.geminiKey }, body });
+          const j = await resp.json().catch(() => ({}));
+          if (resp.ok) { gemDown.delete(m); if (m !== model) { chain.splice(0, k); model = m; } return j; }
+          lastErr = new Error(`Gemini ${resp.status}: ${j.error?.message || 'xato'}`);
+          if ([404, 429, 503].includes(resp.status) && chain[k + 1] !== m) gemDown.set(m, Date.now() + (resp.status === 404 ? 3600e3 : 180e3));
+          if (![404, 429, 500, 503, 504].includes(resp.status)) throw lastErr;
+        } catch (e) { lastErr = e; if (e.name !== 'AbortError' && !/Gemini (404|429|500|503|504)/.test(e.message)) throw e; }
+        finally { clearTimeout(timer); }
+        if (k < chain.length - 1) await new Promise((r) => setTimeout(r, chain[k + 1] === m ? 1200 : 200));
+      }
+      throw lastErr;
+    }
+    const functionDeclarations = TOOLS.map(({ name, description, input_schema }) => { const parameters = gemSchema(input_schema); return parameters ? { name, description, parameters } : { name, description }; });
+    const sys = `${SYSTEM}\nBugungi sana: ${today()}. Kompaniya: ${settings.get('company.name') || 'UTAX'}. Javobda markdown jadval ishlatma — qisqa ro‘yxat (•) va **qalin** matndan foydalan. Summalarni butun so‘mgacha yaxlitla (tiyin ko‘rsatma), foizlarni 1 xonagacha. Savol moliyaga aloqasiz bo‘lsa, muloyimlik bilan moliyaviy savol berishni so‘ra.`;
+    const contents = [...history.slice(-8).filter((m) => m?.content).map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content).slice(0, 4000) }] })), { role: 'user', parts: [{ text: question }] }];
+    let firstData = null;
+    for (let i = 0; i < 8; i++) {
+      const j = await callGemini(JSON.stringify({ systemInstruction: { parts: [{ text: sys }] }, contents, tools: [{ functionDeclarations }], generationConfig: { temperature: 0.2 } }));
+      const cand = j.candidates?.[0];
+      const parts = cand?.content?.parts || [];
+      const calls = parts.filter((p) => p.functionCall);
+      if (!calls.length) {
+        const text = parts.filter((p) => p.text && !p.thought).map((p) => p.text).join('').trim();
+        if (!text) return cand?.finishReason === 'SAFETY' ? { answer: 'Bu so‘rovga javob bera olmayman.', data: null, engine: 'GEMINI', model: j.modelVersion || model } : null;
+        return { answer: text, data: firstData, engine: 'GEMINI', model: j.modelVersion || model };
+      }
+      contents.push(cand.content); // thoughtSignature saqlanishi uchun model javobi o‘zgarishsiz qaytariladi
+      const results = [];
+      for (const { functionCall: fc } of calls) {
+        const tool = TOOLS.find((t) => t.name === fc.name);
+        const input = { ...(fc.args || {}) };
+        if (typeof input.payload === 'string') { try { input.payload = JSON.parse(input.payload); } catch { input.payload = {}; } }
+        let out;
+        try { out = tool ? tool.run(input, ctx) : { error: 'unknown tool' }; if (!firstData && tool && tool.name !== 'propose_action') firstData = { kind: 'json', tool: TOOL_LABEL[tool.name] || tool.name, value: out }; }
+        catch (e) { out = { error: e.message }; }
+        const str = JSON.stringify(out ?? null);
+        results.push({ functionResponse: { name: fc.name, ...(fc.id ? { id: fc.id } : {}), response: str.length > 60000 ? { result_truncated: str.slice(0, 60000) } : { result: out } } });
+      }
+      contents.push({ role: 'user', parts: results });
+    }
+    return { answer: 'Javob juda uzun bo‘lib ketdi, savolni aniqlashtiring.', data: firstData, engine: 'GEMINI', model };
+  }
+
   // ---------------- AGENTS ----------------
   const AGENTS = [
     { code: 'CFO', name: 'CFO agenti', description: 'Kunlik digest: pul, debitorlik, tasdiqlar, sifat', schedule: 'daily 08:30' },
@@ -369,7 +433,7 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
     REVIEW_CONTRACT: (p) => ({ reviewed: p.contract_id }),
   };
   const svc = {
-    route, llmChat, AGENTS,
+    route, llmChat, geminiChat, AGENTS,
     propose(a, ctx, key) {
       const dedupe = key ? sha256(key) : null;
       if (dedupe && db.get("SELECT id FROM ai_actions WHERE status='PROPOSED' AND payload LIKE ?", `%"__k":"${dedupe}"%`)) return null;
@@ -402,7 +466,12 @@ AI safety: sen hech qachon tranzaksiya o'chirmaysan, pul yubormaysan, xarajat ta
     },
     async chat(question, ctx, { channel = 'WEB', history = [] } = {}) {
       let res = null;
-      if (config.anthropicKey && settings.get('ai.allow_llm')) { try { res = await llmChat(question, ctx, history); } catch (e) { res = null; console.error('[ai] LLM error:', e.message); } }
+      const lower = String(question || '').toLowerCase();
+      const needsConfirm = INTENTS.find((it) => it.name === 'APPROVE_REQUEST').test(lower); // tasdiqlash tugmasi qoidalar orqali ishlaydi
+      if (!needsConfirm && settings.get('ai.allow_llm')) {
+        if (config.geminiKey) { try { res = await geminiChat(question, ctx, history); } catch (e) { res = null; console.error('[ai] Gemini error:', e.message); } }
+        if (!res && config.anthropicKey) { try { res = await llmChat(question, ctx, history); } catch (e) { res = null; console.error('[ai] LLM error:', e.message); } }
+      }
       if (!res) res = { ...route(question, ctx), engine: 'RULES' };
       db.insert('ai_conversations', { user_id: ctx.user?.id || null, channel, question, answer: res.answer, intent: res.intent || null, engine: res.engine, created_at: nowIso() });
       return res;

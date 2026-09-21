@@ -5,7 +5,7 @@ export default async function render(root, { setTitle, can }) {
   setTitle('Integratsiyalar', 'Bank · ERP · 1C · Google Sheets · Excel · Telegram · Email — adapterlar');
   const adapters = await get('/api/integrations/adapters');
   const body = h('div', {});
-  const AD_ICON = { BANK_API: 'bank', GOOGLE_SHEETS: 'file', EXCEL: 'upload', ONE_C: 'layers', ERP: 'briefcase', TELEGRAM: 'send', EMAIL: 'inbox', WEBHOOK_IN: 'link' };
+  const AD_ICON = { BANK_API: 'bank', GOOGLE_SHEETS: 'file', EXCEL: 'upload', ONE_C: 'layers', ERP: 'briefcase', TELEGRAM: 'send', EMAIL: 'inbox', GEMINI: 'sparkles', WEBHOOK_IN: 'link' };
   async function load() {
     const list = await get('/api/integrations');
     body.replaceChildren(
@@ -64,7 +64,9 @@ export default async function render(root, { setTitle, can }) {
     endpoint: ['Endpoint yo‘li', 'masalan: /transactions'], api_key: ['API kalit', 'bank tomonidan beriladi'], username: ['Foydalanuvchi nomi'], password: ['Parol'], token: ['Kirish tokeni'],
     bot_token: ['Bot tokeni', 'Telegram’da @BotFather → /newbot orqali olinadi, masalan: 123456789:AAH…'], alert_chat_id: ['Ogohlantirishlar chati ID si', 'ixtiyoriy — kritik xabarlar yuboriladigan guruh yoki kanal ID si (masalan: -1001234567890)'],
     webhook_url: ['Webhook manzili', 'POST {to, subject, body} qabul qiladigan pochta servisi manzili'], recipients: ['Qabul qiluvchilar', 'elektron pochtalar, vergul bilan'],
+    model: ['Model', 'masalan: gemini-flash-latest (har doim eng yangi Flash) yoki gemini-2.5-pro'],
   };
+  const FIELD_BY_TYPE = { GEMINI: { api_key: ['API kalit', 'Google AI Studio → Get API key orqali olinadi'] } };
   let bankAccounts = null;
   try { bankAccounts = (await get('/api/banking/accounts')).bank.accounts; } catch {}
   function schemaFields(a, values = {}, secrets = {}) {
@@ -73,7 +75,7 @@ export default async function render(root, { setTitle, can }) {
       if (k === 'bank_account_id' && bankAccounts?.length) return { name: 'cfg_' + k, label, hint, type: 'select', options: bankAccounts.map((b) => [b.id, `${b.bank_name}${b.account_number ? ' · ' + b.account_number : ''}`]), value: values[k] ?? v };
       return { name: 'cfg_' + k, label, hint: hint || (typeof v === 'object' ? 'JSON' : ''), value: values[k] ?? (typeof v === 'object' ? JSON.stringify(v) : v), full: typeof v === 'object' || k === 'base_url' || k === 'webhook_url' };
     });
-    const sec = Object.entries(a.secret_schema || {}).map(([k]) => { const [label, hint] = FIELD[k] || [k, '']; return { name: 'sec_' + k, label, type: 'password', value: secrets[k] || '', hint: (hint ? hint + ' · ' : '') + 'shifrlangan holda saqlanadi', full: k === 'bot_token', required: k === 'bot_token' }; });
+    const sec = Object.entries(a.secret_schema || {}).map(([k]) => { const [label, hint] = FIELD_BY_TYPE[a.type]?.[k] || FIELD[k] || [k, '']; const req = k === 'bot_token' || (a.type === 'GEMINI' && k === 'api_key' && !secrets[k]); return { name: 'sec_' + k, label, type: 'password', value: secrets[k] || '', hint: (hint ? hint + ' · ' : '') + 'shifrlangan holda saqlanadi', full: k === 'bot_token' || a.type === 'GEMINI', required: req }; });
     return [{ name: 'name', label: 'Nomi', required: true, value: values.name ?? a.name, full: true, hint: 'ro‘yxatda ko‘rinadigan nom' }, ...sec, ...cfg];
   }
   const parse = (v, a) => { const config = {}, secret_config = {}; for (const k of Object.keys(a.config_schema || {})) { const raw = v['cfg_' + k]; try { config[k] = typeof a.config_schema[k] === 'object' ? JSON.parse(raw || '{}') : /^\d+$/.test(raw) ? Number(raw) : raw; } catch { config[k] = raw; } } for (const k of Object.keys(a.secret_schema || {})) if (v['sec_' + k]) secret_config[k] = v['sec_' + k]; return { config, secret_config }; };

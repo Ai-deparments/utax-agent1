@@ -1,5 +1,5 @@
 import { get, post, put, qs } from '../api.js';
-import { SOURCE_LABEL, h, kpiCard, card, fmt, money, badge, dt, date, dataTable, drawer, toast, err, promptDlg, statusLabel, icon, alert, kv } from '../ui.js';
+import { SOURCE_LABEL, dateRange, rangeLabel, h, kpiCard, card, fmt, money, badge, dt, date, dataTable, drawer, toast, err, promptDlg, statusLabel, icon, alert, kv } from '../ui.js';
 
 const TYPE = { EXPENSE: 'Xarajat', REVENUE_RECOGNITION: 'Daromad', PAYROLL: 'Oylik', CONTRACT_CHANGE: 'Shartnoma', AI_ACTION: 'AI harakati' };
 const ROLE = { DEPARTMENT_HEAD: 'Bo‘lim rahbari', FINANCE_MANAGER: 'Moliya menejeri', CFO: 'Moliya direktori', CEO: 'Bosh direktor', FOUNDER: 'Ta’sischi', ACCOUNTANT: 'Buxgalteriya', EXECUTIVE_DIRECTOR: 'Ijrochi direktor' };
@@ -9,13 +9,16 @@ export default async function render(root, { setTitle, can, params, me, roleLabe
   const drawTabs = () => tabs.replaceChildren(...[['mine', 'Men tasdiqlashim kerak'], ['pending', 'Barcha kutayotganlar'], ['requested', 'Mening so‘rovlarim'], ['all', 'Tarix'], ...(can('settings', 'EDIT') ? [['rules', 'Qoidalar va limitlar']] : [])].map(([k, l]) => h('button', { class: k === tab ? 'active' : '', onClick: () => { tab = k; drawTabs(); load(); } }, l)));
   const body = h('div', {});
   const cols = [{ key: 'id', label: '№' }, { key: 'entity_type', label: 'Turi', render: (r) => badge('INFO', TYPE[r.entity_type] || r.entity_type) }, { key: 'title', label: 'Nomi' }, { key: 'amount', label: 'Summa', money: true }, { key: 'requested_by_name', label: 'So‘ragan' }, { key: 'department_name', label: 'Bo‘lim' }, { key: 'current_step', label: 'Qadam', render: (r) => `${Math.min(r.current_step + 1, r.steps.length)}/${r.steps.length} · ${ROLE[r.steps[r.current_step]?.role] || r.steps[r.current_step]?.role || '—'}` }, { key: 'status', label: 'Holat', badge: true }, { key: 'created_at', label: 'Yaratilgan', datetime: true }, { key: 'can_act', label: '', render: (r) => (r.can_act ? badge('WARNING', 'Sizning navbatingiz') : '') }];
+  const rng = dateRange({ allowEmpty: true, onChange: () => load() });
   async function load() {
+    rng.el.style.display = tab === 'rules' ? 'none' : '';
     if (tab === 'rules') return rules();
+    const R = rng.active, per = R ? rng.value : {};
     const q = tab === 'mine' ? { status: 'PENDING', mine: '1' } : tab === 'pending' ? { status: 'PENDING' } : {};
-    let rows = await get('/api/approvals' + qs(q));
+    let rows = await get('/api/approvals' + qs({ ...q, ...per }));
     if (tab === 'requested') rows = rows.filter((a) => a.is_mine);
-    if (tab === 'pending') rows = [...rows, ...(await get('/api/approvals?status=POSTPONED'))];
-    setTitle('Tasdiqlashlar', 'Universal tasdiqlash zanjiri — limitlar qoidalarda');
+    if (tab === 'pending') rows = [...rows, ...(await get('/api/approvals' + qs({ status: 'POSTPONED', ...per })))];
+    setTitle('Tasdiqlashlar', 'Universal tasdiqlash zanjiri — limitlar qoidalarda' + (R ? ' · ' + rangeLabel(rng.value) : ''));
     const pend = rows.filter((a) => a.status === 'PENDING');
     body.replaceChildren(h('div', { class: 'kpis c4 mb16' }, kpiCard({ size: 'sm', icon: 'clock', tone: pend.length ? 'amber' : 'green', label: 'Kutilmoqda', value: String(pend.length) + ' ta' }), kpiCard({ size: 'sm', icon: 'coins', tone: 'blue', label: 'Kutayotgan summa', value: pend.reduce((s, a) => s + (a.amount || 0), 0) }), kpiCard({ size: 'sm', icon: 'clock', tone: 'gray', label: 'Kechiktirilgan', value: String(rows.filter((a) => a.status === 'POSTPONED').length) + ' ta' }), kpiCard({ size: 'sm', icon: 'checkSquare', tone: 'green', label: 'Sizning navbatingiz', value: String(rows.filter((a) => a.can_act).length) + ' ta' })), h('div', { class: 'card' }, dataTable({ columns: cols, rows, onRow: (r) => open(r.id), exportName: 'tasdiqlashlar' }).el));
   }
@@ -40,6 +43,7 @@ export default async function render(root, { setTitle, can, params, me, roleLabe
     draw();
   }
   drawTabs();
+  setTitle('Tasdiqlashlar', 'Universal tasdiqlash zanjiri — limitlar qoidalarda', [rng.el]);
   root.append(tabs, body);
   await load();
   if (params[0]) open(params[0]);

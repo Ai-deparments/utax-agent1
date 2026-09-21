@@ -75,6 +75,8 @@ export function register(app) {
       const w = ['1=1'], p = [];
       if (f.status) { w.push('a.status=?'); p.push(f.status); }
       if (f.entity_type) { w.push('a.entity_type=?'); p.push(f.entity_type); }
+      if (f.from) { w.push('substr(a.created_at,1,10)>=?'); p.push(f.from); }
+      if (f.to) { w.push('substr(a.created_at,1,10)<=?'); p.push(f.to); }
       const rows = db.all(`SELECT a.*, u.name AS requested_by_name, d.name AS department_name FROM approvals a LEFT JOIN users u ON u.id=a.requested_by LEFT JOIN departments d ON d.id=a.department_id WHERE ${w.join(' AND ')} ORDER BY a.created_at DESC LIMIT 500`, ...p)
         .map((a) => ({ ...a, steps: parseJson(a.steps, []) }));
       return rows.map((a) => ({ ...a, can_act: ['PENDING', 'POSTPONED'].includes(a.status) && !!a.steps[a.current_step] && canAct(user, a.steps[a.current_step], a), is_mine: a.requested_by === user?.id }));
@@ -83,7 +85,7 @@ export function register(app) {
   };
   app.services.approvals = svc;
 
-  r.get('/api/approvals', { perm: ['approvals', 'VIEW'], tags: ['approvals'], summary: 'Tasdiqlashlar (can_act — men tasdiqlay olamanmi)', query: ['status', 'entity_type', 'mine'] }, async (ctx) => {
+  r.get('/api/approvals', { perm: ['approvals', 'VIEW'], tags: ['approvals'], summary: 'Tasdiqlashlar (can_act — men tasdiqlay olamanmi)', query: ['status', 'entity_type', 'mine', 'from', 'to'] }, async (ctx) => {
     let rows = svc.list(ctx.query, ctx.user);
     if (ctx.query.mine === '1') rows = rows.filter((a) => a.can_act);
     if (['EMPLOYEE', 'SALES'].includes(ctx.user.role_code)) rows = rows.filter((a) => a.is_mine);

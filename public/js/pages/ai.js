@@ -19,14 +19,14 @@ export default async function render(root, { setTitle, can }) {
   };
   async function ask(q) {
     if (!q.trim()) return; inp.value = ''; add('user', q);
-    const wait = add('assistant', '…');
+    const wait = add('assistant', 'Tahlil qilinmoqda…');
     try {
       const r = await post('/api/ai/chat', { message: q, history: history.slice(-6) });
       wait.remove();
       const extra = h('div', {});
       const data = renderData(r.data); if (data) extra.append(data);
       if (r.confirm?.type === 'APPROVE') extra.append(h('div', { class: 'flex gap8 mt8' }, h('button', { class: 'btn good sm', onClick: async (e) => { e.target.disabled = true; try { const a = await post('/api/ai/confirm', { approval_id: r.confirm.approval_id }); add('assistant', `Tasdiqlandi: ${a.title} — holat: ${a.status === 'APPROVED' ? 'tasdiqlangan' : 'keyingi qadamga o‘tdi'}`); } catch (x) { err(x); } } }, icon('check', 14), 'Tasdiqlash'), h('button', { class: 'btn sm', onClick: (e) => { e.target.closest('.flex').remove(); add('assistant', 'Bekor qilindi.'); } }, 'Bekor qilish')));
-      extra.append(h('div', { class: 'eng' }, `manba: ${r.engine === 'LLM' ? 'Claude (LLM)' : 'qoidalar'}${r.model ? ' · ' + r.model : ''}`));
+      extra.append(h('div', { class: 'eng' }, `manba: ${r.engine === 'GEMINI' ? 'Gemini AI' : r.engine === 'LLM' ? 'Claude AI' : 'tizim qoidalari'}${r.model ? ' · ' + r.model : ''}`));
       add('assistant', r.answer, extra);
       history.push({ role: 'user', content: q }, { role: 'assistant', content: r.answer });
     } catch (e) { wait.remove(); err(e); }

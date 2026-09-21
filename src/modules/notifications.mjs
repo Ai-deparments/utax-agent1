@@ -47,13 +47,17 @@ export function register(app) {
       if (n.severity === 'CRITICAL' && config.telegramAlertChat) sendTelegram(config.telegramAlertChat, `🔴 <b>${esc(n.title)}</b>\n${esc(n.body || '')}`).catch(() => {});
       return created;
     },
-    listFor(userId, { unread } = {}) {
-      return db.all(`SELECT * FROM notifications WHERE user_id=? AND channel='CRM' ${unread ? 'AND is_read=0' : ''} ORDER BY created_at DESC LIMIT 200`, userId);
+    listFor(userId, { unread, from, to } = {}) {
+      const w = ['user_id=?', "channel='CRM'"], p = [userId];
+      if (unread) w.push('is_read=0');
+      if (from) { w.push('substr(created_at,1,10)>=?'); p.push(from); }
+      if (to) { w.push('substr(created_at,1,10)<=?'); p.push(to); }
+      return db.all(`SELECT * FROM notifications WHERE ${w.join(' AND ')} ORDER BY created_at DESC LIMIT ${from || to ? 1000 : 200}`, ...p);
     },
   };
   app.services.notifications = svc;
 
-  r.get('/api/notifications', { perm: ['notifications', 'VIEW'], tags: ['notifications'], summary: 'Mening bildirishnomalarim', query: ['unread'] }, async (ctx) => ({ items: svc.listFor(ctx.user.id, { unread: ctx.query.unread === '1' }), unread: db.get("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND channel='CRM' AND is_read=0", ctx.user.id).n }));
+  r.get('/api/notifications', { perm: ['notifications', 'VIEW'], tags: ['notifications'], summary: 'Mening bildirishnomalarim', query: ['unread', 'from', 'to'] }, async (ctx) => ({ items: svc.listFor(ctx.user.id, { unread: ctx.query.unread === '1', from: ctx.query.from, to: ctx.query.to }), unread: db.get("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND channel='CRM' AND is_read=0", ctx.user.id).n }));
   r.post('/api/notifications/read', { perm: ['notifications', 'EDIT'], tags: ['notifications'], summary: 'O‘qilgan deb belgilash {ids | all}' }, async (ctx) => {
     if (ctx.body?.all) db.run("UPDATE notifications SET is_read=1 WHERE user_id=? AND channel='CRM'", ctx.user.id);
     else for (const id of ctx.body?.ids || []) db.run('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?', id, ctx.user.id);
@@ -64,5 +68,5 @@ export function register(app) {
     const ids = svc.notify({ user_ids: [ctx.user.id], type: 'DAILY_DIGEST', title: 'Test bildirishnoma', body: 'UTAX Finance CRM notification engine ishlayapti.' });
     return { ok: true, created: ids.length, telegram: !!ctx.user.telegram_chat_id && !!config.telegramToken };
   });
-  r.get('/api/notifications/log', { perm: ['audit', 'VIEW'], tags: ['notifications'], summary: 'Barcha yuborilgan bildirishnomalar (admin)' }, async () => db.all('SELECT n.*, u.name AS user_name FROM notifications n LEFT JOIN users u ON u.id=n.user_id ORDER BY n.created_at DESC LIMIT 300'));
+  r.get('/api/notifications/log', { perm: ['audit', 'VIEW'], tags: ['notifications'], summary: 'Barcha yuborilgan bildirishnomalar (admin)', query: ['from', 'to'] }, async (ctx) => { const { from, to } = ctx.query; const w = [], p = []; if (from) { w.push('substr(n.created_at,1,10)>=?'); p.push(from); } if (to) { w.push('substr(n.created_at,1,10)<=?'); p.push(to); } return db.all(`SELECT n.*, u.name AS user_name FROM notifications n LEFT JOIN users u ON u.id=n.user_id ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY n.created_at DESC LIMIT ${w.length ? 2000 : 300}`, ...p); });
 }

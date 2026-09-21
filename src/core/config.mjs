@@ -27,6 +27,8 @@ export const config = {
   secretsKey: env('SECRETS_KEY', 'dev-secrets-key-change-me'),
   anthropicKey: env('ANTHROPIC_API_KEY', ''),
   aiModel: env('AI_MODEL', 'claude-opus-5'),
+  geminiKey: env('GEMINI_API_KEY', ''),
+  geminiModel: env('GEMINI_MODEL', 'gemini-flash-latest'),
   telegramToken: env('TELEGRAM_BOT_TOKEN', ''),
   telegramAlertChat: env('TELEGRAM_ALERT_CHAT_ID', ''),
   emailWebhook: env('EMAIL_WEBHOOK_URL', ''),
