@@ -25,6 +25,10 @@ Tizimdagi barcha biznes ma'lumotlari **faqat Excel fayllardan** olinadi (yoki fo
 `tests/fixtures/demo-seed.mjs` — **to'qima** ma'lumot, faqat avtomatik testlar uchun (in-memory baza). Uni haqiqiy bazaga yuklash **taqiqlanadi**.
 `src/seed/seed.mjs` — faqat tizim tuzilmasi: rollar, kirish akkauntlari (rol nomi bilan), xizmat turlari, xarajat kategoriyalari. Biznes ma'lumoti yo'q.
 
+## UI qoidalari
+
+Har qanday sahifa, komponent yoki stilni yaratishdan yoki o'zgartirishdan **oldin** [UI-SKILL.md](UI-SKILL.md) ni o'qing. Bu fayl loyiha UI'sining yagona manbai: tokenlar, komponentlar, sahifa naqshlari, responsiv tizim, kanonik variantlar va yangi sahifa qoidalari shu yerda.
+
 ## Texnik eslatmalar
 
 - Node 22.5+, paketsiz, `node:sqlite`. Ishga tushirish: `npm start` (port 8100). Testlar: `npm test`.
