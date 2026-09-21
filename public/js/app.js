@@ -118,9 +118,27 @@ async function route() {
       setActions: (actions) => clear(head.querySelector('.acts')).append(...actions.filter(Boolean)) };
     await mod.default(fresh, ctx);
     clear(cont).append(fresh);
-  } catch (e) { console.error(e); clear(cont).append(h('div', { class: 'alert crit' }, icon('alert', 16), h('div', {}, 'Sahifa xatosi: ' + e.message))); }
+  } catch (e) {
+    console.error(e);
+    // Tab eski versiyada ochiq qolgan bo‘lsa (server yangilangan), modullar mos kelmaydi — bir marta qayta yuklaymiz.
+    const stale = e instanceof SyntaxError || /dynamically imported module|Importing a module script failed|does not provide an export/i.test(e?.message || '');
+    let last = 0; try { last = Number(sessionStorage.getItem('utax.reload') || 0); } catch {}
+    if (stale && Date.now() - last > 30_000) { try { sessionStorage.setItem('utax.reload', String(Date.now())); } catch {} location.reload(); return; }
+    clear(cont).append(h('div', { class: 'alert crit' }, icon('alert', 16), h('div', {}, 'Sahifa xatosi: ' + e.message)));
+  }
 }
 window.addEventListener('hashchange', route);
+
+// Server yangilangan bo‘lsa (build o‘zgargan), ochiq tabni yangi versiyaga o‘tkazamiz.
+const BUILD = document.querySelector('meta[name="app-build"]')?.content;
+let buildCheckedAt = 0;
+async function checkBuild() {
+  if (!BUILD || Date.now() - buildCheckedAt < 60_000) return;
+  buildCheckedAt = Date.now();
+  try { const j = await (await fetch('/api/health', { cache: 'no-store' })).json(); if (j.build && j.build !== BUILD) location.reload(); } catch {}
+}
+window.addEventListener('hashchange', checkBuild);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkBuild(); });
 
 export async function boot() {
   if (!isLoggedIn()) return renderLogin();

@@ -76,7 +76,18 @@ export function buildOpenApi(app) { return _buildOpenApi((app || createApp({ dbP
 
 // ---------------- HTTP ----------------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json' };
+// Frontend build versiyasi: public/ ichidagi fayllarning eng oxirgi o‘zgarish vaqti.
+// Aktivlar /v/<build>/... orqali beriladi — yangi versiyada URL o‘zgaradi, eski brauzer keshi ishlatilmaydi.
+function frontendBuild() {
+  let max = 0;
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else max = Math.max(max, fs.statSync(f).mtimeMs); } };
+  try { walk(config.publicDir); } catch {}
+  return Math.floor(max).toString(36);
+}
 function serveStatic(reqPath, res) {
+  let versioned = false;
+  const vm = /^\/v\/[a-z0-9]+(\/.*)$/.exec(reqPath);
+  if (vm) { reqPath = vm[1]; versioned = true; }
   let p = path.normalize(path.join(config.publicDir, reqPath));
   if (!p.startsWith(config.publicDir)) { res.writeHead(403); return res.end(); }
   if (!fs.existsSync(p) || fs.statSync(p).isDirectory()) {
@@ -84,7 +95,13 @@ function serveStatic(reqPath, res) {
     p = path.join(config.publicDir, 'index.html');
   }
   const ext = path.extname(p);
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+  if (p === path.join(config.publicDir, 'index.html')) {
+    const build = frontendBuild();
+    const html = fs.readFileSync(p, 'utf8').replace(/(href|src)="\/(css|js)\//g, `$1="/v/${build}/$2/`).replace('<head>', `<head>\n<meta name="app-build" content="${build}">`);
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+    return res.end(html);
+  }
+  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': versioned ? 'public, max-age=31536000, immutable' : 'no-cache' });
   fs.createReadStream(p).pipe(res);
 }
 const SWAGGER = `<!doctype html><html><head><meta charset="utf-8"><title>UTAX Finance API</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="ui"></div><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/api/openapi.json',dom_id:'#ui',persistAuthorization:true})</script></body></html>`;
@@ -100,7 +117,7 @@ export function createServer(app) {
     const { path: p, query } = parseUrl(req);
     try {
       if (!p.startsWith('/api/')) return serveStatic(p === '/' ? '/index.html' : p, res);
-      if (p === '/api/health') return sendJson(res, 200, { ok: true, time: new Date().toISOString(), version: '1.0.0' });
+      if (p === '/api/health') return sendJson(res, 200, { ok: true, time: new Date().toISOString(), version: '1.0.0', build: frontendBuild() });
       if (p === '/api/openapi.json') { openapiCache ??= _buildOpenApi(app.r); return sendJson(res, 200, openapiCache); }
       if (p === '/api/docs') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(SWAGGER); }
       const ip = clientIp(req);
