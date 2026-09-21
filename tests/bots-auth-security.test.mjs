@@ -7,7 +7,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { createApp, createServer } from '../src/server.mjs';
-import { seed } from '../src/seed/seed.mjs';
+import { seed } from './fixtures/demo-seed.mjs';
 import { startBots } from '../src/bots/index.mjs';
 import { createTelegramApi } from '../src/bots/shared/telegram-api.mjs';
 import { webLinks } from '../src/bots/shared/keyboards.mjs';

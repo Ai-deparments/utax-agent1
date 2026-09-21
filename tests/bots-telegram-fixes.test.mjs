@@ -19,7 +19,7 @@ import { createDialogStore, dialogTag, STALE_GRACE_MS } from '../src/bots/shared
 import { startBots } from '../src/bots/index.mjs';
 import { T } from '../src/bots/shared/texts.mjs';
 import { createApp } from '../src/server.mjs';
-import { seed } from '../src/seed/seed.mjs';
+import { seed } from './fixtures/demo-seed.mjs';
 import { ROOT } from '../src/core/config.mjs';
 
 const quiet = { info() {}, log() {}, warn() {}, error() {} };

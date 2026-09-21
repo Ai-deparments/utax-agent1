@@ -758,7 +758,7 @@ export function register(app) {
       if (!u?.id || u.is_agent || u.role_code === 'AI_AGENT') throw forbidden('Taklifni faqat tizim foydalanuvchisi yubora oladi');
       const type = String(i.action_type || '').trim().toUpperCase();
       const perm = PROPOSE_PERM[type];
-      if (!perm) throw badRequest(`Bu amal turini taklif qilib bo‘lmaydi: ${type || '—'}. Mumkin: ${Object.keys(PROPOSE_PERM).join(', ')}`);
+      if (!perm) throw badRequest(`Bu amal turini taklif qilib bo‘lmaydi: ${type || '--'}. Mumkin: ${Object.keys(PROPOSE_PERM).join(', ')}`);
       if (!allowed(ctx, perm)) throw forbidden(`${type} taklifi uchun «${RESOURCE_LABEL[perm[0]] || perm[0]}» bo‘limida ${perm[1]} ruxsati kerak — sizning rolingizda yo‘q`);
       const text = String(i.title || '').replace(/\s+/g, ' ').trim();
       if (!text) throw badRequest('title kerak');

@@ -70,7 +70,7 @@ function kpiKartasi(ctx, period) {
     '',
     m.payroll ? line('KPI ustama (oylik vedomostida)', money(m.payroll.kpi)) : muted('Bu oy uchun oylik hali hisoblanmagan.'),
     m.kpis.length
-      ? ['', '<b>Metrikalar:</b>', ...m.kpis.map((k) => `• ${esc(k.rule_name || k.rule_code || 'KPI')}: ${esc(k.metric_value ?? '—')} → <b>${money(k.kpi_amount)}</b>${k.note ? ` <i>(${esc(k.note)})</i>` : ''}`), line('Metrikalar jami', money(jami))]
+      ? ['', '<b>Metrikalar:</b>', ...m.kpis.map((k) => `• ${esc(k.rule_name || k.rule_code || 'KPI')}: ${esc(k.metric_value ?? '--')} → <b>${money(k.kpi_amount)}</b>${k.note ? ` <i>(${esc(k.note)})</i>` : ''}`), line('Metrikalar jami', money(jami))]
       : muted('Qo‘lda kiritilgan metrika yo‘q — KPI qoidalar bo‘yicha avtomatik hisoblangan.'),
     qoidalar.length ? ['', '<b>Sizga tegishli KPI qoidalari:</b>', ...qoidalar.map((q) => `• ${esc(q.name)}`)] : null,
   );

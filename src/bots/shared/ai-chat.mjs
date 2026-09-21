@@ -68,5 +68,5 @@ export async function aiReply(ctx, question) {
   } finally {
     stop();
   }
-  return ctx.reply(mdToHtml(res.answer || '—'), { buttons: answerButtons(ctx, res) });
+  return ctx.reply(mdToHtml(res.answer || '--'), { buttons: answerButtons(ctx, res) });
 }

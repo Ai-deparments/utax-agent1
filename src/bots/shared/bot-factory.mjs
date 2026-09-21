@@ -62,7 +62,7 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
   // ---------- yuborish ----------
   /** urlButtons: guruh chatlari uchun (web_app tugmalar faqat shaxsiy chatda ishlaydi) */
   async function send(chatId, html, { buttons, canView, replyTo, silent, urlButtons } = {}) {
-    const parts = splitHtml(String(html ?? '').trim() || '—');
+    const parts = splitHtml(String(html ?? '').trim() || '--');
     const markup = toReplyMarkup(buttons, urlButtons ? { ...links, miniApp: false } : links, canView);
     let last = null;
     for (let k = 0; k < parts.length; k++) {

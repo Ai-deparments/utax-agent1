@@ -31,7 +31,7 @@ function tasdiqKartasi(ctx, d) {
   const e = d.expense_id ? ctx.S.expenses.get(d.expense_id) : null;
   const html = lines(
     title('💵', 'Kassa operatsiyasi — tasdiqlang'),
-    line('Kassa', k?.name || '—'),
+    line('Kassa', k?.name || '--'),
     `Turi: <b>${yonalish(d.direction)}</b>`,
     line('Summa', money(d.amount)),
     line('Maqsad', d.purpose),
@@ -146,7 +146,7 @@ export default {
           return ctx.edit(lines(
             title('✅', `Kassa: ${d.direction === 'INCOME' ? 'kirim' : 'chiqim'} yozildi`),
             line('Summa', money(tx.amount)),
-            line('Maqsad', tx.purpose || '—'),
+            line('Maqsad', tx.purpose || '--'),
             c ? line(`Shartnoma ${c.contract_number}`, `to‘langan ${money(c.paid)}, qoldiq ${money(c.remaining)}`) : null,
             e ? line(`Xarajat ${e.code}`, e.status === 'PAID' ? 'To‘langan' : e.status) : null,
             line(`${k.name} qoldig‘i`, money(qoldiq(ctx.S, k.id))),

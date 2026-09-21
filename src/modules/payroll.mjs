@@ -57,7 +57,7 @@ export function register(app) {
     summary(period) {
       const rows = svc.list(period);
       const byDept = {};
-      for (const x of rows) { byDept[x.department_name || '—'] ??= { department: x.department_name || '—', gross: 0, net: 0, kpi: 0, n: 0 }; const d = byDept[x.department_name || '—']; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n++; }
+      for (const x of rows) { byDept[x.department_name || '--'] ??= { department: x.department_name || '--', gross: 0, net: 0, kpi: 0, n: 0 }; const d = byDept[x.department_name || '--']; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n++; }
       const apr = db.get("SELECT * FROM approvals WHERE entity_type='PAYROLL' AND title LIKE ? ORDER BY id DESC LIMIT 1", `%${period}%`);
       return { period, rows: rows.length, gross: round2(sum(rows, (x) => x.gross)), net: round2(sum(rows, (x) => x.net)), kpi: round2(sum(rows, (x) => x.kpi)), status: rows.length ? (rows.every((x) => x.status === 'PAID') ? 'PAID' : rows.every((x) => x.status === 'APPROVED') ? 'APPROVED' : rows.some((x) => x.status === 'SUBMITTED') ? 'SUBMITTED' : 'DRAFT') : 'EMPTY', by_department: Object.values(byDept).map((d) => ({ ...d, gross: round2(d.gross), net: round2(d.net), kpi: round2(d.kpi) })), approval: apr ? { ...apr, steps: parseJson(apr.steps, []) } : null };
     },
@@ -167,7 +167,7 @@ export function register(app) {
     const items = months.flatMap((p) => svc.list(p).filter(scope));
     const per = months.map((p) => { const s = svc.summary(p); return { period: p, rows: s.rows, gross: s.gross, kpi: s.kpi, net: s.net, status: s.status }; });
     const byDept = {};
-    for (const x of items) { const k = x.department_name || '—'; byDept[k] ??= { department: k, gross: 0, net: 0, kpi: 0, n: new Set() }; const d = byDept[k]; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n.add(x.employee_id); }
+    for (const x of items) { const k = x.department_name || '--'; byDept[k] ??= { department: k, gross: 0, net: 0, kpi: 0, n: new Set() }; const d = byDept[k]; d.gross += x.gross; d.net += x.net; d.kpi += x.kpi; d.n.add(x.employee_id); }
     return { from, to, months, per_month: per, items, employees: new Set(items.map((x) => x.employee_id)).size, gross: round2(sum(items, (x) => x.gross)), kpi: round2(sum(items, (x) => x.kpi)), net: round2(sum(items, (x) => x.net)),
       by_department: Object.values(byDept).map((d) => ({ department: d.department, n: d.n.size, gross: round2(d.gross), kpi: round2(d.kpi), net: round2(d.net) })) };
   });

@@ -2,7 +2,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.mjs';
-import { seed } from '../src/seed/seed.mjs';
+import { seed } from './fixtures/demo-seed.mjs'; // to'qima test ma'lumotlari — faqat testlar uchun
 import { monthRange, monthOf, today } from '../src/core/util.mjs';
 
 let app, S, db, cfo;

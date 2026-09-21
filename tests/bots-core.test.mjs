@@ -12,7 +12,7 @@ import { createDialogStore } from '../src/bots/shared/dialogs.mjs';
 import { createStateStore, startBots } from '../src/bots/index.mjs';
 import { ensureOwner } from '../src/bots/shared/owners.mjs';
 import { createApp, createServer } from '../src/server.mjs';
-import { seed } from '../src/seed/seed.mjs';
+import { seed } from './fixtures/demo-seed.mjs';
 
 let H, server, base;
 before(async () => {

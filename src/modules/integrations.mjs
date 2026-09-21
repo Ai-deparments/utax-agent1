@@ -3,6 +3,7 @@ import { encryptSecret, decryptSecret, maskSecret } from '../core/auth.mjs';
 import { config } from '../core/config.mjs';
 import { nowIso, parseJson, sha256, uid } from '../core/util.mjs';
 import { parseCsv, parseXlsx } from '../core/export.mjs';
+import { parseLedger, importLedger } from '../import/ledger-journal.mjs';
 
 /**
  * ADAPTER-BASED INTEGRATIONS. Har adapter: {type, name, description, config_schema, secret_schema, test(cfg,sec), pull(cfg,sec,since) → rows}
@@ -26,6 +27,7 @@ export const ADAPTERS = {
     url: (cfg) => `https://docs.google.com/spreadsheets/d/${cfg.sheet_id}/export?format=csv&gid=${cfg.gid || 0}`,
     async test(cfg) { const res = await fetch(this.url(cfg)); if (!res.ok) throw new Error(`HTTP ${res.status}`); return 'OK'; },
     async pull(cfg) { const res = await fetch(this.url(cfg)); const text = await res.text(); return { table: parseCsv(text), mapping: cfg.mapping }; } },
+  LEDGER: { name: 'Moliya jurnali (Excel)', description: 'Double-entry jurnal: shartnomalar (sotuv), bank/kassa tushumlari, xarajatlar, dividend va o‘tkazmalar — faqat fayldagi ma’lumot', config_schema: {}, secret_schema: {}, async test() { return 'Qo‘lda yuklanadi'; }, async pull() { return []; } },
   EXCEL: { name: 'Excel / CSV fayl', description: 'Bank ko‘chirmasini Excel (.xlsx) yoki CSV fayl sifatida yuklash', config_schema: { bank_account_id: 1 }, secret_schema: {}, async test() { return 'Manual'; }, async pull() { return []; } },
   ONE_C: { name: '1C', description: '1C HTTP-servis (JSON) — bank/kassa hujjatlari', config_schema: { base_url: 'http://1c.local/base/hs/finance', endpoint: '/transactions', bank_account_id: 1 }, secret_schema: { username: '', password: '' },
     auth: (sec) => ({ Authorization: 'Basic ' + Buffer.from(`${sec.username}:${sec.password}`).toString('base64') }),
@@ -131,6 +133,26 @@ export function register(app) {
   };
 
   r.get('/api/integrations', { perm: ['integrations', 'VIEW'], tags: ['integrations'], summary: 'Integratsiyalar' }, async () => db.all('SELECT * FROM integrations ORDER BY id').map(view));
+  r.post('/api/integrations/ledger-upload', { perm: ['integrations', 'EDIT'], tags: ['integrations'], summary: 'Moliya jurnalini (Excel) yuklash: {xlsx_base64, file_name, preview?}' }, async (ctx) => {
+    app.rbac.require(ctx.user, 'transactions', 'CREATE');
+    const b = ctx.body || {};
+    let table;
+    try { table = b.xlsx_base64 ? parseXlsx(Buffer.from(b.xlsx_base64, 'base64')) : null; }
+    catch (e) { throw badRequest('Faylni o‘qib bo‘lmadi: ' + e.message + '. Faqat .xlsx formatini yuklang.'); }
+    if (!table) throw badRequest('Fayl kerak (.xlsx)');
+    const fileName = String(b.file_name || 'jurnal.xlsx').slice(0, 200);
+    let parsed;
+    try { parsed = parseLedger(table); } catch (e) { throw badRequest(e.message); }
+    if (b.preview) return { file: fileName, ...parsed.stats, skipped: parsed.skipped, warnings: parsed.warnings };
+    let res;
+    try { res = importLedger(app, table, ctx, { fileName }); } catch (e) { throw badRequest(e.message); }
+    let integ = db.get("SELECT * FROM integrations WHERE type='LEDGER' ORDER BY id LIMIT 1");
+    if (!integ) { const id = db.insert('integrations', { type: 'LEDGER', name: 'Moliya jurnali (Excel)', config: '{}', secret_config: encryptSecret('{}'), created_at: nowIso() }); integ = { id }; }
+    db.insert('integration_sync_logs', { integration_id: integ.id, started_at: nowIso(), finished_at: nowIso(), status: 'OK', rows_in: res.rows, rows_new: res.created.bank + res.created.cash + res.created.contracts, message: JSON.stringify({ file: fileName, created: res.created, duplicates: res.duplicates, skipped: res.skipped.length }) });
+    db.run('UPDATE integrations SET last_sync_at=?, last_status=? WHERE id=?', nowIso(), `Yuklandi: ${fileName} — ${res.created.contracts} shartnoma, ${res.created.bank} bank, ${res.created.cash} kassa, ${res.duplicates} takroriy`, integ.id);
+    audit(ctx, { action: 'IMPORT', entity: 'integration', entityId: integ.id, newValue: { file: fileName, created: res.created, duplicates: res.duplicates, skipped: res.skipped.length, warnings: res.warnings.length } });
+    return res;
+  });
   r.post('/api/integrations/excel-upload', { perm: ['integrations', 'EDIT'], tags: ['integrations'], summary: 'Excel (.xlsx) yoki CSV bank ko‘chirmasini yuklash: {bank_account_id, xlsx_base64|csv, preview?, integration_id?}' }, async (ctx) => {
     app.rbac.require(ctx.user, 'transactions', 'CREATE');
     const b = ctx.body || {};

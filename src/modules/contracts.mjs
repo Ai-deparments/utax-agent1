@@ -104,18 +104,19 @@ export function register(app) {
       const advance_amount = b.advance_amount !== undefined && b.advance_amount !== null && b.advance_amount !== '' ? round2(b.advance_amount) : round2((amount * advance_pct) / 100);
       const number = b.contract_number?.trim() || nextNumber(b.service_type_id);
       if (db.get('SELECT id FROM contracts WHERE contract_number=?', number)) throw conflict('Shartnoma raqami band: ' + number);
-      const advance_due_date = b.advance_due_date || (advance_amount > 0 ? addDays(b.contract_date, 5) : null);
-      const payment_due_date = b.payment_due_date || (b.end_date ? addDays(b.end_date, 10) : addDays(b.contract_date, 30));
+      // Muddatlar faqat foydalanuvchi/Excel bergan bo'lsa — tizim o'zi taxmin qilmaydi (CLAUDE.md 1-qoida)
+      const advance_due_date = b.advance_due_date || null;
+      const payment_due_date = b.payment_due_date || null;
       const id = db.tx(() => {
         const id = db.insert('contracts', {
           contract_number: number, company_id: b.company_id, service_type_id: b.service_type_id, title: b.title || null, amount, currency: b.currency || 'UZS',
-          contract_date: b.contract_date, start_date: b.start_date || b.contract_date, end_date: b.end_date || null,
+          contract_date: b.contract_date, start_date: b.start_date || null, end_date: b.end_date || null,
           advance_pct, advance_amount, expected_final_payment: round2(amount - advance_amount), advance_due_date, payment_due_date,
           manager_user_id: b.manager_user_id || ctx?.user?.id || null, contract_status: b.contract_status === 'DRAFT' ? 'DRAFT' : 'ACTIVE',
           service_status: b.service_status || 'NOT_STARTED', payment_status: 'EXPECTED', comments: b.comments || null, created_by: ctx?.user?.id || null, created_at: nowIso(),
         });
-        if (advance_amount > 0) db.insert('payment_schedules', { contract_id: id, kind: 'ADVANCE', due_date: advance_due_date, amount: advance_amount });
-        if (amount - advance_amount > 0.005) db.insert('payment_schedules', { contract_id: id, kind: 'FINAL', due_date: payment_due_date, amount: round2(amount - advance_amount) });
+        if (advance_amount > 0 && advance_due_date) db.insert('payment_schedules', { contract_id: id, kind: 'ADVANCE', due_date: advance_due_date, amount: advance_amount });
+        if (amount - advance_amount > 0.005 && payment_due_date) db.insert('payment_schedules', { contract_id: id, kind: 'FINAL', due_date: payment_due_date, amount: round2(amount - advance_amount) });
         return id;
       });
       recompute(id);

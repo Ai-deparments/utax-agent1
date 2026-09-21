@@ -20,8 +20,8 @@ function xarajatKartasi(ctx, e, { tasdiq } = {}) {
     e.department_name ? line('Bo‘lim', e.department_name) : null,
     e.requested_by_name ? line('So‘ragan', e.requested_by_name) : null,
     e.counterparty ? line('Kontragent', e.counterparty) : null,
-    line('Kerakli sana', e.required_date ? date(e.required_date) : '—'),
-    line('To‘lov usuli', PAYMENT_METHOD[e.payment_method] || e.payment_method || '—'),
+    line('Kerakli sana', e.required_date ? date(e.required_date) : '--'),
+    line('To‘lov usuli', PAYMENT_METHOD[e.payment_method] || e.payment_method || '--'),
     tasdiq === 'b' ? '\n🏦 <b>Bankdan to‘landi</b> deb belgilansinmi?' : null,
     tasdiq === 'c' ? `\n💵 <b>${esc(kassa?.name || 'Kassa')}</b> dan naqd to‘landi deb yozilsinmi? Kassa chiqimi yaratiladi.` : null,
   );

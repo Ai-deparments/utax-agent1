@@ -64,7 +64,7 @@ function korinish(hisob, fayl, rows) {
     line('Chiqim', `${chiqim.length} ta · ${money(sum(chiqim, (r) => r.amount))}`),
     '',
     '<b>Birinchi qatorlar:</b>',
-    ...rows.slice(0, 5).map((r) => `${r.direction === 'INCOME' ? '🟢 +' : '🔴 −'}${esc(fmt(r.amount))} · ${esc(date(r.tx_date))} · ${esc(clip(r.counterparty_name || r.purpose || '—', 40))}`),
+    ...rows.slice(0, 5).map((r) => `${r.direction === 'INCOME' ? '🟢 +' : '🔴 −'}${esc(fmt(r.amount))} · ${esc(date(r.tx_date))} · ${esc(clip(r.counterparty_name || r.purpose || '--', 40))}`),
     rows.length > 5 ? muted(`… yana ${rows.length - 5} ta`) : null,
     '',
     'Import qilinsinmi? Takroriy qatorlar o‘tkazib yuboriladi, kirimlar shartnomalar bilan avtomatik bog‘lanadi.',

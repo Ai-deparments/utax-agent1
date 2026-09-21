@@ -30,7 +30,7 @@ function pnlCard(ctx, month) {
 }
 
 // ---------- Xizmatlar rentabelligi ----------
-const VERDICT_ICON = { OK: '✅', LOW: '⚠️', LOSS: '❌', NO_DATA: '—' };
+const VERDICT_ICON = { OK: '✅', LOW: '⚠️', LOSS: '❌', NO_DATA: '--' };
 function svcCard(ctx, month) {
   const sp = ctx.S.reports.serviceProfitability({ month });
   const html = lines(
@@ -39,7 +39,7 @@ function svcCard(ctx, month) {
     line('Taqsimlangan umumiy OPEX', money(sp.shared_opex)),
     '',
     ...sp.rows.map((r) => lines(
-      `${VERDICT_ICON[r.verdict] || '—'} <b>${esc(r.name)}</b> — sof foyda <b>${esc(money(r.net_profit))}</b> <i>(marja ${esc(pct(r.margin))} · ${esc(statusLabel(r.verdict))})</i>`,
+      `${VERDICT_ICON[r.verdict] || '--'} <b>${esc(r.name)}</b> — sof foyda <b>${esc(money(r.net_profit))}</b> <i>(marja ${esc(pct(r.margin))} · ${esc(statusLabel(r.verdict))})</i>`,
       `    daromad ${esc(money(r.revenue))} · to‘g‘ridan ${esc(money(r.direct_expense))} · oylik ${esc(money(r.payroll))} · OPEX ${esc(money((Number(r.dept_opex) || 0) + (Number(r.allocated_opex) || 0)))}`,
     )),
     '',

@@ -27,7 +27,7 @@ function fmtVal(key, v) {
   if (typeof v === 'boolean') return v ? 'ha' : 'yo‘q';
   if (typeof v === 'number') return MONEY_KEYS.test(key) ? money(v) : String(v);
   if (typeof v === 'string' && STATUS_LABEL[v]) return statusLabel(v);
-  return String(v ?? '—');
+  return String(v ?? '--');
 }
 export function summarize(result) {
   if (result === null || result === undefined) return muted('Natija yo‘q');
@@ -136,7 +136,7 @@ async function actionDecide(ctx) {
 }
 
 // ---------- AI agentlar ----------
-const scheduleLabel = (s) => String(s || '—')
+const scheduleLabel = (s) => String(s || '--')
   .replace(/^daily\s+(\d{2}:\d{2})$/, 'har kuni $1').replace(/^daily$/, 'har kuni').replace(/^monthly$/, 'har oy')
   .replace(/every\s+(\d+)m/, 'har $1 daqiqa').replace(/on import/, 'importda').replace(/hourly/, 'har soat');
 
@@ -148,7 +148,7 @@ async function agentlar(ctx) {
     '',
     ...list.map((a, n) => lines(
       `${n + 1}. ${a.is_active ? '🟢' : '⚪'} <b>${esc(a.name)}</b>${a.proposed ? ` · 🤖 ${a.proposed} taklif` : ''}`,
-      `    <i>${esc(a.description || '')} · ${esc(scheduleLabel(a.schedule))} · oxirgi: ${esc(a.last_run_at ? dt(a.last_run_at) : '—')}</i>`,
+      `    <i>${esc(a.description || '')} · ${esc(scheduleLabel(a.schedule))} · oxirgi: ${esc(a.last_run_at ? dt(a.last_run_at) : '--')}</i>`,
     )),
   );
   const buttons = ctx.can(...P.aiRun) ? chunk(list.filter((a) => a.is_active).map((a) => ({ text: `▶ ${clip(a.name.replace(/\s+agenti$/i, ''), 24)}`, cb: `r.run:${a.code}` })), 2) : [];

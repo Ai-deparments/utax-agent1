@@ -21,21 +21,21 @@ export function register(app) {
 
   const svc = {
     bankBalance(asOf = today(), accountId) {
-      const rows = db.all(`SELECT ba.id, ba.bank_name, ba.account_number, ba.currency, ba.opening_balance,
+      const rows = db.all(`SELECT ba.id, ba.bank_name, ba.account_number, ba.currency, ba.opening_balance, ba.opening_date,
           COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM bank_transactions t WHERE t.bank_account_id=ba.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement
         FROM bank_accounts ba WHERE ba.is_active=1 ${accountId ? 'AND ba.id=?' : ''}`, asOf, ...(accountId ? [accountId] : []));
       return balances(rows);
     },
     cashBalance(asOf = today()) {
-      const rows = db.all(`SELECT ca.id, ca.name, ca.currency, ca.opening_balance,
+      const rows = db.all(`SELECT ca.id, ca.name, ca.currency, ca.opening_balance, ca.opening_date,
           COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM cash_transactions t WHERE t.cash_account_id=ca.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement
         FROM cash_accounts ca WHERE ca.is_active=1`, asOf);
       return balances(rows);
     },
     /** Davr bo'yicha pul harakati (bank+kassa) */
     flows(from, to) {
-      const b = db.get(`SELECT COALESCE(SUM(CASE WHEN direction='INCOME' THEN amount END),0) inc, COALESCE(SUM(CASE WHEN direction='EXPENSE' THEN amount END),0) exp FROM bank_transactions WHERE reversed_at IS NULL AND tx_date BETWEEN ? AND ?`, from, to);
-      const c = db.get(`SELECT COALESCE(SUM(CASE WHEN direction='INCOME' THEN amount END),0) inc, COALESCE(SUM(CASE WHEN direction='EXPENSE' THEN amount END),0) exp FROM cash_transactions WHERE reversed_at IS NULL AND tx_date BETWEEN ? AND ?`, from, to);
+      const b = db.get(`SELECT COALESCE(SUM(CASE WHEN direction='INCOME' THEN amount END),0) inc, COALESCE(SUM(CASE WHEN direction='EXPENSE' THEN amount END),0) exp FROM bank_transactions WHERE reversed_at IS NULL AND COALESCE(cf_class,'OPERATING')<>'TRANSFER' AND tx_date BETWEEN ? AND ?`, from, to);
+      const c = db.get(`SELECT COALESCE(SUM(CASE WHEN direction='INCOME' THEN amount END),0) inc, COALESCE(SUM(CASE WHEN direction='EXPENSE' THEN amount END),0) exp FROM cash_transactions WHERE reversed_at IS NULL AND COALESCE(cf_class,'OPERATING')<>'TRANSFER' AND tx_date BETWEEN ? AND ?`, from, to);
       return { income: round2(b.inc + c.inc), expense: round2(b.exp + c.exp), net: round2(b.inc + c.inc - b.exp - c.exp) };
     },
     monthlyFlows(months = 6, asOf = today()) {
@@ -191,6 +191,22 @@ export function register(app) {
     audit(ctx, { action: 'CREATE', entity: 'bank_account', entityId: id, newValue: b });
     return db.get('SELECT * FROM bank_accounts WHERE id=?', id);
   });
+  // Boshlang'ich qoldiq / nomni tahrirlash (qoldiq faqat foydalanuvchi kiritadi — tizim o'ylab topmaydi)
+  const isoD = /^\d{4}-\d{2}-\d{2}$/;
+  function editAccount(table, id, b, ctx, fields) {
+    const old = db.get(`SELECT * FROM ${table} WHERE id=?`, id);
+    if (!old) throw badRequest('Hisob topilmadi');
+    const upd = {};
+    for (const k of fields) if (b[k] !== undefined) upd[k] = b[k] === '' ? null : b[k];
+    if (upd.opening_balance !== undefined) { const n = Number(upd.opening_balance); if (!Number.isFinite(n)) throw badRequest('Boshlang‘ich qoldiq raqam bo‘lishi kerak'); upd.opening_balance = round2(n); }
+    if (upd.opening_date !== undefined && upd.opening_date !== null && !isoD.test(upd.opening_date)) throw badRequest('Sana YYYY-MM-DD formatida bo‘lishi kerak');
+    if (!Object.keys(upd).length) return old;
+    db.update(table, id, upd);
+    audit(ctx, { action: 'UPDATE', entity: table === 'bank_accounts' ? 'bank_account' : 'cash_account', entityId: Number(id), oldValue: Object.fromEntries(Object.keys(upd).map((k) => [k, old[k]])), newValue: upd });
+    return db.get(`SELECT * FROM ${table} WHERE id=?`, id);
+  }
+  r.patch('/api/banking/accounts/:id', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Bank hisobini tahrirlash (nom, raqam, boshlang‘ich qoldiq va sana)' }, async (ctx) => editAccount('bank_accounts', ctx.params.id, ctx.body || {}, ctx, ['bank_name', 'account_number', 'opening_balance', 'opening_date']));
+  r.patch('/api/banking/cash-accounts/:id', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassani tahrirlash (nom, boshlang‘ich qoldiq va sana)' }, async (ctx) => editAccount('cash_accounts', ctx.params.id, ctx.body || {}, ctx, ['name', 'opening_balance', 'opening_date']));
   r.post('/api/banking/cash-accounts', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassa qo‘shish' }, async (ctx) => {
     const b = ctx.body || {};
     if (!b.name) throw badRequest('name majburiy');

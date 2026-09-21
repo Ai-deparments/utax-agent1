@@ -83,7 +83,7 @@ function tushumlar(ctx, faqatBoglanmagan) {
     '',
     rows.length ? rows.map((t) => {
       const obyekt = t.matched_contract_number ? ` → <b>${esc(t.matched_contract_number)}</b>` : t.suggested_contract_number ? ` → ${esc(t.suggested_contract_number)}?` : '';
-      return `${statusIcon(t.matching_status)} ${esc(date(t.tx_date))} · <b>${esc(money(t.amount))}</b> · ${esc(clip(t.counterparty_name || t.purpose || '—', 32))}${obyekt}`;
+      return `${statusIcon(t.matching_status)} ${esc(date(t.tx_date))} · <b>${esc(money(t.amount))}</b> · ${esc(clip(t.counterparty_name || t.purpose || '--', 32))}${obyekt}`;
     }).join('\n') : muted(faqatBoglanmagan ? 'Bog‘lanmagan kirim yo‘q ✅' : 'Kirimlar yo‘q.'),
   );
   const buttons = [

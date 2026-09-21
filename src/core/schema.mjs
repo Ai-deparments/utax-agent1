@@ -167,6 +167,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   created_at TEXT NOT NULL, updated_at TEXT);
 CREATE INDEX IF NOT EXISTS ix_apr_status ON approvals(status);
 
+CREATE TABLE IF NOT EXISTS import_keys (key TEXT PRIMARY KEY, entity TEXT, entity_id INTEGER, file TEXT, created_at TEXT);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, channel TEXT NOT NULL DEFAULT 'CRM', type TEXT NOT NULL,
   severity TEXT DEFAULT 'INFO', title TEXT NOT NULL, body TEXT, entity_type TEXT, entity_id INTEGER,

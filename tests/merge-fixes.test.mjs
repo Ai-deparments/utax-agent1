@@ -10,7 +10,7 @@ import path from 'node:path';
 import { config, ROOT } from '../src/core/config.mjs';
 import { today, localDate, appTimeZone } from '../src/core/util.mjs';
 import { createApp } from '../src/server.mjs';
-import { seed } from '../src/seed/seed.mjs';
+import { seed } from './fixtures/demo-seed.mjs';
 import { createBotHarness } from './helpers/bot-harness.mjs';
 import { providersFromEnv, envReader } from '../scripts/llm-check.mjs';
 
