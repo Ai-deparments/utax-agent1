@@ -3,6 +3,14 @@ services:
     build: .
     container_name: utax-finance
     restart: unless-stopped
+    # .env dagi barcha o'zgaruvchilar (GEMINI_*, GROQ_*, AI_*, BOT_*, APP_TZ ...) konteynerga o'tadi.
+    # Image ichida .env yo'q (Dockerfile uni COPY qilmaydi) — config.mjs konteynerda faqat process.env ni ko'radi.
+    # `required: false` — Docker Compose >= 2.24 (eski versiyada: `env_file: .env` qatoriga almashtiring).
+    env_file:
+      - path: .env
+        required: false
+    # environment: env_file'dan ustun. PORT/HOST/DB_PATH — konteyner ichidagi qiymatlar (majburiy override).
+    # Bo'sh qiymat = config.mjs default'i (src/core/config.mjs — yagona manba).
     environment:
       - PORT=8100
       - HOST=0.0.0.0
@@ -10,8 +18,22 @@ services:
       - DB_PATH=/app/data/finance.db
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
       - SECRETS_KEY=${SECRETS_KEY:?set SECRETS_KEY in .env}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - AI_MODEL=${AI_MODEL:-claude-opus-5}
+      # Vaqt zonasi: scheduler (01:00 revenue, 03:00 backup, 08:30 digest) va "bugun" sanasi shu zonada
+      - APP_TZ=${APP_TZ:-Asia/Tashkent}
+      # AI: Gemini asosiy → Groq zaxira → qoidalar dvigateli (kalit yo'q bo'lsa)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
+      - GEMINI_FALLBACK_MODELS=${GEMINI_FALLBACK_MODELS:-}
+      - GEMINI_RPM=${GEMINI_RPM:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-}
+      - GROQ_FALLBACK_MODEL=${GROQ_FALLBACK_MODEL:-}
+      - AI_MASK_NAMES=${AI_MASK_NAMES:-}
+      - AI_MEMORY_TURNS=${AI_MEMORY_TURNS:-}
+      - AI_MEMORY_HOURS=${AI_MEMORY_HOURS:-}
+      - AI_MAX_TOOLS=${AI_MAX_TOOLS:-}
+      - AI_TIMEOUT_MS=${AI_TIMEOUT_MS:-}
+      # Telegram botlar (docs/BOTS.md)
       - BOT_RAHBAR_TOKEN=${BOT_RAHBAR_TOKEN:-}
       - BOT_BUXGALTER_TOKEN=${BOT_BUXGALTER_TOKEN:-}
       - BOT_SOROV_TOKEN=${BOT_SOROV_TOKEN:-}

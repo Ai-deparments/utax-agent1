@@ -30,13 +30,15 @@ export function register(app) {
       const varOpex3 = db.get(`SELECT COALESCE(SUM(e.amount),0) s FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND e.is_recurring=0 AND COALESCE(ec.pnl_group,'')<>'PAYROLL'`, m3from, m3to).s;
       const varDaily = varOpex3 / Math.max(1, daysBetween(m3from, m3to) + 1);
       const variableEst = round2(varDaily * horizonDays);
-      const cashNow = round2(S().banking.bankBalance(asOf).total + S().banking.cashBalance(asOf).total);
+      // Boshlang'ich qoldiq kiritilmagan bo'lsa hozirgi pul noma'lum → prognoz qoldig'i/risk ham null ('--'), to'qima raqam chiqmaydi
+      const bankNow = S().banking.bankBalance(asOf).total, cashBox = S().banking.cashBalance(asOf).total;
+      const cashNow = bankNow === null || cashBox === null ? null : round2(bankNow + cashBox);
       const tr = S().reports.treasury(asOf);
       const scenarios = {};
       for (const [name, s] of Object.entries(scen)) {
         const inflow = round2(sum(dueIn, (x) => x.amount) * s.collection_rate + sum(overdue, (x) => x.amount) * s.overdue_rate + pipelineAmt * s.pipeline_rate);
         const outflow = round2((out.total + payrollEst + variableEst) * s.expense_factor);
-        scenarios[name] = { inflow, outflow, net: round2(inflow - outflow), projected_cash: round2(cashNow + inflow - outflow), projected_available: round2(tr.available_cash + inflow - outflow), assumptions: s,
+        scenarios[name] = { inflow, outflow, net: round2(inflow - outflow), projected_cash: cashNow === null ? null : round2(cashNow + inflow - outflow), projected_available: tr.available_cash === null ? null : round2(tr.available_cash + inflow - outflow), assumptions: s,
           breakdown: { due_in_horizon: round2(sum(dueIn, (x) => x.amount)), overdue: round2(sum(overdue, (x) => x.amount)), pipeline: pipelineAmt, approved_unpaid: out.approved_unpaid, recurring: out.recurring, payroll: round2(payrollEst), variable_opex: variableEst } };
       }
       // haftalik/oylik seriya (base)
@@ -49,11 +51,11 @@ export function register(app) {
         const inc = round2(sum(dueIn.filter((x) => x.due > cur && x.due <= nxt || (cur === asOf && x.due === asOf)), (x) => x.amount) * base.collection_rate + (cur === asOf ? sum(overdue, (x) => x.amount) * base.overdue_rate * 0.5 : sum(overdue, (x) => x.amount) * base.overdue_rate * 0.5 / Math.max(1, Math.ceil(horizonDays / step) - 1)));
         const frac = daysBetween(cur, nxt) / horizonDays;
         const exp = round2((out.total + payrollEst + variableEst) * frac * base.expense_factor);
-        cash = round2(cash + inc - exp);
+        cash = cash === null ? null : round2(cash + inc - exp);
         series.push({ from: cur, to: nxt, inflow: inc, outflow: exp, cash });
         cur = nxt;
       }
-      const result = { as_of: asOf, horizon_days: horizonDays, to: end, cash_now: cashNow, available_now: tr.available_cash, scenarios, series, risk: scenarios.conservative.projected_available < Number(settings.get('cash.low_liquidity_threshold') || 0) ? 'HIGH' : scenarios.base.projected_available < Number(settings.get('cash.low_liquidity_threshold') || 0) ? 'MEDIUM' : 'LOW' };
+      const result = { as_of: asOf, horizon_days: horizonDays, to: end, cash_now: cashNow, available_now: tr.available_cash, scenarios, series, risk: scenarios.base.projected_available === null ? null : scenarios.conservative.projected_available < Number(settings.get('cash.low_liquidity_threshold') || 0) ? 'HIGH' : scenarios.base.projected_available < Number(settings.get('cash.low_liquidity_threshold') || 0) ? 'MEDIUM' : 'LOW' };
       db.insert('forecasts', { created_at: nowIso(), horizon_days: horizonDays, scenario: 'ALL', payload: JSON.stringify({ cash_now: cashNow, scenarios: Object.fromEntries(Object.entries(scenarios).map(([k, v]) => [k, { inflow: v.inflow, outflow: v.outflow, projected_cash: v.projected_cash }])) }) });
       return result;
     },

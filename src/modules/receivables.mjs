@@ -26,7 +26,8 @@ export function register(app) {
       const critDays = Number(settings.get('collection.critical_days') || 15);
       let rows = app.services.contracts.list({ active: true, service_code: f.service, manager_user_id: f.manager_user_id, company_id: f.company_id });
       // O'tgan sana: shu sanagacha tuzilgan shartnomalar va shu sanagacha kelgan to'lovlar bo'yicha
-      if (asOf < today()) rows = rows.filter((c) => c.contract_date <= asOf).map((c) => { const paid = round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE contract_id=? AND reversed_at IS NULL AND paid_at<=?', c.id, asOf).s); return { ...c, paid, remaining: round2(Math.max(0, c.amount - paid)) }; });
+      // (shartnoma sanasi noma'lum — NULL, masalan Excel importi — chiqarib tashlanmaydi: sanasi yo'q qarz yo'qolib qolmasin)
+      if (asOf < today()) rows = rows.filter((c) => !c.contract_date || c.contract_date <= asOf).map((c) => { const paid = round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE contract_id=? AND reversed_at IS NULL AND paid_at<=?', c.id, asOf).s); return { ...c, paid, remaining: round2(Math.max(0, c.amount - paid)) }; });
       rows = rows.filter((c) => c.remaining > 0.005);
       rows = rows.map((c) => {
         // To'lovlarni jadvalga FIFO taqsimlash → to'lanmagan qismlar (portions) va ularning muddati
@@ -37,6 +38,8 @@ export function register(app) {
         const covered = round2(sum(portions, (p) => p.amount));
         if (c.remaining - covered > 0.005) portions.push({ due: c.payment_due_date || c.next_due_date || null, amount: round2(c.remaining - covered), kind: 'REMAINDER' });
         const overdueP = portions.filter((p) => p.due && p.due < asOf);
+        // Muddati belgilanmagan qism (Excel'da to'lov muddati yo'q) — muddati o'tgan EMAS, alohida guruh
+        const no_due_amount = round2(sum(portions.filter((p) => !p.due), (p) => p.amount));
         const overdue_amount = round2(sum(overdueP, (p) => p.amount));
         const days_overdue = overdueP.length ? daysBetween(overdueP.reduce((m, p) => (p.due < m ? p.due : m), overdueP[0].due), asOf) : 0;
         const dated = portions.filter((p) => p.due).sort((a, b) => a.due.localeCompare(b.due));
@@ -45,7 +48,7 @@ export function register(app) {
         const inWin = (n) => round2(sum(portions.filter((p) => p.due && p.due >= asOf && p.due <= addDays(asOf, n)), (p) => p.amount));
         return {
           id: c.id, contract_id: c.id, contract_number: c.contract_number, company_id: c.company_id, client: c.company_name, inn: c.company_inn, service_code: c.service_code, service_name: c.service_name,
-          manager: c.manager_name, manager_user_id: c.manager_user_id, total: c.amount, paid: c.paid, debt: c.remaining, overdue_amount, current_amount: round2(c.remaining - overdue_amount),
+          manager: c.manager_name, manager_user_id: c.manager_user_id, total: c.amount, paid: c.paid, debt: c.remaining, overdue_amount, current_amount: round2(c.remaining - overdue_amount), no_due_amount,
           due_date, due_amount, days_overdue, bucket: overdue_amount > 0 ? bucketOf(days_overdue) : 'CURRENT', contract_status: c.contract_status, service_status: c.service_status, recognized: c.recognized,
           is_critical: overdue_amount > 0 && days_overdue >= critDays, days_to_due: due_date ? daysBetween(asOf, due_date) : null, due_today: round2(sum(portions.filter((p) => p.due === asOf), (p) => p.amount)), due_7d: inWin(7), due_30d: inWin(30), portions,
         };
@@ -85,7 +88,10 @@ export function register(app) {
     aging(asOf = today(), f = {}) {
       const rows = svc.list({ manager_user_id: f.manager_user_id }, asOf);
       const buckets = ['CURRENT', '0-7', '8-15', '16-30', '31-60', '60+'].map((b) => ({ bucket: b, label: b === 'CURRENT' ? 'Muddati kelmagan' : b + ' kun',
-        amount: round2(b === 'CURRENT' ? sum(rows, (x) => x.current_amount) : sum(rows.filter((x) => x.bucket === b), (x) => x.overdue_amount)), count: b === 'CURRENT' ? rows.filter((x) => x.current_amount > 0).length : rows.filter((x) => x.bucket === b).length }));
+        amount: round2(b === 'CURRENT' ? sum(rows, (x) => x.current_amount - (x.no_due_amount || 0)) : sum(rows.filter((x) => x.bucket === b), (x) => x.overdue_amount)), count: b === 'CURRENT' ? rows.filter((x) => x.current_amount - (x.no_due_amount || 0) > 0.005).length : rows.filter((x) => x.bucket === b).length }));
+      // To'lov muddati belgilanmagan qarz — faqat bo'lsa ko'rsatiladi (overdue emas)
+      const noDue = rows.filter((x) => x.no_due_amount > 0.005);
+      if (noDue.length) buckets.push({ bucket: 'NO_DUE', label: 'Muddati belgilanmagan', amount: round2(sum(noDue, (x) => x.no_due_amount)), count: noDue.length });
       return { as_of: asOf, buckets, total: round2(sum(rows, (x) => x.debt)), overdue: round2(sum(rows, (x) => x.overdue_amount)) };
     },
     /** @param f  {manager_user_id} — scope (scopeFor): jami, top qarzdorlar va ochiq vazifalar shu menejer shartnomalari bo'yicha */

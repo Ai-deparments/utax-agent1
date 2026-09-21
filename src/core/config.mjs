@@ -18,7 +18,8 @@ const env = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d
 /** Butun son sozlama: buzuq yoki chegaradan kichik qiymat — defaultga tushadi (bitta noto'g'ri env tizimni yiqitmasin) */
 const intEnv = (k, d, min = 1) => { const n = Number(env(k, d)); return Number.isInteger(n) && n >= min ? n : d; };
 const TEST_MODE = !!process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === 'test';
-// Fon vazifalari (scheduler dailyAt: 08:30 digest, 17:00 eslatma) server qaysi zonada bo'lishidan qat'i nazar Toshkent vaqtida
+// Fon vazifalari (scheduler dailyAt: 01:00 revenue, 03:00 backup, 08:30 digest) server qaysi zonada bo'lishidan qat'i nazar Toshkent vaqtida.
+// util.today() ham shu zonadagi kalendar sanani qaytaradi — dailyAt vaqti va "bugun" sanasi bir xil zonada (UTC sana emas).
 if (!process.env.TZ) process.env.TZ = env('APP_TZ', 'Asia/Tashkent');
 
 export const config = {
@@ -63,7 +64,10 @@ export const config = {
   webhookSecret: env('WEBHOOK_SECRET', ''),
   telegramAlertChat: env('TELEGRAM_ALERT_CHAT_ID', ''),
   emailWebhook: env('EMAIL_WEBHOOK_URL', ''),
-  seedOnEmpty: env('SEED_ON_EMPTY', 'true') === 'true',
+  // Demo (pilot) ma'lumot faqat aniq so'ralganda: SEED_ON_EMPTY=true. Standart — bo'sh baza bo'sh qoladi (haqiqiy ma'lumot: npm run import:excel)
+  seedOnEmpty: env('SEED_ON_EMPTY', 'false') === 'true',
+  // Web uchun birinchi administrator (FOUNDER): server ishga tushganda yaratiladi/yangilanadi (src/core/bootstrap.mjs). Parol logga chiqmaydi
+  admin: { email: env('ADMIN_EMAIL', ''), password: env('ADMIN_PASSWORD', ''), name: env('ADMIN_NAME', '') },
   publicDir: path.join(ROOT, 'public'),
   uploadsDir: path.join(ROOT, 'uploads'),
   backupDir: path.join(ROOT, 'data', 'backups'),

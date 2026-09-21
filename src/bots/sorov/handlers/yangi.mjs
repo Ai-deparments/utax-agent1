@@ -94,7 +94,8 @@ async function faolQadam(ctx, step) {
 
 // ---------- buyruq ----------
 export async function yangi(ctx) {
-  const summa = ctx.args ? parseAmount(ctx.args) : null;
+  const summa0 = ctx.args ? parseAmount(ctx.args) : null;
+  const summa = summa0 && summa0 <= 1e12 ? summa0 : null; // matn qadami bilan bir xil yuqori chegara
   const st = ctx.dialog.start(DIALOG, summa ? { amount: summa } : {}, summa ? 'purpose' : 'amount');
   const s = savol(ctx, st.step, st.data);
   return ctx.reply(s.html, { buttons: s.buttons });

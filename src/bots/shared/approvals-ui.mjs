@@ -100,6 +100,22 @@ function decideReject(ctx, id, reason) {
   return ctx.S.approvals.decide(id, 'REJECT', ctx.actor, reason);
 }
 
+/** Rad etish endi mumkin emas (so'rov shu orada web'da yoki boshqa qadamda hal qilingan) — tushunarli sabab; `a` = getFor natijasi */
+function rejectClosedText(id, a) {
+  const head = `<b>#${id}</b>`;
+  if (!a) return `⚠️ ${head} so‘rov topilmadi. Rad etish oynasi yopildi.`;
+  if (!OPEN.includes(a.status)) return `ℹ️ ${head} allaqachon hal qilingan: <b>${esc(statusLabel(a.status))}</b>. Rad etish oynasi yopildi — sabab saqlanmadi.`;
+  if (a.is_mine) return `ℹ️ ${head} — o‘z so‘rovingizni o‘zingiz rad eta olmaysiz. Rad etish oynasi yopildi.`;
+  return `ℹ️ ${head} — bu qadamni endi ${esc(stepLabel(a.steps?.[a.current_step]?.role))} ko‘rib chiqadi. Rad etish oynasi yopildi.`;
+}
+
+/** Rad etish dialogini boshlagan karta xabarini joriy holatga yangilash (eski ✅/❌ tugmalarsiz) */
+async function refreshStartCard(ctx, messageId, a) {
+  if (!messageId || !a) return;
+  const c = approvalCard(ctx.S, a, ctx.user);
+  await ctx.bot.api.editMessageText(ctx.chatId, messageId, c.html, { reply_markup: undefined }).catch(() => {});
+}
+
 export const approvalCallbacks = {
   /** apr:<ok|no|later|view>:<id> */
   apr: {
@@ -148,8 +164,21 @@ export const approvalCallbacks = {
       const reason = REJECT_REASONS[k];
       if (!reason) return ctx.answer(T.expired, true);
       const cur = ctx.dialog.get();
-      const r = decideReject(ctx, id, reason);
-      if (cur?.name === 'apr.reject') ctx.dialog.clear();
+      const mine = cur?.name === 'apr.reject' && Number(cur.data?.id) === id;
+      const a = ctx.S.approvals.getFor(id, ctx.user);
+      if (!a?.can_act) {
+        if (mine) ctx.dialog.clear();
+        await ctx.setButtons(null);
+        if (!a) return ctx.answer('So‘rov topilmadi', true);
+        return ctx.answer(OPEN.includes(a.status) ? `Bu qadamni endi ${stepLabel(a.steps?.[a.current_step]?.role)} ko‘rib chiqadi` : `Allaqachon hal qilingan: ${statusLabel(a.status)}`, true);
+      }
+      let r;
+      try {
+        r = decideReject(ctx, id, reason);
+      } finally {
+        // shu so'rov uchun ochilgan sabab dialogi xato bo'lsa ham yopiladi — keyingi matnlar yana «sabab» deb olinmasin
+        if (mine) ctx.dialog.clear();
+      }
       await ctx.edit(`❌ <b>#${id}</b> rad etildi.\nSabab: ${esc(reason)}`);
       await ctx.answer('❌ Rad etildi');
       return r;
@@ -161,14 +190,22 @@ export const approvalDialogs = {
   'apr.reject': {
     async onText(ctx, st) {
       const reason = ctx.text.trim();
-      if (reason.length < 3) return ctx.reply('Sabab kamida 3 belgi bo‘lsin.' + T.dialogHint);
-      const id = Number(st.data.id);
-      decideReject(ctx, id, reason.slice(0, 500));
-      ctx.dialog.clear();
-      if (st.data.message_id) {
-        const a = ctx.S.approvals.getFor(id, ctx.user);
-        if (a) { const c = approvalCard(ctx.S, a, ctx.user); await ctx.bot.api.editMessageText(ctx.chatId, st.data.message_id, c.html, { reply_markup: undefined }).catch(() => {}); }
+      const id = Number(st.data?.id);
+      // So'rov shu orada (web'da, boshqa qadamda) hal qilingan yoki navbat boshqaga o'tgan bo'lsa — dialog yopiladi, sabab tushuntiriladi.
+      // Aks holda dialog qolib, keyingi har bir xabar (AI savoli ham) yana «rad etish sababi» bo'lib xato bilan qaytardi.
+      const a = id ? ctx.S.approvals.getFor(id, ctx.user) : null;
+      if (!a?.can_act) {
+        ctx.dialog.clear();
+        await refreshStartCard(ctx, st.data?.message_id, a);
+        return ctx.reply(rejectClosedText(id, a));
       }
+      if (reason.length < 3) return ctx.reply('Sabab kamida 3 belgi bo‘lsin.' + T.dialogHint);
+      try {
+        decideReject(ctx, id, reason.slice(0, 500));
+      } finally {
+        ctx.dialog.clear(); // xato (ruxsat, poyga) bo'lsa ham — xato bir marta ko'rsatiladi, keyingi matnlar odatdagidek ishlaydi
+      }
+      await refreshStartCard(ctx, st.data.message_id, ctx.S.approvals.getFor(id, ctx.user));
       return ctx.reply(`❌ <b>#${id}</b> rad etildi.\nSabab: «${esc(clip(reason, 200))}»\nSo‘rovchiga xabar yuborildi.`);
     },
   },

@@ -12,6 +12,9 @@ import { btn, entityPath } from './keyboards.mjs';
 import { TelegramError } from './telegram-api.mjs';
 import { markChatBlocked, startedBots } from './auth.mjs';
 
+/** Yuborish davomida yozuv band turadigan muddat (Telegram 429 kutishi ≤ 60 s × 3 va 30 s timeout × 3 dan uzun) */
+export const CLAIM_MS = 5 * 60e3;
+
 export function createDispatcher(app, runtime, { log = console } = {}) {
   const { db } = app;
   const S = () => app.services;
@@ -55,9 +58,18 @@ export function createDispatcher(app, runtime, { log = console } = {}) {
 
   const bump = (id, error, minutes) => db.run('UPDATE notifications SET attempts=COALESCE(attempts,0)+1, error=?, next_try_at=? WHERE id=?', String(error).slice(0, 300), new Date(Date.now() + minutes * 60e3).toISOString(), id);
 
+  /**
+   * Atomik band qilish: dispatch() va retryPending() (yoki ustma-ust tick'lar) bitta yozuvni parallel yubormasin.
+   * Band belgisi — next_try_at = hozir + CLAIM_MS: yuborilsa (sent_at, next_try_at=NULL) yoki bump() uni almashtiradi;
+   * jarayon yuborish o'rtasida yiqilsa — band muddati o'tgach retryPending qayta oladi. Qaytaradi: band qilindimi.
+   */
+  const claim = (id) => db.run("UPDATE notifications SET next_try_at=? WHERE id=? AND channel='TELEGRAM' AND sent_at IS NULL AND (next_try_at IS NULL OR next_try_at <= ?)",
+    new Date(Date.now() + CLAIM_MS).toISOString(), id, nowIso()).changes === 1;
+
   async function deliver(id) {
     const n = db.get("SELECT * FROM notifications WHERE id=? AND channel='TELEGRAM'", id);
     if (!n || n.sent_at) return false;
+    if (!claim(id)) return false; // boshqa deliver yuboryapti yoki backoff hali tugamagan
     const user = db.get('SELECT * FROM users WHERE id=?', n.user_id);
     if (!user?.telegram_user_id || !user.is_active) { db.run('UPDATE notifications SET error=?, attempts=99 WHERE id=?', 'Telegram bog‘lanmagan yoki foydalanuvchi bloklangan', id); return false; }
     const list = candidates(user);
@@ -67,7 +79,7 @@ export function createDispatcher(app, runtime, { log = console } = {}) {
     for (const bot of list) {
       try {
         const m = await bot.send(user.telegram_user_id, html, { buttons, canView: (r) => app.rbac.can(user, r, 'VIEW') });
-        db.run('UPDATE notifications SET sent_at=?, error=NULL, bot_key=?, tg_chat_id=?, tg_message_id=?, attempts=COALESCE(attempts,0)+1 WHERE id=?', nowIso(), bot.key, String(user.telegram_user_id), m?.message_id ? String(m.message_id) : null, id);
+        db.run('UPDATE notifications SET sent_at=?, error=NULL, next_try_at=NULL, bot_key=?, tg_chat_id=?, tg_message_id=?, attempts=COALESCE(attempts,0)+1 WHERE id=?', nowIso(), bot.key, String(user.telegram_user_id), m?.message_id ? String(m.message_id) : null, id);
         return true;
       } catch (e) {
         lastErr = e;

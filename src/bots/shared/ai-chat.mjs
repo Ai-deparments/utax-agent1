@@ -17,6 +17,7 @@ export const INTENT_PAGE = {
   REVENUE: 'pnl', EXPENSES: 'expenses', EXPECTED_EXPENSES: 'expenses', PROFIT: 'pnl', WHY_PROFIT: 'pnl', SERVICE_PROFIT: 'pnl',
   UNMATCHED: 'transactions', APPROVALS: 'approvals', APPROVE_REQUEST: 'approvals', FORECAST: 'forecast', PLAN: 'planfact',
   PAYROLL: 'payroll', CONTRACTS: 'contracts', DATA_QUALITY: 'dashboard',
+  MY_EXPENSES: 'expenses', MY_PAYROLL: 'payroll', MY_DEBTORS: 'receivables',
 };
 /** Tool (LLM) → web sahifa */
 export const TOOL_PAGE = {
@@ -31,6 +32,8 @@ const INTENT_TOOL = {
   CASH: 'get_treasury', DAILY_STATUS: 'get_dashboard', DEBTORS: 'get_receivables', OVERDUE: 'get_receivables', EXPECTED_INCOME: 'get_receivables',
   REVENUE: 'get_revenue', EXPENSES: 'get_expenses', EXPECTED_EXPENSES: 'get_expenses', PROFIT: 'get_pnl', WHY_PROFIT: 'get_pnl', SERVICE_PROFIT: 'get_service_profitability',
   UNMATCHED: 'get_unmatched_transactions', APPROVALS: 'get_pending_approvals', FORECAST: 'get_forecast', PLAN: 'get_plan_fact', CONTRACTS: 'get_contracts', DATA_QUALITY: 'get_data_quality',
+  // o'z ma'lumoti → sorov botidagi /sorovlarim, /oyligim, /qarzdorlarim tugmalari
+  MY_EXPENSES: 'get_my_expense_requests', MY_PAYROLL: 'get_my_payroll', MY_DEBTORS: 'get_my_debtors',
 };
 
 /** "yozmoqda…" — darhol va har `everyMs` da; qaytgan funksiya to'xtatadi (xato bo'lsa ham finally'da) */

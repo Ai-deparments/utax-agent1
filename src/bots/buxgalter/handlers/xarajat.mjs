@@ -57,14 +57,24 @@ function xarajatlarXulosa(ctx, period) {
   );
 }
 
-/** Xarajat hali APPROVED (to'lanmagan) bo'lsa — qaytaradi; aks holda kartani yangilab null qaytaradi */
+/**
+ * Xarajat hali to'lanadigan holatda bo'lsa (APPROVED, reversal qilinmagan, bank/kassa tranzaksiyasiga bog'lanmagan — servisdagi
+ * banking.expenseUnpayableReason qoidasi) — qaytaradi; aks holda kartani yangilab null qaytaradi.
+ */
 async function ochiqXarajat(ctx, id) {
   const e = ctx.S.expenses.get(Number(id));
   if (!e) { await ctx.answer('Xarajat topilmadi', true); return null; }
-  if (e.status === 'APPROVED') return e;
-  await ctx.answer(`Holat: ${statusLabel(e.status)}`, true);
-  await ctx.edit(lines(`💸 <b>${esc(e.code)}</b> · ${esc(clip(e.purpose, 90))}`, line('Holat', statusLabel(e.status)), e.paid_at ? line('To‘langan sana', date(e.paid_at)) : null), { buttons: [[{ text: '🌐 Xarajat', web: `expenses/${e.id}` }]] });
+  if (!ctx.S.banking.expenseUnpayableReason(e)) return e;
+  const holat = e.reversed_at ? 'Bekor qilingan (reversal)' : statusLabel(e.status === 'APPROVED' ? 'PAID' : e.status);
+  await ctx.answer(`Holat: ${holat}`, true);
+  await ctx.edit(lines(`💸 <b>${esc(e.code)}</b> · ${esc(clip(e.purpose, 90))}`, line('Holat', holat), e.paid_at ? line('To‘langan sana', date(e.paid_at)) : null), { buttons: [[{ text: '🌐 Xarajat', web: `expenses/${e.id}` }]] });
   return null;
+}
+
+/** Yozishdan bevosita oldin (await'siz) qayta tekshirish — tekshiruv va yozuv orasida boshqa update ishlab ulgurmaydi */
+function hozirTolanadimi(ctx, id) {
+  const e = ctx.S.expenses.get(Number(id));
+  return { e, sabab: ctx.S.banking.expenseUnpayableReason(e) };
 }
 
 export default {
@@ -107,19 +117,24 @@ export default {
         }
         if (amal === 'yb') {
           ctx.need('expenses', 'EDIT');
-          const e = await ochiqXarajat(ctx, id);
-          if (!e) return null;
+          if (!(await ochiqXarajat(ctx, id))) return null;
+          const { e, sabab } = hozirTolanadimi(ctx, id);
+          if (sabab) return ctx.answer(sabab, true);
+          // «Bankdan to‘landi» — to'lov usuli haqiqatda bank: shunda keyingi bank ko'chirmasidagi chiqim shu xarajatga bog'lanadi (reconciliation nomzodi)
+          if (e.payment_method !== 'BANK') ctx.S.expenses.update(e.id, { payment_method: 'BANK' }, ctx.actor);
           ctx.S.expenses.markPaid(e.id, { paid_at: today() }, ctx.actor);
           await ctx.answer('✅ To‘landi');
-          return ctx.edit(lines(title('✅', `To‘landi (bank): ${e.code}`), `${esc(clip(e.purpose, 90))}`, line('Summa', money(e.amount)), line('Sana', date(today())), muted('Bank ko‘chirmasi kelganda tranzaksiya shu xarajat bilan solishtiriladi.')), { buttons: [[{ text: '🌐 Xarajat', web: `expenses/${e.id}` }]] });
+          return ctx.edit(lines(title('✅', `To‘landi (bank): ${e.code}`), `${esc(clip(e.purpose, 90))}`, line('Summa', money(e.amount)), line('Sana', date(today())), muted('Bank ko‘chirmasi kelganda shu summadagi chiqim bu xarajatga bog‘lanadi (avtomatik yoki /boglash orqali).')), { buttons: [[{ text: '🌐 Xarajat', web: `expenses/${e.id}` }]] });
         }
         if (amal === 'yc') {
           ctx.need('expenses', 'EDIT');
           ctx.need('treasury', 'CREATE');
-          const e = await ochiqXarajat(ctx, id);
-          if (!e) return null;
+          if (!(await ochiqXarajat(ctx, id))) return null;
           const kassa = ctx.S.banking.cashAccounts()[0];
           if (!kassa) return ctx.answer('Kassa hisobi yo‘q', true);
+          const { e, sabab } = hozirTolanadimi(ctx, id);
+          if (sabab) return ctx.answer(sabab, true);
+          // Servis ham shartli UPDATE bilan himoyalaydi (boshqa jarayon/web parallel to'lasa — ikkinchi kassa chiqimi yozilmaydi, xato qaytadi)
           ctx.S.banking.createCashTransaction({ cash_account_id: kassa.id, tx_date: today(), amount: e.amount, direction: 'EXPENSE', purpose: `${e.code} · ${e.purpose}`.slice(0, 300), expense_id: e.id, counterparty_name: e.counterparty || null }, ctx.actor);
           const kassaQoldiq = ctx.S.banking.cashBalance().accounts.find((a) => a.id === kassa.id)?.balance ?? 0;
           await ctx.answer('✅ To‘landi');

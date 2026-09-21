@@ -8,6 +8,36 @@ import { nowIso, round2, similarity, daysBetween } from '../core/util.mjs';
  */
 export function register(app) {
   const { r, db, audit, settings } = app;
+  /** match_reason belgisi: xarajat bog'lashdan oldin «Bankdan to‘landi» deb belgilangan edi (unmatch uni APPROVED ga qaytarmaydi) */
+  const OLDIN_TOLANGAN = 'oldin to‘langan deb belgilangan';
+
+  /**
+   * Bank chiqimini shu xarajatga bog'lab bo'lmasligi sababi (mumkin bo'lsa — null). scoreExpense nomzodlari, confirmExpense va bot bir xil qoidada:
+   *  - APPROVED, hech qaysi tranzaksiyaga bog'lanmagan → bog'lanadi (xarajat PAID bo'ladi);
+   *  - PAID, lekin bank/kassa tranzaksiyasi yo'q va to'lov usuli BANK («Bankdan to‘landi» belgisi) → faqat bank_transaction_id to'ldiriladi;
+   *  - shu tranzaksiyaning o'ziga bog'langan → qayta tasdiqlash mumkin;
+   *  - reversal, kassadan to'langan, boshqa bank tranzaksiyasiga bog'langan yoki boshqa holat → rad etiladi.
+   */
+  function expenseLinkBlockReason(e, tx) {
+    if (!e) return 'Xarajat topilmadi';
+    if (e.reversed_at) return `Xarajat ${e.code} bekor qilingan (reversal) — bog‘lanmaydi`;
+    if (e.cash_transaction_id) return `Xarajat ${e.code} kassadan to‘langan — bank chiqimiga bog‘lanmaydi`;
+    if (e.bank_transaction_id && e.bank_transaction_id !== tx?.id) return `Xarajat ${e.code} boshqa bank tranzaksiyasiga bog‘langan`;
+    if (e.status === 'APPROVED') return null;
+    if (e.status === 'PAID') return e.bank_transaction_id === tx?.id || e.payment_method === 'BANK' ? null : `Xarajat ${e.code} allaqachon to‘langan (to‘lov usuli bank emas) — bank chiqimiga bog‘lanmaydi`;
+    return `Faqat tasdiqlangan xarajat bog‘lanadi (${e.code} hozir: ${e.status})`;
+  }
+
+  /**
+   * To'lov maqsadida shartnoma raqami bormi. Faqat raqamdan iborat raqam (Excel "Dogovor No": '1', '12') har qanday summa/sana
+   * ichida uchraydi — shuning uchun faqat "№ 12", "No 12", "договор 12", "shartnoma 12" ko'rinishida (keyin raqam davom etmasa) hisoblanadi.
+   */
+  function numberInPurpose(purposeUpper, num) {
+    const n = String(num || '').toUpperCase();
+    if (!n) return false;
+    if (!/^\d+$/.test(n)) return purposeUpper.includes(n);
+    return new RegExp(`(?:№|\\bNO\\b\\.?|\\bN\\b|ДОГОВОР\\S*|DOGOVOR\\S*|SHARTNOMA\\S*)\\s*(?:№\\s*)?0*${n}(?!\\d)`).test(purposeUpper);
+  }
 
   function scoreIncome(tx) {
     const tol = Number(settings.get('reconciliation.amount_tolerance_pct') || 1) / 100;
@@ -18,7 +48,7 @@ export function register(app) {
       let score = 0;
       const reasons = [];
       if (tx.contract_number_ref && c.contract_number === tx.contract_number_ref) { score += 70; reasons.push('contract number'); }
-      else if (purpose.includes(c.contract_number)) { score += 70; reasons.push('contract number in purpose'); }
+      else if (numberInPurpose(purpose, c.contract_number)) { score += 70; reasons.push('contract number in purpose'); }
       if (tx.counterparty_inn && c.company_inn && tx.counterparty_inn === c.company_inn) { score += 30; reasons.push('INN'); }
       const nameSim = similarity(tx.counterparty_name, c.company_name);
       if (nameSim >= 0.6) { score += Math.round(10 * nameSim); reasons.push('counterparty name'); }
@@ -36,7 +66,9 @@ export function register(app) {
 
   function scoreExpense(tx) {
     const tol = Number(settings.get('reconciliation.amount_tolerance_pct') || 1) / 100;
-    const rows = db.all(`SELECT e.*, ec.name AS category_name FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id WHERE e.status='APPROVED' AND e.reversed_at IS NULL AND e.payment_method='BANK'`);
+    // Nomzodlar: tasdiqlangan (to'lanmagan) + «Bankdan to‘landi» deb belgilangan, lekin hali bank tranzaksiyasiga bog'lanmagan xarajatlar
+    const rows = db.all(`SELECT e.*, ec.name AS category_name FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id
+      WHERE e.status IN ('APPROVED','PAID') AND e.reversed_at IS NULL AND e.payment_method='BANK' AND e.bank_transaction_id IS NULL AND e.cash_transaction_id IS NULL`);
     const cands = [];
     for (const e of rows) {
       let score = 0;
@@ -49,7 +81,7 @@ export function register(app) {
       const dd = Math.abs(daysBetween(e.required_date || e.expense_date, tx.tx_date));
       if (dd <= 5) { score += 10; reasons.push('date'); } else if (dd <= 20) score += 4;
       if (String(tx.purpose || '').includes(e.code)) { score += 30; reasons.push('expense code'); }
-      cands.push({ expense_id: e.id, code: e.code, purpose: e.purpose, amount: e.amount, category: e.category_name, score: Math.min(99, score), reasons });
+      cands.push({ expense_id: e.id, code: e.code, purpose: e.purpose, amount: e.amount, category: e.category_name, status: e.status, score: Math.min(99, score), reasons });
     }
     return cands.sort((a, b) => b.score - a.score);
   }
@@ -62,6 +94,7 @@ export function register(app) {
   }
 
   const svc = {
+    expenseLinkBlockReason,
     suggest(txId) {
       const tx = db.get('SELECT * FROM bank_transactions WHERE id=?', txId);
       if (!tx) throw notFound('Tranzaksiya topilmadi');
@@ -115,10 +148,21 @@ export function register(app) {
       if (tx.matching_status === 'MATCHED') throw badRequest('Allaqachon bog‘langan');
       const e = db.get('SELECT * FROM expenses WHERE id=?', expenseId);
       if (!e) throw notFound('Xarajat topilmadi');
+      const sabab = expenseLinkBlockReason(e, tx);
+      if (sabab) throw badRequest(sabab);
+      const oldinTolangan = e.status === 'PAID' && e.bank_transaction_id !== tx.id;
       const cat = e.category_id ? db.get('SELECT cf_class FROM expense_categories WHERE id=?', e.category_id) : null;
       db.tx(() => {
-        app.services.expenses.markPaid(e.id, { bank_transaction_id: tx.id, paid_at: tx.tx_date }, ctx);
-        db.run("UPDATE bank_transactions SET matching_status='MATCHED', matched_expense_id=?, confidence=?, match_reason=?, matched_at=?, matched_by=?, cf_class=? WHERE id=?", e.id, opts.confidence ?? 100, opts.auto ? 'AUTO expense' : 'MANUAL expense', nowIso(), ctx?.user?.id || null, cat?.cf_class || 'OPERATING', tx.id);
+        // Poygaga chidamli: holat sharti UPDATE ning o'zida (eskirgan karta / parallel kassa to'lovi / boshqa jarayon — 0 qator → ROLLBACK).
+        // APPROVED → PAID (paid_at = bank sanasi); oldin «to'landi» deb belgilangan PAID → faqat bank_transaction_id to'ldiriladi.
+        const n = db.run(`UPDATE expenses SET status='PAID', paid_at=CASE WHEN status='APPROVED' OR paid_at IS NULL THEN ? ELSE paid_at END, bank_transaction_id=?, updated_at=?
+          WHERE id=? AND reversed_at IS NULL AND cash_transaction_id IS NULL AND (bank_transaction_id IS NULL OR bank_transaction_id=?)
+            AND (status='APPROVED' OR (status='PAID' AND (bank_transaction_id=? OR payment_method='BANK')))`, tx.tx_date, tx.id, nowIso(), e.id, tx.id, tx.id).changes;
+        if (!n) throw badRequest('Xarajat holati o‘zgardi (to‘langan, bog‘langan yoki bekor qilingan) — bog‘lanmadi');
+        audit(ctx, { action: 'EXPENSE_PAID', entity: 'expense', entityId: e.id, newValue: { bank_transaction_id: tx.id, paid_at: oldinTolangan ? e.paid_at : tx.tx_date, ...(oldinTolangan ? { oldin_tolangan: true } : {}) } });
+        const m = db.run(`UPDATE bank_transactions SET matching_status='MATCHED', matched_expense_id=?, confidence=?, match_reason=?, matched_at=?, matched_by=?, cf_class=? WHERE id=? AND matching_status<>'MATCHED'`,
+          e.id, opts.confidence ?? 100, (opts.auto ? 'AUTO expense' : 'MANUAL expense') + (oldinTolangan ? ` (${OLDIN_TOLANGAN})` : ''), nowIso(), ctx?.user?.id || null, cat?.cf_class || 'OPERATING', tx.id).changes;
+        if (!m) throw badRequest('Allaqachon bog‘langan');
         audit(ctx, { action: opts.auto ? 'AUTO_MATCH_EXPENSE' : 'MATCH_EXPENSE', entity: 'bank_transaction', entityId: tx.id, newValue: { expense_id: e.id } });
       });
       return db.get('SELECT * FROM bank_transactions WHERE id=?', tx.id);
@@ -135,7 +179,16 @@ export function register(app) {
           }
           app.services.contracts.recompute(tx.matched_contract_id, ctx);
         }
-        if (tx.matched_expense_id) app.services.expenses.unpay(tx.matched_expense_id, ctx);
+        if (tx.matched_expense_id) {
+          const e = db.get('SELECT id, bank_transaction_id, cash_transaction_id FROM expenses WHERE id=?', tx.matched_expense_id);
+          if (!e || (e.bank_transaction_id && e.bank_transaction_id !== tx.id)) {
+            // xarajat boshqa bank tranzaksiyasiga bog'langan — uning to'lov holatiga tegilmaydi
+          } else if (e.cash_transaction_id || String(tx.match_reason || '').includes(OLDIN_TOLANGAN)) {
+            // Kassadan to'langan yoki bog'lashdan oldin «to'landi» deb belgilangan — xarajat PAID qoladi, faqat bank bog'lanishi olinadi
+            db.run('UPDATE expenses SET bank_transaction_id=NULL, updated_at=? WHERE id=? AND bank_transaction_id=?', nowIso(), e.id, tx.id);
+            audit(ctx, { action: 'UPDATE', entity: 'expense', entityId: e.id, oldValue: { bank_transaction_id: tx.id }, newValue: { bank_transaction_id: null, sabab: 'bank bog‘lanishi bekor qilindi, xarajat to‘langan holicha qoldi' } });
+          } else app.services.expenses.unpay(tx.matched_expense_id, ctx);
+        }
         db.run("UPDATE bank_transactions SET matching_status='UNMATCHED', matched_contract_id=NULL, matched_expense_id=NULL, suggested_contract_id=NULL, confidence=0, match_reason=?, matched_at=NULL, matched_by=NULL WHERE id=?", 'UNMATCHED: ' + (reason || ''), tx.id);
         audit(ctx, { action: 'UNMATCH', entity: 'bank_transaction', entityId: tx.id, oldValue: { contract_id: tx.matched_contract_id, expense_id: tx.matched_expense_id }, newValue: { reason } });
       });

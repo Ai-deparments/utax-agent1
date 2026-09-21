@@ -35,7 +35,7 @@ API hujjati (OpenAPI/Swagger): `http://127.0.0.1:8100/api/docs` · Health: `/api
 - **Debitorlik + Collection agent** — jadval bo‘yicha FIFO, aging 0–7/8–15/16–30/31–60/60+, T-7…T+15 vazifalar va bildirishnomalar.
 - **P&L, Xizmat rentabelligi, Cash Flow (operating/investing/financing), Balans, Plan/Fakt, Byudjet, Forecast (3 scenariy)**.
 - **KPI & Oylik** — rule engine (formulalar bazada), zanjir Dept Head → CEO → CFO → Accounting → PAID.
-- **AI Finance Center** — chat (rule-based router API kalitsiz ishlaydi; `ANTHROPIC_API_KEY` bo‘lsa Claude tool-use), 14 agent, AI takliflari → inson tasdig‘i → bajarish → audit.
+- **AI Finance Center** — chat (rule-based router API kalitsiz ishlaydi; `GEMINI_API_KEY` / `GROQ_API_KEY` bo‘lsa LLM tool-use: **Gemini → Groq → qoidalar** zanjiri, nomlar niqoblangan), 14 agent, AI takliflari → inson tasdig‘i → bajarish → audit.
 - **4 ta Telegram bot** ([docs/BOTS.md](docs/BOTS.md)) — web panelning Telegram'dagi oynasi (o'sha servislar, o'sha RBAC, audit `source=TELEGRAM`):
   **@utax_rahbar_bot** (holat, pul, P&L, prognoz, debitorlik, tasdiqlar, AI takliflari, hisobotlar, Kill switch) ·
   **@utax_buxgalter_bot** (vipiska, bog'lash, kassa, to'lov, daromad, akt, oylik, byudjet, integratsiyalar) ·
@@ -54,7 +54,7 @@ TZ Next.js + NestJS/FastAPI + PostgreSQL + Redis + Docker ni **tavsiya** qilgan.
 - **Queue/Cache:** fon vazifalari `src/core/scheduler.mjs` (daily/hourly); yuklama oshsa BullMQ/Redis ga ko‘chirish nuqtasi shu.
 - **Frontend:** vanilla ES modules SPA (`public/`), build qadamisiz, yagona light (oq/mint/emerald) design system (`public/css/app.css` tokenlari, `public/js/ui.js` komponentlari, `public/js/charts.js` SVG grafiklar, `public/js/icons.js`), responsive (desktop/laptop/mobil), barcha matnlar o‘zbekcha, har jadvalda qidiruv/filtr/sort/ustunlar/sana/Excel/PDF.
 - **Docker:** `Dockerfile` + `docker-compose.yml` tayyor (mashinada Docker bo‘lmagani uchun bu yerda ishga tushirilmadi); `deploy/install.sh` systemd + nginx.
-- **AI:** `@anthropic-ai/sdk` ixtiyoriy (`optionalDependencies`); kalit bo‘lmasa rule-based router 15 acceptance savoliga real raqam bilan javob beradi.
+- **AI:** tashqi paketsiz (`src/core/llm.mjs`, global `fetch`): Gemini asosiy, xato/limit bo‘lsa Groq (`GEMINI_*`, `GROQ_*`, `AI_*` — [docs/DEPLOY.md](docs/DEPLOY.md#env)); kalit bo‘lmasa rule-based router 15 acceptance savoliga real raqam bilan javob beradi. Kalitlarni tekshirish: `npm run llm:check`.
 
 ## Loyiha tuzilmasi
 

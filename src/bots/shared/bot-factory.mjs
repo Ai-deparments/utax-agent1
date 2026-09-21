@@ -10,7 +10,8 @@ import { HttpError } from '../../core/http.mjs';
 import { config, ROOT } from '../../core/config.mjs';
 import { nowIso, sha256 } from '../../core/util.mjs';
 import { esc, splitHtml, stripTags } from './html.mjs';
-import { toReplyMarkup, chunk } from './keyboards.mjs';
+import { toReplyMarkup, chunk, tagCancel, hasBareCancel } from './keyboards.mjs';
+import { dialogTag, newDialogTag } from './dialogs.mjs';
 import { T } from './texts.mjs';
 import { roleLabel, lines } from './format.mjs';
 import { linkByCode, confirmPendingLink, cancelPendingLink, userByTelegram, touchChat, markChatBlocked, LINK_CODE_RE } from './auth.mjs';
@@ -98,6 +99,8 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
     const dkey = `${def.key}:${chatId}`;
     let answered = false;
     let dialogCache;
+    /** «✖️ Bekor» (cb 'x') → 'x:<joriy dialog tegi>' — eski xabardagi tugma keyingi dialogni o'chirmasin (L5) */
+    const withCancelTag = (buttons) => (hasBareCancel(buttons) ? tagCancel(buttons, dialogTag(ctx.dialog.get())) : buttons);
     const ctx = {
       bot, app, S: app.services, db, settings: app.settings, links,
       update, message: msg, callback: cb, from, chat, chatId,
@@ -106,13 +109,13 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
       user: null, actor: null,
       can: (resource, action = 'VIEW') => !!ctx.user && app.rbac.can(ctx.user, resource, action),
       need(resource, action = 'VIEW') { if (!ctx.can(resource, action)) throw new BotError(T.forbidden(resource, action)); },
-      reply: (html, opts = {}) => send(chatId, html, { ...opts, canView: (r) => ctx.can(r, 'VIEW') }),
+      reply: (html, opts = {}) => send(chatId, html, { ...opts, buttons: withCancelTag(opts.buttons), canView: (r) => ctx.can(r, 'VIEW') }),
       /** Oddiy matn (avtomatik esc) */
       replyText: (text, opts = {}) => ctx.reply(esc(text), opts),
       async edit(html, opts = {}) {
         const mid = cb?.message?.message_id;
         if (!mid || String(html).length > 4000) return ctx.reply(html, opts);
-        const markup = toReplyMarkup(opts.buttons, links, (r) => ctx.can(r, 'VIEW'));
+        const markup = toReplyMarkup(withCancelTag(opts.buttons), links, (r) => ctx.can(r, 'VIEW'));
         try {
           return await api.editMessageText(chatId, mid, html, markup ? { reply_markup: markup } : {});
         } catch (e) {
@@ -126,7 +129,7 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
       async setButtons(buttons) {
         const mid = cb?.message?.message_id;
         if (!mid) return null;
-        try { return await api.editMessageReplyMarkup(chatId, mid, toReplyMarkup(buttons, links, (r) => ctx.can(r, 'VIEW'))); }
+        try { return await api.editMessageReplyMarkup(chatId, mid, toReplyMarkup(withCancelTag(buttons), links, (r) => ctx.can(r, 'VIEW'))); }
         catch (e) { if (e instanceof TelegramError && (e.isNotModified || e.code === 400)) return null; throw e; }
       },
       async answer(text, alert = false) {
@@ -158,7 +161,7 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
       },
       dialog: {
         get() { if (dialogCache === undefined) dialogCache = dialogs.get(dkey); return dialogCache && !dialogCache.expired ? dialogCache : null; },
-        start(name, data = {}, step = 'start') { dialogCache = { name, step, data, started_at: nowIso() }; return dialogs.set(dkey, dialogCache); },
+        start(name, data = {}, step = 'start') { dialogCache = { name, step, data, started_at: nowIso(), tag: newDialogTag() }; return dialogs.set(dkey, dialogCache); },
         update({ step, data } = {}) {
           const cur = ctx.dialog.get();
           if (!cur) return null;
@@ -259,10 +262,11 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
     // 4) buyruqlar
     if (cmd) return onCommand(ctx, cmd);
 
-    // 5) ochiq dialog
+    // 5) ochiq dialog. Muddati o'tgan dialogga javob — ogohlantirish va TO'XTASH: matn/fayl AI'ga (tashqi LLM) yoki boshqa amalga tushmaydi
+    //    (eskirgan qator purgeExpired'da 24 soat saqlanadi — ogohlantirish haqiqatan chiqadi, keyin qator o'chadi)
     const raw = dialogs.get(`${def.key}:${ctx.chatId}`);
-    if (raw?.expired) { await ctx.reply(T.staleDialog); }
-    else if (raw?.name) {
+    if (raw?.expired) return ctx.reply(T.staleDialog);
+    if (raw?.name) {
       const d = dialogDefs[raw.name];
       if (d) {
         if (ctx.file) return d.onFile ? d.onFile(ctx, raw) : ctx.reply('✍️ Bu bosqichda matn kutilmoqda.' + T.dialogHint);
@@ -311,31 +315,37 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
   }
 
   async function onCommand(ctx, cmd) {
-    const dkey = `${def.key}:${ctx.chatId}`;
     switch (cmd.name) {
-      case 'start': dialogs.clear(dkey); return showMenu(ctx);
+      case 'start': ctx.dialog.clear(); return showMenu(ctx);
       case 'yordam': case 'help': return showHelp(ctx);
-      case 'bekor': case 'cancel': return ctx.reply(dialogs.clear(dkey) ? T.cancelled : T.nothingToCancel);
+      case 'bekor': case 'cancel': {
+        const open = !!ctx.dialog.get(); // muddati o'tgan dialog «bekor qilindi» deb ko'rsatilmaydi
+        ctx.dialog.clear();
+        return ctx.reply(open ? T.cancelled : T.nothingToCancel);
+      }
       case 'tozalash': case 'clear':
         // AI suhbat xotirasi (backend, shu bot kanali) + ochiq dialog tozalanadi
-        dialogs.clear(dkey);
+        ctx.dialog.clear();
         app.services.ai?.clearMemory?.(ctx.user.id, `TELEGRAM:${def.key}`);
         return ctx.reply(T.aiCleared);
       case 'menu': return showMenu(ctx);
       default: break;
     }
-    dialogs.clear(dkey); // boshqa buyruq ochiq dialogni yopadi
+    // Noto'g'ri yozilgan (/bekr) yoki ruxsatsiz buyruq ochiq dialogni o'chirmaydi — faqat buyruq topilib, ruxsat o'tgach (runCommand) yopiladi
     const spec = commands.get(cmd.name);
-    if (!spec) return ctx.reply(T.unknownCommand(cmd.name));
-    return runCommand(ctx, spec, cmd.args, cmd.name);
+    if (!spec) return ctx.reply(T.unknownCommand(cmd.name) + (ctx.dialog.get() ? T.dialogKept : ''));
+    return runCommand(ctx, spec, cmd.args, cmd.name, { replaceDialog: true });
   }
 
-  async function runCommand(ctx, spec, args = '', name) {
+  /** @param opts.replaceDialog  foydalanuvchi boshqa buyruqni tanladi — ruxsat o'tsa ochiq dialog yopiladi (ruxsatsiz bo'lsa saqlanadi) */
+  async function runCommand(ctx, spec, args = '', name, { replaceDialog = false } = {}) {
     if (!spec) return ctx.reply(T.unknownCommand(name || '?'));
     if (!isAllowed(spec, ctx.user)) {
-      if (spec.perm && !app.rbac.can(ctx.user, spec.perm[0], spec.perm[1] || 'VIEW')) return ctx.reply(T.forbidden(spec.perm[0], spec.perm[1] || 'VIEW'));
-      return ctx.reply(T.forbiddenPlain);
+      const kept = replaceDialog && ctx.dialog.get() ? T.dialogKept : '';
+      if (spec.perm && !app.rbac.can(ctx.user, spec.perm[0], spec.perm[1] || 'VIEW')) return ctx.reply(T.forbidden(spec.perm[0], spec.perm[1] || 'VIEW') + kept);
+      return ctx.reply(T.forbiddenPlain + kept);
     }
+    if (replaceDialog) ctx.dialog.clear(); // boshqa buyruq ochiq dialogni yopadi
     ctx.command = spec.name;
     ctx.args = String(args || '').trim();
     return spec.run(ctx);
@@ -348,9 +358,8 @@ export function createBot(def, { app, api, dialogs, state, registry, links, log 
     if (prefix === 'cmd') {
       const spec = commands.get(rest[0]);
       if (!spec) return ctx.answer(T.expired, true);
-      dialogs.clear(`${def.key}:${ctx.chatId}`);
       await ctx.answer();
-      return runCommand(ctx, spec, rest.slice(1).join(':'), rest[0]);
+      return runCommand(ctx, spec, rest.slice(1).join(':'), rest[0], { replaceDialog: true });
     }
     const entry = callbacks[prefix];
     if (!entry) return ctx.answer(T.expired, true);

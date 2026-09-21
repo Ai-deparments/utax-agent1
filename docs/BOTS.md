@@ -18,9 +18,21 @@ Arxitektura namunasi — `utax-agent` (NestJS + grammY): factory → middleware 
 2. Havolani bosing → «Start» → hisob bog'lanadi. **Bitta bog'lash barcha 4 botga amal qiladi** (`users.telegram_user_id`).
 3. Bildirishnomalar uchun **@utax_signal_bot** ni ham oching (Telegram bot foydalanuvchi o'zi /start qilmaguncha xabar yubora olmaydi).
 
-**Egalar** (`BOT_OWNER_IDS`, vergul bilan Telegram user id'lar): har doim `FOUNDER` roli, barcha 4 botga va barcha buyruqlarga kiradi,
-kodsiz — botga birinchi yozganda avtomatik bog'lanadi (server ishga tushganda ham tayyorlanadi). Bog'langan boshqa rolli hisob
-ega bo'lsa — rol `FOUNDER` ga ko'tariladi (`OWNER_ROLE_ENFORCED` audit).
+**Bog'lanishni almashtirish:** Telegram hisobingiz allaqachon boshqa UTAX hisobiga bog'langan bo'lsa, `/start KOD` uni darhol ko'chirmaydi —
+tasdiq kartasi chiqadi («✅ Ha, bog'lash» / «✖️ Bekor», 10 daqiqa, tugmada kodning o'zi emas, xeshi). Tasdiqlansa eski bog'lanish uziladi
+va shu Telegram bilan ochilgan Mini App sessiyalari yopiladi; bekor qilinsa joriy bog'lanish o'zgarmaydi.
+
+**Egalar** (`BOT_OWNER_IDS`, vergul bilan Telegram user id'lar): har doim `FOUNDER` hisobida ishlaydi, barcha 4 botga va barcha buyruqlarga
+kiradi, kodsiz — botga birinchi yozganda avtomatik bog'lanadi (server ishga tushganda ham tayyorlanadi). Qoida: **ega hech qachon boshqa
+rolli hisobni `FOUNDER` ga ko'tarmaydi.**
+- tg id `FOUNDER` hisobga bog'langan bo'lsa — shu hisob ishlatiladi;
+- tg id boshqa rolli hisobga bog'langan bo'lsa (yoki bog'lanmagan) — egasining alohida hisobiga `tg<id>@owner.utax.uz` ko'chiriladi
+  (yo'q bo'lsa yaratiladi — `OWNER_PROVISIONED`). Eski hisob roli **o'zgarmaydi**, faqat Telegram bog'lanishi uziladi va shu Telegram bilan
+  ochilgan sessiyalari yopiladi (`OWNER_RELINKED` audit);
+- `FOUNDER` roli / faol holat faqat egasining o'z hisobida tiklanadi (`OWNER_ROLE_ENFORCED`).
+
+Ega `/start KOD` bilan **faqat allaqachon `FOUNDER` bo'lgan hisobga** bog'lana oladi: boshqa rol kodi rad etiladi
+(`TELEGRAM_LINK_REJECTED`, joriy bog'lanish o'zgarmaydi).
 
 Bog'lanmagan Telegram hisobi — yo'riqnoma + `TELEGRAM_ACCESS_DENIED` audit; rolga mos bo'lmagan bot — mos botlar havolasi;
 bloklangan foydalanuvchi (Kill switch) — hech bir bot javob bermaydi, web sessiyalari ham bekor qilinadi.
@@ -98,7 +110,8 @@ Har `notifications.notify()` (to'lov muddati, katta xarajat, likvidlik, byudjet,
 CRM yozuvi (web «Bildirishnomalar») **+** Telegram navbati → @utax_signal_bot. Signal bloklangan / ochilmagan bo'lsa — foydalanuvchi ochgan
 boshqa UTAX boti orqali (zaxira). Yuborilmasa — har daqiqa qayta urinish (backoff, 24 soat, 5 marta), holat web jurnalida (`bot_key`, `attempts`, `error`).
 Xabardagi tugmalar: **✅ Tasdiqlash / ❌ Rad etish** (faqat qadam egasiga), **🌐 Ochish** (web sahifa), **✅ Ko'rildi** — web'dagi «o'qilgan» bilan sinxron.
-`TELEGRAM_ALERT_CHAT_ID` — CRITICAL'lar guruhga ham.
+`TELEGRAM_ALERT_CHAT_ID` — CRITICAL'lar guruhga ham: har ogohlantirish (`dedupe_key`) guruhga **bir marta** (jurnalda `channel=ALERT`),
+yuborilmasa — keyingi shunday ogohlantirishda qayta urinadi (5 marta).
 
 | Buyruq | Ruxsat | Nima qiladi |
 |---|---|---|
@@ -106,7 +119,7 @@ Xabardagi tugmalar: **✅ Tasdiqlash / ❌ Rad etish** (faqat qadam egasiga), **
 | `/oqilmagan` | notifications VIEW | O'qilmaganlar, to'liq karta, hammasini o'qilgan qilish |
 | `/tarix` | notifications VIEW | Tarix (sahifalash) |
 | `/sozlama` | notifications EDIT | Qaysi turlar Telegram'ga kelsin, jim soatlar (22:00–08:00 / 23:00–07:00; CRITICAL jim soatda ham keladi) |
-| `/test` | notifications VIEW | O'zingizga test bildirishnoma |
+| `/test` | notifications EDIT | O'zingizga test bildirishnoma (bildirishnoma yaratadi — web'dagi kabi yozish ruxsati; read-only AUDITOR uchun yopiq) |
 
 Web'dan ham: Sozlamalar → Profil → Telegram botlar → bildirishnoma sozlamalari (`GET/PUT /api/notifications/prefs`).
 
@@ -120,7 +133,8 @@ HTML sahifalar `Content-Security-Policy: frame-ancestors` bilan faqat Telegram w
 ## Ishga tushirish
 
 ```bash
-# .env: BOT_RAHBAR_TOKEN, BOT_BUXGALTER_TOKEN, BOT_SOROV_TOKEN, BOT_SIGNAL_TOKEN, BOT_OWNER_IDS
+# .env: BOT_RAHBAR_TOKEN, BOT_BUXGALTER_TOKEN, BOT_SOROV_TOKEN, BOT_SIGNAL_TOKEN, BOT_OWNER_IDS (AI: GEMINI_API_KEY / GROQ_API_KEY)
+# Docker: docker-compose.yml .env ni env_file orqali konteynerga beradi (docs/DEPLOY.md)
 npm start                 # BOT_MODE=polling (default) — 4 bot long polling bilan
 BOT_MODE=off npm start    # botlarsiz (faqat web)
 ```

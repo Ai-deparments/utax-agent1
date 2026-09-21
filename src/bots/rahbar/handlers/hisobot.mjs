@@ -2,7 +2,7 @@
 import { lines, title, muted, monthLabel, statusLabel } from '../../shared/format.mjs';
 import { T } from '../../shared/texts.mjs';
 import { buildXlsx } from '../../../core/export.mjs';
-import { round2 } from '../../../core/util.mjs';
+import { round2, today } from '../../../core/util.mjs';
 import { P, monthArg, monthCb, monthNav } from './common.mjs';
 
 const n = (v) => round2(Number(v) || 0);
@@ -54,7 +54,7 @@ const KINDS = {
     build(S) {
       const list = S.receivables.list();
       const rows = list.map((x) => [x.client, x.inn || '', x.contract_number, x.service_name || x.service_code || '', x.manager || '', n(x.total), n(x.paid), n(x.debt), n(x.overdue_amount), x.due_date || '', Number(x.days_overdue) || 0, x.bucket === 'CURRENT' ? 'Muddati kelmagan' : `${x.bucket} kun`]);
-      const day = new Date().toISOString().slice(0, 10);
+      const day = today(); // Toshkent sanasi (UTC emas)
       return { title: `Debitorlik ${day}`, sheet: `Debitorlik ${day}`, file: `debitorlik-${day}.xlsx`, header: ['Mijoz', 'INN', 'Shartnoma', 'Xizmat', 'Mas’ul', 'Shartnoma summasi', 'To‘langan', 'Qarz', 'Muddati o‘tgan', 'Keyingi muddat', 'Kechikish (kun)', 'Aging'], rows };
     },
   },

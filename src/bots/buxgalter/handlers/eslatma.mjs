@@ -1,6 +1,7 @@
 /**
  * Fon vazifasi: ish kunlari 17:00 da buxgalterga «Bugungi bank vipiskasini yuboring» eslatmasi —
- * agar bugun vipiska (IMPORT/TELEGRAM) yuklanmagan va faol Bank API integratsiyasi bo'lmasa. Bildirishnoma signal bot orqali keladi.
+ * agar bugun vipiska yuklanmagan (qo'lda kiritilgan MANUAL dan boshqa har qanday manba: IMPORT, TELEGRAM, web EXCEL yuklash,
+ * GOOGLE_SHEETS/ONE_C/ERP/BANK_API sinxroni, WEBHOOK) va faol Bank API integratsiyasi bo'lmasa. Bildirishnoma signal bot orqali keladi.
  */
 const HAFTA_KUNI = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tashkent', weekday: 'short' });
 const TOSHKENT_SANA = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent', year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -10,7 +11,7 @@ export function vipiskaEslatma(app, now = new Date()) {
   if (['Sat', 'Sun'].includes(HAFTA_KUNI.format(now))) return { skipped: 'dam olish kuni' };
   const kun = TOSHKENT_SANA.format(now); // YYYY-MM-DD (Toshkent)
   const boshi = new Date(`${kun}T00:00:00+05:00`).toISOString(), oxiri = new Date(`${kun}T23:59:59.999+05:00`).toISOString();
-  const yuklangan = app.db.get("SELECT COUNT(*) n FROM bank_transactions WHERE source IN ('IMPORT','TELEGRAM') AND reversed_at IS NULL AND created_at BETWEEN ? AND ?", boshi, oxiri).n;
+  const yuklangan = app.db.get("SELECT COUNT(*) n FROM bank_transactions WHERE COALESCE(source,'MANUAL')<>'MANUAL' AND reversed_at IS NULL AND created_at BETWEEN ? AND ?", boshi, oxiri).n;
   if (yuklangan) return { skipped: 'bugun vipiska yuklangan', rows: yuklangan };
   if (app.services.integrations.list().some((i) => i.type === 'BANK_API' && i.is_active)) return { skipped: 'Bank API ulangan' };
   const ids = app.services.notifications.notify({

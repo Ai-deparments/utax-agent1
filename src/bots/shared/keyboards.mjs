@@ -4,6 +4,7 @@
  *   { text, cmd: 'holat', args? }  — shu botdagi buyruqni ishga tushiradi (RBAC qayta tekshiriladi)
  *   { text, web: 'contracts/5' }   — web panel sahifasi (HTTPS bo'lsa Telegram Mini App, aks holda URL; manzil yo'q bo'lsa tugma tushib qoladi)
  *   { text, url: 'https://…' }     — tashqi havola
+ *   { text, cb: 'x' } / btn.cancel()  — «✖️ Bekor»: dialog ichida yuborilsa factory uni `x:<dialog teg>` ga aylantiradi (tagCancel)
  * Qatorlar: [[btn, btn], [btn]]. null / false elementlar va bo'sh qatorlar tashlab yuboriladi.
  */
 export const btn = {
@@ -11,7 +12,25 @@ export const btn = {
   cmd: (text, name, args = '') => ({ text, cmd: name, args }),
   web: (text, path) => ({ text, web: path }),
   url: (text, url) => ({ text, url }),
+  cancel: (text = '✖️ Bekor') => ({ text, cb: 'x' }),
 };
+
+/** Tegsiz bekor tugmasi (cb: 'x') bormi — factory faqat shunda joriy dialogni o'qiydi */
+export const hasBareCancel = (rows) => !!rows?.some?.((row) => (Array.isArray(row) ? row : [row]).some((x) => x && x.cb === 'x'));
+
+/**
+ * «✖️ Bekor» tugmalariga joriy dialog tegini qo'shish: cb 'x' → 'x:<teg>' (8 bayt).
+ * Shunda eski xabardagi tugma keyinroq boshlangan boshqa dialogni o'chirmaydi (common.mjs x handler tegni solishtiradi).
+ * Teg yo'q (dialog ochiq emas) — tugma o'zgarmaydi.
+ */
+export function tagCancel(rows, tag) {
+  if (!tag || !hasBareCancel(rows)) return rows;
+  return rows.map((row) => {
+    if (!row) return row;
+    const fix = (x) => (x && x.cb === 'x' ? { ...x, cb: `x:${tag}` } : x);
+    return Array.isArray(row) ? row.map(fix) : fix(row);
+  });
+}
 
 /** Web panel sahifasi → kerakli resurs (web NAV bilan bir xil): tugma faqat ruxsat bo'lsa ko'rsatiladi */
 export const PAGE_PERM = {

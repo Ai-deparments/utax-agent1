@@ -4,7 +4,8 @@
  *  - ishonchli zanjir: provayderlar tartibida, birinchi muvaffaqiyatli javobda to'xtaydi; o'rtada yiqilsa keyingisi BOSHIDAN boshlaydi
  *  - xato HECH QACHON matn sifatida qaytmaydi — faqat throw LlmError (texnik kod chatga chiqmaydi)
  *  - Gemini daqiqalik global byudjeti (kalit bo'yicha kvota) — tugasa Groq'ga o'tadi, ish to'xtamaydi
- *  - 429 → darhol keyingi provayder; Gemini 429 dan keyin 60 s sovutish; 401/403 dan keyin 10 daqiqa sovutish
+ *  - 429 → darhol keyingi provayder; Gemini 429 dan keyin 60 s sovutish; 401/403 (va Gemini 400 API_KEY_INVALID) dan keyin 10 daqiqa sovutish
+ *  - kesilgan javob (Gemini MAX_TOKENS, Groq finish_reason=length) HECH QACHON tayyor javob emas — 'truncated', keyingi provayder
  *  - kalit hech qachon log/xato/stats'ga tushmaydi
  *
  *   const llm = createLlm({ providers: [{ name: 'gemini', apiKey, model, fallbackModels, rpm }, { name: 'groq', apiKey, model }] });
@@ -35,7 +36,7 @@ class ProviderError extends Error {
 export const DEFAULT_RPM = 12;
 const MINUTE = 60_000;
 const GEMINI_COOLDOWN_MS = 60_000;
-const AUTH_COOLDOWN_MS = 10 * 60_000; // 401/403 (kalit yaroqsiz / loyiha bloklangan) — har xabarda behuda so'rov yubormaslik uchun
+const AUTH_COOLDOWN_MS = 10 * 60_000; // 401/403 yoki Gemini 400 API_KEY_INVALID (kalit yaroqsiz / loyiha bloklangan) — har xabarda behuda so'rov yubormaslik uchun
 const MAX_TOOL_JSON = 30_000;
 const DEFAULT_MODELS = { gemini: 'gemini-3.6-flash', groq: 'openai/gpt-oss-120b' };
 const BASE_URLS = { gemini: 'https://generativelanguage.googleapis.com', groq: 'https://api.groq.com' };
@@ -43,6 +44,15 @@ const BLOCK_REASONS = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_
 const MODEL_MISSING = /not[ _]found|is not supported|unknown model|does not exist|model_not_found|decommissioned|no longer (?:available|supported)/i;
 // Provayder xatosini "javob" deb yuborib qo'ymaslik uchun (Retail IT'dagi eski bug) — faqat aniq texnik naqshlar
 const ERROR_LIKE = /^\s*(?:❌|\{\s*"error"|(?:error|exception|traceback|internal server error|service unavailable)\b)/i;
+/** Gemini yaroqsiz/bekor qilingan kalitga HTTP 400 INVALID_ARGUMENT qaytaradi (401/403 emas) — buni ham 'auth' deb tanish kerak */
+function isInvalidKey(status, j) {
+  if (status !== 400) return false;
+  const err = j?.error && typeof j.error === 'object' ? j.error : {};
+  const reasons = (Array.isArray(err.details) ? err.details : []).map((d) => String(d?.reason || ''));
+  if (reasons.includes('API_KEY_INVALID')) return true;
+  const msg = String(err.message || '');
+  return (String(err.status || '') === 'INVALID_ARGUMENT' && /api[ _-]?key/i.test(msg)) || /API[ _]KEY[ _]INVALID|API key not valid|API key expired/i.test(msg);
+}
 
 /** rpm: musbat butun son; buzuq qiymat ishga tushishni yiqitmaydi — default + ogohlantirish */
 function parseRpm(value, log) {
@@ -141,6 +151,8 @@ const gemini = {
       throw new ProviderError('blocked', reason ? `so‘rov bloklandi: ${reason}` : 'javobda candidates yo‘q');
     }
     if (BLOCK_REASONS.has(cand.finishReason)) throw new ProviderError('blocked', `javob bloklandi: ${cand.finishReason}`);
+    // Token limitida kesilgan javob (matn ham, functionCall argumentlari ham) ishonchsiz — tayyor javob emas, keyingi provayder
+    if (cand.finishReason === 'MAX_TOKENS') throw new ProviderError('truncated', 'javob token limitida kesildi (MAX_TOKENS)');
     const parts = Array.isArray(cand.content?.parts) ? cand.content.parts : [];
     const calls = parts.filter((x) => x?.functionCall?.name).map((x, i) => ({ id: x.functionCall.id || `g${i}`, rawId: x.functionCall.id || null, name: x.functionCall.name, args: x.functionCall.args && typeof x.functionCall.args === 'object' ? x.functionCall.args : {}, bad: false }));
     const text = parts.filter((x) => typeof x?.text === 'string' && !x.thought).map((x) => x.text).join('');
@@ -184,6 +196,7 @@ const groq = {
   parse(j) {
     const msg = j?.choices?.[0]?.message;
     if (!msg) throw new ProviderError('bad_response', 'javobda choices yo‘q');
+    if (j.choices[0].finish_reason === 'length') throw new ProviderError('truncated', 'javob token limitida kesildi (finish_reason=length)');
     const calls = (Array.isArray(msg.tool_calls) ? msg.tool_calls : []).map((tc, i) => {
       let args = {}, bad = false;
       const rawArgs = tc?.function?.arguments;
@@ -219,10 +232,19 @@ export function createLlm({ providers = [], fetchImpl = globalThis.fetch, log = 
     const models = [cfg.model || DEFAULT_MODELS[cfg.name], ...(cfg.fallbackModels || [])].filter(Boolean);
     const hasBudget = cfg.name === 'gemini' || cfg.rpm !== undefined;
     active.push({
-      name: cfg.name, adapter, apiKey, models, modelIndex: 0, baseUrl: String(cfg.baseUrl || BASE_URLS[cfg.name]).replace(/\/+$/, ''),
+      name: cfg.name, label: String(cfg.label || '').trim() || null, adapter, apiKey, models, modelIndex: 0, baseUrl: String(cfg.baseUrl || BASE_URLS[cfg.name]).replace(/\/+$/, ''),
       rpm: hasBudget ? parseRpm(cfg.rpm, log) : null, hits: [], cooldownUntil: 0,
       calls: 0, failures: 0, lastError: null,
     });
+  }
+  // stats() kaliti (yorliq): nom takrorlansa (asosiy va zaxira Groq) — "nom:model", aks holda nomning o'zi; aniq label berilsa — o'sha
+  const nameCount = active.reduce((m, p) => m.set(p.name, (m.get(p.name) || 0) + 1), new Map());
+  const usedLabels = new Set();
+  for (const p of active) {
+    let label = p.label || (nameCount.get(p.name) > 1 ? `${p.name}:${p.models[0]}` : p.name);
+    for (let i = 2; usedLabels.has(label); i++) label = `${p.name}:${p.models[0]}#${i}`;
+    usedLabels.add(label);
+    p.label = label;
   }
   const keys = active.map((p) => p.apiKey);
   const scrub = (s) => keys.reduce((acc, k) => acc.split(k).join('***'), String(s ?? ''));
@@ -250,7 +272,8 @@ export function createLlm({ providers = [], fetchImpl = globalThis.fetch, log = 
     if (!res.ok) {
       const detail = j?.error?.message || j?.error?.code || (typeof j?.error === 'string' ? j.error : '') || String(raw || '').slice(0, 120);
       const retryAfter = Number(res.headers?.get?.('retry-after')) || null;
-      throw new ProviderError(res.status === 429 ? 'rate_limited' : res.status === 401 || res.status === 403 ? 'auth' : 'http', scrub(`HTTP ${res.status}${detail ? ': ' + detail : ''}`).slice(0, 300), { status: res.status, retryAfter });
+      const code = res.status === 429 ? 'rate_limited' : res.status === 401 || res.status === 403 || isInvalidKey(res.status, j) ? 'auth' : 'http';
+      throw new ProviderError(code, scrub(`HTTP ${res.status}${detail ? ': ' + detail : ''}`).slice(0, 300), { status: res.status, retryAfter });
     }
     if (!j || typeof j !== 'object') throw new ProviderError('bad_json', `JSON emas javob (HTTP ${res.status})`);
     return j;
@@ -318,7 +341,7 @@ export function createLlm({ providers = [], fetchImpl = globalThis.fetch, log = 
     const attempts = [];
     for (const p of active) {
       const model = p.models[p.modelIndex];
-      if (p.cooldownUntil > now()) { attempts.push({ provider: p.name, model, code: 'cooldown', message: 'sovutish (429 yoki 401/403 dan keyin)' }); continue; }
+      if (p.cooldownUntil > now()) { attempts.push({ provider: p.name, model, code: 'cooldown', message: 'sovutish (429 yoki yaroqsiz kalit / 401/403 dan keyin)' }); continue; }
       if (p.rpm !== null && budgetLeft(p) === 0) { attempts.push({ provider: p.name, model, code: 'budget', message: 'daqiqalik byudjet tugadi' }); continue; }
       p.calls++;
       try {
@@ -343,10 +366,10 @@ export function createLlm({ providers = [], fetchImpl = globalThis.fetch, log = 
     get enabled() { return active.length > 0; },
     get providers() { return active.map((p) => p.name); },
     chat,
-    /** Web admin uchun holat (kalitsiz) */
+    /** Web admin uchun holat (kalitsiz). Kalit — yorliq: asosiy va zaxira Groq alohida ko'rinadi ("groq:<model>") */
     stats() {
-      return Object.fromEntries(active.map((p) => [p.name, {
-        model: p.models[p.modelIndex], calls: p.calls, failures: p.failures, lastError: p.lastError ? scrub(p.lastError) : null,
+      return Object.fromEntries(active.map((p) => [p.label, {
+        provider: p.name, model: p.models[p.modelIndex], calls: p.calls, failures: p.failures, lastError: p.lastError ? scrub(p.lastError) : null,
         budgetLeft: budgetLeft(p), rpm: p.rpm, cooldownUntil: p.cooldownUntil > now() ? new Date(p.cooldownUntil).toISOString() : null,
       }]));
     },

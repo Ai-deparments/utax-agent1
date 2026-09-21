@@ -2,9 +2,12 @@
  * Barcha botlarda ishlaydigan tugmalar (bildirishnomalar istalgan botdan kelishi mumkin):
  *   apr:*  / aprr:*  — tasdiqlash (approvals-ui.mjs)
  *   nr:<crmId>       — bildirishnoma "Ko'rildi" (web'dagi o'qilgan belgisi bilan sinxron)
- *   x                — tugmalarni yopish / bekor
+ *   x:<teg>          — shu dialogni bekor qilish (teg — dialog boshlanganda; factory «✖️ Bekor» tugmasiga o'zi qo'shadi)
+ *   x                — tegsiz (dialogdan tashqari xabar yoki deploydan oldingi eski xabar): faqat tugmalarni yopadi, ochiq dialogni o'chirmaydi
  */
 import { approvalCallbacks, approvalDialogs } from './approvals-ui.mjs';
+import { dialogTag } from './dialogs.mjs';
+import { T } from './texts.mjs';
 
 export const sharedCallbacks = {
   ...approvalCallbacks,
@@ -19,10 +22,13 @@ export const sharedCallbacks = {
   },
   x: {
     async run(ctx) {
-      if (ctx.cbArgs[0] === 'seen') return ctx.answer('✅ Ko‘rildi');
-      const had = ctx.dialog.get();
-      if (had) ctx.dialog.clear();
-      await ctx.setButtons(null);
+      const tag = ctx.cbArgs[0];
+      if (tag === 'seen') return ctx.answer('✅ Ko‘rildi');
+      const cur = ctx.dialog.get();
+      await ctx.setButtons(null); // bosilgan xabarning tugmalari har holda olib tashlanadi
+      // Faqat tugma tegishli dialog bekor qilinadi: eski xabardagi «✖️ Bekor» keyin boshlangan boshqa dialogni o'chirmaydi
+      if (tag && cur && dialogTag(cur) === tag) { ctx.dialog.clear(); return ctx.answer('✖️ Bekor qilindi'); }
+      if (cur) return ctx.answer(T.cancelStale, true);
       return ctx.answer('Yopildi');
     },
   },

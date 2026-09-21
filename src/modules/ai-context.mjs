@@ -33,7 +33,7 @@ export const PERSONAS = {
     advice: 'likvidlikni boshqarish, xarajatlarni optimallashtirish, undiruvni tezlashtirish, narx va xizmat portfeli, byudjet intizomi, risklarni kamaytirish',
     tools: ['get_dashboard', 'get_treasury', 'get_pnl', 'get_service_profitability', 'get_cash_flow', 'get_balance_sheet', 'get_plan_fact', 'get_forecast', 'get_receivables', 'get_approvals_for_me', 'get_pending_approvals', 'get_revenue', 'get_expenses', 'get_data_quality'],
     greeting: 'moliyaviy maslahatchingiz (CFO-strateg)',
-    examples: [{ q: 'Bugun xavfsiz qancha pul ishlata olamiz?', tool: 'get_treasury' }, { q: 'Avgustda foyda nega kamaydi?', tool: 'get_pnl' }, { q: 'Qaysi xizmat eng foydali, qaysi biri zarar?', tool: 'get_service_profitability' }, { q: 'Keyingi 30 kunda pul yetadimi? Nima qilish kerak?', tool: 'get_forecast' }],
+    examples: [{ q: 'Bugun xavfsiz qancha pul ishlata olamiz?', tool: 'get_treasury' }, { q: 'O‘tgan oyda foyda nega o‘zgardi?', tool: 'get_pnl' }, { q: 'Qaysi xizmat eng foydali, qaysi biri zarar?', tool: 'get_service_profitability' }, { q: 'Keyingi 30 kunda pul yetadimi? Nima qilish kerak?', tool: 'get_forecast' }],
     commands: { get_dashboard: 'holat', get_treasury: 'pul', get_pnl: 'foyda', get_service_profitability: 'xizmatlar', get_cash_flow: 'pul_oqimi', get_balance_sheet: 'balans', get_plan_fact: 'reja', get_forecast: 'prognoz', get_receivables: 'debitorlik', get_pending_approvals: 'tasdiqlash', get_approvals_for_me: 'tasdiqlash', get_data_quality: 'sifat' },
   },
   buxgalter: {
@@ -106,30 +106,42 @@ export const exampleText = (x) => (typeof x === 'string' ? x : x?.q || '');
 
 const dmy = (iso) => String(iso).slice(0, 10).split('-').reverse().join('.');
 
+/** Qiymat yo'q (null/undefined/bo'sh/NaN) bo'lganda LLM va foydalanuvchiga ko'rsatiladigan belgi — HECH QACHON 0 emas */
+export const NO_VALUE = '--';
+
+/**
+ * Eng muhim qoida (foydalanuvchining qat'iy talabi): hech narsa to'qilmaydi. Barcha biznes ma'lumotlari UTAX Excel jurnalidan
+ * import qilinadi; aniq qiymat bo'lmasa — "--" va "Excel'da ko'rsatilmagan". Barcha personalar (rahbar, buxgalter, sorov, signal, web) promptida.
+ */
+export const NO_FABRICATION_RULE = '0) ENG MUHIM QOIDA — HECH NIMA TO‘QIMA. Tizimdagi barcha biznes ma’lumotlari faqat UTAX Excel jurnalidan import qilinadi. Raqam, sana, ism, mijoz, foiz, muddat va prognozni HECH QACHON o‘ylab topma — faqat tool natijasidagi qiymatlarni ishlat. Tool natijasida qiymat «--», null yoki umuman yo‘q bo‘lsa — «--» deb yoz va «Excel’da ko‘rsatilmagan» de (0 deb yozma, taxmin qilma, o‘xshash qiymat bilan to‘ldirma). Hisob-kitobni faqat tool bergan mavjud raqamlardan qil va qaysi raqamlardan hisoblaganingni ayt. Maslahat berish mumkin, lekin uni «💡 Maslahat:» deb belgila va unda yangi raqam to‘qima.';
+
 /**
  * Tizim prompti (o'zbek). commands — shu botdagi foydalanuvchiga ruxsat etilgan buyruqlar [{name, desc, usage}].
  * userLabel — niqoblangan (XODIM_n) yoki haqiqiy ism.
+ * closedAreas — foydalanuvchi rolida HAQIQATAN yopiq (RBAC) bo'limlar nomlari: «rolingiz uchun yopiq» faqat shular uchun aytiladi.
  */
-export function buildSystemPrompt({ persona, company, today, userLabel, role, botTitle, botKey, commands = [], otherBots, examples }) {
+export function buildSystemPrompt({ persona, company, today, userLabel, role, botTitle, botKey, commands = [], otherBots, examples, closedAreas = [] }) {
   const keys = otherBots || Object.keys(BOT_SCOPES).filter((k) => k !== botKey);
   const others = keys.filter((k) => BOT_SCOPES[k] && k !== botKey).map((k) => `@${BOT_SCOPES[k].username} — ${BOT_SCOPES[k].scope}`);
   const here = BOT_SCOPES[botKey];
   const ex = (examples || persona.examples.map(exampleText)).slice(0, 3);
+  const closed = [...new Set(closedAreas.filter(Boolean))];
   return [
     `Sen — ${company} kompaniyasining «${persona.title}» AI yordamchisisan${botTitle ? ` (${botTitle}${here ? `, @${here.username}` : ''})` : ''}. Suhbatdosh: ${userLabel} (${roleLabel(role)}). Bugun ${dmy(today)}, valyuta so‘m.`,
     `Vazifa: ${persona.mission}`,
     `Ekspertiza: ${persona.expertise.join('; ')}. Maslahat mavzulari: ${persona.advice}.`,
     'Qoidalar:',
+    NO_FABRICATION_RULE,
     '1) Raqam/fakt FAQAT tool natijasidan; tool chaqirmasdan raqam aytma, taxmin qilma. Formulani o‘zing tuzma — faqat tool bergan «izoh»/formulani keltir; qo‘shish-ayirish kerak bo‘lsa aniq hisobla yoki umuman qilma.',
-    '2) Kerakli tool yo‘q yoki ruxsat berilmagan bo‘lsa — «bu ma’lumot sizning rolingiz uchun yopiq» de va kimga murojaat qilish mumkinligini ayt (rahbariyat yoki moliya bo‘limi); faqat pastdagi ro‘yxatdagi botlarga yo‘naltir.',
+    `2) Ruxsat: ${closed.length ? `suhbatdosh rolida YOPIQ bo‘limlar — ${closed.join(', ')}.` : 'suhbatdosh rolida yopiq bo‘lim yo‘q.'} «Bu ma’lumot sizning rolingiz uchun yopiq» — FAQAT shu yopiq bo‘limlar so‘ralganda yoki tool «rolida mavjud emas» deb qaytarganda de va kimga murojaat qilish mumkinligini ayt (rahbariyat yoki moliya bo‘limi). Tool shu botda yo‘q yoki «bu so‘rovga berilmagan» deb qaytsa — «yopiq» DEMA: savol boshqa bot yoki web panel doirasida ekanini ayt; faqat pastdagi ro‘yxatdagi botlarga yo‘naltir.`,
     '3) Faqat UTAX tizimi ma’lumoti: internet, yangilik, bozor kurslari, boshqa kompaniyalar yo‘q.',
     '4) Maslahat so‘ralsa — o‘z sohang bo‘yicha amaliy maslahat, «💡 Maslahat:» bilan, tizim raqamlariga tayan; yangi raqam to‘qima.',
     '5) Mavzudan tashqari (ob-havo, siyosat, sport, dasturlash, shaxsiy) — bir jumlada muloyim rad et va nimada yordam bera olishingni ayt.',
     `6) Salom, rahmat yoki «nima qila olasan» kabi umumiy xabarga: o‘zingni «${persona.greeting || persona.title}» deb qisqa tanishtir va 2–3 misol ber: ${ex.map((x) => `«${x}»`).join(', ')}.`,
     '7) Sen hech narsani bajarmaysan (tasdiqlash, to‘lov, import, bloklash) — buni bot buyruqlari/tugmalari qiladi, kerakli buyruqni tavsiya qil.',
     '8) BANKDAGI PUL ≠ DAROMAD ≠ ISHLATISH MUMKIN PUL; mijoz avansi daromad emas.',
-    '9) Oldingi suhbatni hisobga ol. MIJOZ_n / XODIM_n — niqoblangan nomlar, aynan shunday yoz; *** — yashirilgan raqam.',
-    '10) Foydalanuvchi tilida (standart o‘zbek lotin). Avval 1–2 jumla javob, keyin kerak bo‘lsa qisqa "- " ro‘yxat; **qalin**; jadval yo‘q; summa "12 500 000 so‘m"; ≤ 900 belgi.',
+    '9) Oldingi suhbatni hisobga ol. MIJOZ_n / XODIM_n — niqoblangan nomlar, aynan shunday yoz (qo‘shimcha qo‘shish mumkin: MIJOZ_nning); *** — yashirilgan raqam.',
+    '10) Foydalanuvchi tilida (standart o‘zbek lotin). Avval 1–2 jumla javob, keyin kerak bo‘lsa qisqa "- " ro‘yxat; **qalin**; jadval yo‘q; summa — tool raqami, minglar bo‘sh joy bilan ajratilib, oxirida «so‘m»; ≤ 900 belgi.',
     commands.length ? `Shu botdagi buyruqlar: ${commands.map((c) => c.usage || '/' + c.name).join(', ')}; /clear — suhbatni tozalash.` : null,
     others.length ? `Foydalanuvchi kira oladigan boshqa botlar: ${others.join(' | ')}.` : 'Boshqa botlarga yo‘naltirma.',
   ].filter((x) => x !== null).join('\n');
@@ -152,14 +164,31 @@ export function personaHelp(persona, commands = []) {
 const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Tuzilgan tool natijasida maxfiy maydonlar (kalit nomi bo'yicha) */
 const SECRET_KEYS = /(^|_)(inn|stir|pinfl|phone|telefon|account_number|counterparty_account|card|karta|email|address|passport)($|_)/i;
+// O'zbekiston mobil operator kodlari — mahalliy format ("90 123 45 67", "(90) 123-45-67") faqat shu kod + ajratgich bilan
+// (summalar "12 500 000" — 3 xonali guruhlar — ushlanmaydi; ajratgichsiz 9 xonali son ham telefon deb olinmaydi)
+const OPERATOR = '(?:20|33|50|55|61|62|65|66|67|69|71|73|75|76|77|78|79|88|90|91|93|94|95|97|98|99)';
 const TEXT_PATTERNS = [
-  [/\+?998[\s-]?\(?\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/g, '***'], // O'zbekiston telefoni
+  [/\+?998[\s-]?\(?\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)/g, '***'], // O'zbekiston telefoni (+998 bilan)
   [/\+\d{9,15}\b/g, '***'], // xalqaro telefon
+  [new RegExp(`(?<![\\d+])(?:\\(${OPERATOR}\\)[\\s-]?|${OPERATOR}[\\s-])\\d{3}[\\s-]?\\d{2}[\\s-]?\\d{2}(?!\\d)`, 'g'), '***'], // mahalliy telefon
   [/\b\d{20}\b/g, '***'], // bank hisob raqami
   [/\b\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4}\b|\b\d{16}\b/g, '***'], // karta
   [/\b\d{14}\b/g, '***'], // PINFL
-  [/((?:INN|STIR|ИНН|inn|stir)[\s:#№-]*)\d{9}\b/g, '$1***'], // INN/STIR kalit so'z bilan
+  // INN/STIR kalit so'z bilan (har qanday registr, qo'shimcha: "INNsi", "STIR raqami:", guruhlangan "207 654 321")
+  [/((?<!\p{L})(?:inn|stir|инн|стир)\p{L}{0,6}[\s:#№-]*(?:raqami?\s*[:#№-]?\s*)?)\d{3}[\s-]?\d{3}[\s-]?\d{3}(?!\d)/giu, '$1***'],
 ];
+/** Apostrof variantlari (o‘/g‘ uchun odamlar har xil yozadi: ' ` ‘ ’ ʻ ʼ ´) — solishtirishda bitta belgi */
+const APOS_CHARS = "‘’ʻʼ'`´";
+const APOS_RE = new RegExp(`[${APOS_CHARS}]`, 'g');
+const APOS_CLASS = `[${APOS_CHARS}]`;
+const normName = (s) => String(s ?? '').replace(APOS_RE, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+/** Nom → regex qismi: apostrof har qanday variantga, bo'shliq — bir yoki bir nechta bo'shliqqa mos */
+const namePattern = (n) => escRe(n).replace(APOS_RE, APOS_CLASS).replace(/\s+/g, '\\s+');
+// Nomdan keyin faqat o'zbekcha qo'shimcha (Nur Farmning, Nur Farmga, Nur Farmlarni) yoki so'z chegarasi — so'z ichida niqoblanmaydi
+// ("Tashqi auditorlik", "nur farmacevtika" o'zgarmaydi)
+const NAME_END = '(?=(?:lar)?(?:ning|niki|ni|ga|ka|qa|dagi|dan|da|mi|chi|dek|day|cha)?(?![\\p{L}\\d]))';
+// Token (javobda va tool argumentida): oldida harf/raqam yo'q, keyin raqam yo'q — qo'shimcha ruxsat ("MIJOZ_3ning", "xodim_6dan")
+const TOKEN_RE = /(?<![\p{L}\d_])(MIJOZ_\d+|XODIM_E?\d+)(?!\d)/giu;
 
 /**
  * @param db
@@ -173,58 +202,66 @@ export function createMasker(db, enabled = true) {
   }
   const entries = [];
   const byToken = new Map();
+  const tokenOf = new Map(); // normName(nom) → token
   const add = (name, token) => {
-    const n = String(name || '').trim();
-    if (n.length < 3 || byToken.has(token)) return;
+    const n = String(name || '').replace(/\s+/g, ' ').trim();
+    const key = normName(n);
+    if (n.length < 3 || byToken.has(token) || tokenOf.has(key)) return;
     entries.push({ name: n, token });
     byToken.set(token, n);
+    tokenOf.set(key, token);
   };
   for (const c of db.all('SELECT id, name FROM companies')) add(c.name, `MIJOZ_${c.id}`);
   for (const u of db.all('SELECT id, name FROM users')) add(u.name, `XODIM_${u.id}`);
-  const userNames = new Set(db.all('SELECT name FROM users').map((u) => String(u.name).trim().toLowerCase()));
-  for (const e of db.all('SELECT id, name FROM employees')) if (!userNames.has(String(e.name).trim().toLowerCase())) add(e.name, `XODIM_E${e.id}`);
-  const inns = db.all("SELECT DISTINCT inn FROM companies WHERE inn IS NOT NULL AND inn<>''").map((x) => String(x.inn)).filter((x) => x.length >= 6);
+  const userNames = new Set(db.all('SELECT name FROM users').map((u) => normName(u.name)));
+  for (const e of db.all('SELECT id, name FROM employees')) if (!userNames.has(normName(e.name))) add(e.name, `XODIM_E${e.id}`);
+  // INN: mijozlar va bank vipiskasidagi kontragentlar (yetkazib beruvchilar ham) — kalit so'zsiz ham niqoblanadi
+  const inns = [...new Set([
+    ...db.all("SELECT DISTINCT inn FROM companies WHERE inn IS NOT NULL AND inn<>''").map((x) => String(x.inn).trim()),
+    ...db.all("SELECT DISTINCT counterparty_inn inn FROM bank_transactions WHERE counterparty_inn IS NOT NULL AND counterparty_inn<>''").map((x) => String(x.inn).trim()),
+  ])].filter((x) => /^\d{6,}$/.test(x));
   entries.sort((a, b) => b.name.length - a.name.length);
-  const nameRe = entries.length ? new RegExp(entries.map((e) => escRe(e.name)).join('|'), 'gi') : null;
-  const tokenOf = new Map(entries.map((e) => [e.name.toLowerCase(), e.token]));
-  const innRe = inns.length ? new RegExp(`\\b(?:${inns.map(escRe).join('|')})\\b`, 'g') : null;
+  const nameRe = entries.length ? new RegExp(`(?<![\\p{L}\\d])(?:${entries.map((e) => namePattern(e.name)).join('|')})${NAME_END}`, 'giu') : null;
+  const innRe = inns.length ? new RegExp(`(?<!\\d)(?:${inns.map(escRe).join('|')})(?!\\d)`, 'g') : null;
 
   function mask(text) {
     if (text === null || text === undefined) return text;
     let s = String(text);
-    if (nameRe) s = s.replace(nameRe, (m) => tokenOf.get(m.toLowerCase()) || m);
+    if (nameRe) s = s.replace(nameRe, (m) => tokenOf.get(normName(m)) || m);
     if (innRe) s = s.replace(innRe, '***');
     for (const [re, rep] of TEXT_PATTERNS) s = s.replace(re, rep);
     return s;
   }
   function maskDeep(v, key = '') {
-    if (v === null || v === undefined) return v;
+    if (v === null || v === undefined || v === NO_VALUE) return v; // "--" (qiymat yo'q) o'zgarmaydi — "***" emas
     if (typeof v === 'string') return SECRET_KEYS.test(key) ? (v ? '***' : v) : mask(v);
     if (typeof v === 'number') return SECRET_KEYS.test(key) ? '***' : v;
     if (Array.isArray(v)) return v.map((x) => maskDeep(x, key));
     if (typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, maskDeep(x, k)]));
     return v;
   }
-  const TOKEN_RE = /\b(MIJOZ_\d+|XODIM_E?\d+)\b/g;
-  const unmask = (text) => (text === null || text === undefined ? text : String(text).replace(TOKEN_RE, (t) => byToken.get(t) || t));
+  const unmask = (text) => (text === null || text === undefined ? text : String(text).replace(TOKEN_RE, (t) => byToken.get(t.toUpperCase()) || t));
   function unmaskArgs(v) {
     if (typeof v === 'string') return unmask(v);
     if (Array.isArray(v)) return v.map(unmaskArgs);
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unmaskArgs(x)]));
     return v;
   }
-  return { enabled: true, mask, maskDeep, unmask, unmaskArgs, tokenFor: (name) => tokenOf.get(String(name || '').trim().toLowerCase()) || null };
+  return { enabled: true, mask, maskDeep, unmask, unmaskArgs, tokenFor: (name) => tokenOf.get(normName(name)) || null };
 }
 
 /**
  * Katta tool natijasini LLM uchun ixchamlash: massivlar ≤ limit qator; JSON maxChars dan oshsa — qatorlar soni
  * kamaytiriladi (JSON kesilmaydi, model buzuq JSON olmaydi); juda katta bo'lsa oxirgi chora — qisqartirilgan satr.
+ * Qiymat yo'q (null / undefined / NaN / ∞) → "--" (HECH QACHON 0 emas, kalit ham tushib qolmaydi) — model «Excel’da ko‘rsatilmagan» deydi.
  */
 export function compact(value, { limit = 40, maxChars = 12000 } = {}) {
   const trim = (v, lim, depth = 0) => {
+    if (v === null || v === undefined) return NO_VALUE;
     if (Array.isArray(v)) { const arr = v.slice(0, lim).map((x) => trim(x, lim, depth + 1)); if (v.length > lim) arr.push({ _qolgan: v.length - lim }); return arr; }
-    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([, x]) => x !== undefined).map(([k, x]) => [k, depth > 6 ? '…' : trim(x, lim, depth + 1)]));
-    if (typeof v === 'number') return Math.abs(v) >= 1000 ? Math.round(v) : Math.round(v * 100) / 100; // so'm summalari tiyinsiz
+    if (v instanceof Date) return Number.isNaN(v.getTime()) ? NO_VALUE : v.toISOString();
+    if (typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, depth > 6 ? '…' : trim(x, lim, depth + 1)]));
+    if (typeof v === 'number') return !Number.isFinite(v) ? NO_VALUE : Math.abs(v) >= 1000 ? Math.round(v) : Math.round(v * 100) / 100; // so'm summalari tiyinsiz
     return v;
   };
   for (let lim = limit; lim >= 2; lim = Math.floor(lim / 2)) {

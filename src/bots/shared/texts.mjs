@@ -55,7 +55,11 @@ export const T = {
   aiNoAccess: 'Erkin savollar (AI moliya yordamchisi) sizning rolingiz uchun yopiq. /help — mavjud buyruqlar.',
   aiThinking: '🤔 O‘ylayapman…',
   dialogHint: '\n\n<i>/bekor — bekor qilish</i>',
-  staleDialog: '⌛ Oldingi amal muddati tugagan (30 daqiqa). Qaytadan boshlang.',
+  staleDialog: '⌛ Oldingi amal muddati tugagan (30 daqiqa) — yuborganingiz unga qo‘shilmadi. Qaytadan boshlang.',
+  /** Noto'g'ri yozilgan / ruxsatsiz buyruq ochiq dialogni o'chirmaydi */
+  dialogKept: '\n\n<i>Ochiq amal saqlanib qoldi — javobingizni yozishda davom eting yoki /bekor.</i>',
+  /** Eski xabardagi «✖️ Bekor» — joriy (boshqa) dialog o'chirilmaydi */
+  cancelStale: '⌛ Bu tugma eskirgan — hozirgi ochiq amal saqlanib qoldi. Uni bekor qilish uchun /bekor.',
   done: '✅ Bajarildi.',
   notFound: 'Topilmadi.',
   emptyList: 'Hozircha hech narsa yo‘q.',

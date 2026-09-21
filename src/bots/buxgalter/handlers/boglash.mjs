@@ -30,7 +30,7 @@ function karta(ctx, t, off, jami) {
     candidates.length ? `<b>${kirim ? 'Shartnoma' : 'Xarajat'} nomzodlari:</b>` : muted(kirim ? 'Mos shartnoma topilmadi — e’tiborsiz qoldiring yoki web’da qo‘lda tanlang.' : 'Mos xarajat so‘rovi topilmadi.'),
     ...candidates.map((c, i) => (kirim
       ? `${i + 1}. <b>${esc(c.contract_number)}</b> · ${esc(c.company_name)} — qoldiq ${esc(money(c.remaining))} · <b>${esc(c.score)}%</b>\n     <i>${esc(sabablar(c.reasons))}</i>`
-      : `${i + 1}. <b>${esc(c.code)}</b> · ${esc(clip(c.purpose, 50))} — ${esc(money(c.amount))} · <b>${esc(c.score)}%</b>\n     <i>${esc(sabablar(c.reasons))}</i>`)),
+      : `${i + 1}. <b>${esc(c.code)}</b> · ${esc(clip(c.purpose, 50))} — ${esc(money(c.amount))} · <b>${esc(c.score)}%</b>${c.status === 'PAID' ? ' · <i>bankdan to‘landi deb belgilangan</i>' : ''}\n     <i>${esc(sabablar(c.reasons))}</i>`)),
   );
   const buttons = [];
   if (ctx.can('reconciliation', 'APPROVE')) {
@@ -134,6 +134,13 @@ export default {
           if (tx.direction !== 'EXPENSE') return ctx.answer('Faqat chiqim xarajatga bog‘lanadi', true);
           const e = ctx.S.expenses.get(Number(a2));
           if (!e) return ctx.answer('Xarajat topilmadi', true);
+          // Karta eskirgan bo'lishi mumkin: shu orada xarajat kassadan to'langan / boshqa chiqimga bog'langan / bekor qilingan bo'lsa — bog'lanmaydi,
+          // karta yangi nomzodlar bilan qayta chiziladi (qoida servisda: reconciliation.expenseLinkBlockReason, confirmExpense ham shuni tekshiradi)
+          const sabab = ctx.S.reconciliation.expenseLinkBlockReason(e, tx);
+          if (sabab) {
+            await ctx.answer(sabab, true);
+            return korsat(ctx, a3, { tahrir: true });
+          }
           ctx.S.reconciliation.confirmExpense(tx.id, e.id, ctx.actor);
           await ctx.edit(lines(title('✅', 'Xarajatga bog‘landi'), `${esc(date(tx.tx_date))} · ${esc(imzoliSumma(tx.direction, tx.amount))} · ${esc(tx.counterparty_name || '')}`, `→ <b>${esc(e.code)}</b> · ${esc(clip(e.purpose, 80))}`, line('Xarajat holati', 'To‘langan')), { buttons: [[{ text: '🌐 Xarajat', web: `expenses/${e.id}` }]] });
           await ctx.answer('✅ Bog‘landi');

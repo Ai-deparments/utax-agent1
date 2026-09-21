@@ -161,9 +161,14 @@ export function createServer(app) {
 export async function main() {
   const app = createApp();
   if (config.seedOnEmpty && app.db.get('SELECT COUNT(*) c FROM users').c === 0) {
-    console.log('[seed] Baza bo‘sh — Iyul pilot ma’lumotlari yuklanmoqda…');
+    console.log('[seed] SEED_ON_EMPTY=true, baza bo‘sh — DEMO (pilot) ma’lumotlari yuklanmoqda…');
     const { seed } = await import('./seed/seed.mjs');
     await seed(app);
+  }
+  if (config.admin.email) {
+    const { ensureBootstrapAdmin } = await import('./core/bootstrap.mjs');
+    const a = ensureBootstrapAdmin(app, config.admin);
+    console.log(`[admin] ADMIN_EMAIL: ${a.action}${a.reason ? ' — ' + a.reason : ''}`);
   }
   app.services.contracts.recomputeAll();
   if (config.botOwnerIds.length) { ensureOwners(app, config.botOwnerIds); console.log(`[bots] egalar (FOUNDER): ${config.botOwnerIds.length} ta Telegram id`); }

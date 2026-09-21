@@ -8,6 +8,7 @@ import { createLlm, LlmError } from '../src/core/llm.mjs';
 import { mdToHtml, splitHtml } from '../src/bots/shared/html.mjs';
 import { aiChatOptions } from '../src/bots/shared/ai-chat.mjs';
 import { fmt, money } from '../src/bots/shared/format.mjs';
+import { PERSONAS } from '../src/modules/ai-context.mjs';
 
 let H, S, db, server, base;
 const ok = (text = 'Javob tayyor.', extra = {}) => ({ text, provider: 'gemini', model: 'gemini-3.6-flash', steps: 1, toolCalls: [], usage: { input: 1, output: 1 }, ...extra });
@@ -61,7 +62,9 @@ test('persona: har bot o‘z ekspert roli bilan (buxgalter, sorov, signal) va o�
   assert.equal(f.calls[1].tools[0].name, 'get_my_expense_requests');
   assert.match(f.calls[2].system, /Ogohlantirishlar tahlilchisi/);
   assert.equal(f.calls[2].tools[0].name, 'get_my_notifications');
-  assert.ok(f.calls.every((c) => c.tools.length <= config.ai.maxTools + 1), 'token tejash: tool soni chegaralangan');
+  // token tejash: persona ro'yxati to'liq (asosiy tool'lar kesilmaydi), maxTools faqat qo'shimchalarga
+  const limits = ['buxgalter', 'sorov', 'signal'].map((k) => Math.max(PERSONAS[k].tools.length, config.ai.maxTools) + 1);
+  assert.ok(f.calls.every((c, i) => c.tools.length <= limits[i]), 'token tejash: tool soni chegaralangan');
 });
 
 // ---------------- RBAC ----------------
@@ -80,8 +83,8 @@ test('tool: ruxsatsiz yoki noma’lum tool xato matnisiz rad etiladi (throw emas
   let res;
   S.ai.useLlm(fakeLlm(async (req) => { res = [await req.runTool('get_treasury', {}), await req.runTool('yoq_tool', {})]; return ok(); }));
   await S.ai.chat('pul', ctxOf('employee@utax.uz'), { channel: 'TELEGRAM:sorov', bot: 'sorov' });
-  assert.match(res[0].error, /rolida mavjud emas/);
-  assert.match(res[1].error, /rolida mavjud emas/);
+  assert.match(res[0].error, /rolida mavjud emas/, 'haqiqiy RBAC rad');
+  assert.match(res[1].error, /Noma’lum tool/, 'noma’lum tool — ruxsat masalasi emas');
 });
 
 test('tool: get_treasury haqiqiy servis raqamini o‘zbekcha kalitlar va tizim formulasi bilan qaytaradi', async () => {

@@ -50,17 +50,25 @@ export function registerBotJobs(app) {
   }
 }
 
-const sleep = (ms, signal) => new Promise((resolve) => {
-  const t = setTimeout(resolve, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+/** Abort bilan to'xtaydigan kutish; unref — fon qayta urinishlari jarayonni tirik ushlab turmasin; tinglovchi oqib ketmaydi */
+const sleep = (ms, signal, { unref = false } = {}) => new Promise((resolve) => {
+  if (signal?.aborted) return resolve();
+  const onAbort = () => { clearTimeout(t); resolve(); };
+  const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+  if (unref) t.unref?.();
+  signal?.addEventListener('abort', onAbort, { once: true });
 });
+
+/** Tuzatib bo'lmaydigan ishga tushish xatosi: token yaroqsiz (401/404) yoki sozlama (PUBLIC_URL/WEBHOOK_SECRET) — qayta urinilmaydi */
+const isFatalStartError = (e) => !!e?.fatal || e?.code === 401 || e?.code === 404;
 
 /**
  * @param opts.tokens      {rahbar, buxgalter, sorov, signal} (default: .env)
  * @param opts.mode        polling | webhook | off (off — faqat yuborish, update qabul qilinmaydi; testlar)
  * @param opts.apiFactory  (token, key) => Telegram API (testlarda soxta fetch bilan)
+ * @param opts.startRetry  {minMs, maxMs} — getMe/setWebhook muvaffaqiyatsiz bo'lsa fon rejimida qayta urinish backoff'i (5 s → 60 s)
  */
-export async function startBots(app, { tokens = config.bots, mode = config.botMode, apiFactory = (token) => createTelegramApi(token), log = console, links = webLinks(config), retryEveryMs = 60000, publicUrl = config.publicUrl, webhookSecret = config.webhookSecret, ownerIds = config.botOwnerIds, rateLimit } = {}) {
+export async function startBots(app, { tokens = config.bots, mode = config.botMode, apiFactory = (token) => createTelegramApi(token), log = console, links = webLinks(config), retryEveryMs = 60000, publicUrl = config.publicUrl, webhookSecret = config.webhookSecret, ownerIds = config.botOwnerIds, rateLimit, startRetry = { minMs: 5000, maxMs: 60000 } } = {}) {
   const dialogs = createDialogStore(app.db);
   const state = createStateStore(app.db);
   const bots = new Map();
@@ -68,6 +76,10 @@ export async function startBots(app, { tokens = config.bots, mode = config.botMo
   let stopped = false;
   let timer = null;
   const pollers = [];
+  const STOPPED = Symbol('stopped');
+  const untilStopped = new Promise((resolve) => abort.signal.addEventListener('abort', () => resolve(STOPPED), { once: true }));
+  /** stop() uzoq Telegram so'rovini (getMe 30 s × 3) kutib qolmasin; kechikkan rad etish ushlanadi */
+  const orStop = (p) => { p.catch(() => {}); return Promise.race([p, untilStopped]); };
 
   const registry = {
     get: (key) => bots.get(key),
@@ -84,9 +96,29 @@ export async function startBots(app, { tokens = config.bots, mode = config.botMo
   }
   const dispatcher = createDispatcher(app, registry, { log });
 
+  /**
+   * Polling offset shu Telegram botiga (getMe id) tegishli bo'lishi shart: update_id ketma-ketligi har botda alohida,
+   * Telegram offset'dan kichiklarini "tasdiqlangan" deb unutadi. Token boshqa botga almashsa (masalan TELEGRAM_BOT_TOKEN →
+   * BOT_RAHBAR_TOKEN) eski katta offset yangi botning barcha update'larini yutib yuborardi — bot "kar" bo'lib qolardi.
+   * Kalit o'zgarmagan (`offset:<bot>`), yonida `offset-bot:<bot>` = bot id. Id farq qilsa yoki yo'q bo'lsa (eski, id'siz yozuv) —
+   * 0 dan: Telegram tasdiqlangan update'larni baribir qayta bermaydi, faqat hali olinmaganlari keladi.
+   */
+  function startOffset(bot) {
+    const key = `offset:${bot.key}`;
+    if (bot.id === undefined || bot.id === null) return Number(state.get(key) || 0);
+    const idKey = `offset-bot:${bot.key}`;
+    const owner = state.get(idKey);
+    if (owner === String(bot.id)) return Number(state.get(key) || 0);
+    const old = state.get(key);
+    if (old && Number(old) > 0) log.warn?.(`[bots] ${bot.key}: saqlangan offset ${owner ? `boshqa botniki (id ${owner})` : 'bot id’siz (eski yozuv)'} — @${bot.username} (id ${bot.id}) uchun 0 dan boshlanadi`);
+    state.set(key, 0);
+    state.set(idKey, bot.id);
+    return 0;
+  }
+
   async function poll(bot) {
     const key = `offset:${bot.key}`;
-    let offset = Number(state.get(key) || 0);
+    let offset = startOffset(bot);
     while (!stopped) {
       try {
         const updates = await bot.api.getUpdates({ offset, timeout: 25, allowed_updates: ALLOWED_UPDATES }, { timeoutMs: 40000, retries: 0, signal: abort.signal });
@@ -104,11 +136,64 @@ export async function startBots(app, { tokens = config.bots, mode = config.botMo
     }
   }
 
+  /** Xato tashlaydi: sozlama xatosi — fatal (qayta urinilmaydi), Telegram/tarmoq xatosi — startOne qayta urinadi */
   async function setWebhook(bot) {
     const base = String(publicUrl || '').replace(/\/+$/, '');
-    if (!/^https:\/\//.test(base) || !webhookSecret) { log.error?.('[bots] webhook: PUBLIC_URL (https) va WEBHOOK_SECRET kerak'); bot.running = false; return; }
-    try { await bot.api.setWebhook(`${base}/telegram/${bot.key}`, webhookSecret, ALLOWED_UPDATES); log.info?.(`[bots] ${bot.key}: webhook o‘rnatildi`); }
-    catch (e) { bot.lastError = `webhook: ${e.message}`; bot.running = false; log.error?.(`[bots] ${bot.key}: webhook o‘rnatilmadi: ${e.message}`); }
+    if (!/^https:\/\//.test(base) || !webhookSecret) throw Object.assign(new Error('PUBLIC_URL (https) va WEBHOOK_SECRET kerak'), { fatal: true });
+    await bot.api.setWebhook(`${base}/telegram/${bot.key}`, webhookSecret, ALLOWED_UPDATES);
+    log.info?.(`[bots] ${bot.key}: webhook o‘rnatildi`);
+  }
+
+  /**
+   * Bitta botni ishga tushirish: init (getMe, buyruqlar) → webhook o'rnatish yoki polling. Muvaffaqiyatsiz bo'lsa fon rejimida
+   * backoff bilan (startRetry.minMs → maxMs) qayta urinadi: VPS reboot, DNS hali tayyor emas, api.telegram.org vaqtincha javob bermadi —
+   * jarayonni qayta ishga tushirish shart emas. 401/404 (token) va sozlama xatosida to'xtaydi. stop() bilan darhol to'xtaydi.
+   * `firstDone` — birinchi urinish tugagach (startBots shuni kutadi, keyingi urinishlarni emas). Polling rejimida poll tugaguncha davom etadi.
+   */
+  async function startOne(bot, firstDone) {
+    let delay = Math.max(1, Number(startRetry?.minMs) || 5000);
+    const maxDelay = Math.max(delay, Number(startRetry?.maxMs) || 60000);
+    let inited = false;
+    let attempt = 0;
+    try {
+      while (!stopped) {
+        attempt++;
+        bot.startAttempts = attempt;
+        let stage = 'init';
+        try {
+          if (!inited) { if ((await orStop(bot.init({ mode }))) === STOPPED) return; inited = true; }
+          if (mode === 'webhook') { stage = 'webhook'; if ((await orStop(setWebhook(bot))) === STOPPED) return; }
+          bot.running = true;
+          bot.startedAt = nowIso();
+          bot.lastError = null;
+          bot.nextRetryAt = null;
+          if (mode !== 'off') log.info?.(`[bots] @${bot.username} (${bot.key}) ishga tushdi — ${mode}${attempt > 1 ? ` (${attempt}-urinishda)` : ''}`);
+          firstDone();
+          // kechikib ishga tushgan bot: shu orada navbatda qolgan bildirishnomalar darhol
+          if (attempt > 1 && mode !== 'off' && retryEveryMs) dispatcher.retryPending().catch((e) => log.warn?.(`[bots] retry: ${e.message}`));
+          if (mode === 'polling') await poll(bot);
+          return;
+        } catch (e) {
+          if (stopped) return;
+          bot.running = false;
+          const msg = String(e?.message || e);
+          if (isFatalStartError(e)) {
+            bot.lastError = `${stage}: ${msg}`.slice(0, 300);
+            bot.nextRetryAt = null;
+            log.error?.(`[bots] ${bot.key} ishga tushmadi: ${msg} — qayta urinilmaydi (token yoki sozlamani tekshiring)`);
+            return;
+          }
+          bot.nextRetryAt = new Date(Date.now() + delay).toISOString();
+          bot.lastError = `${stage}: ${msg} — qayta urinish ${Math.round(delay / 1000)} s dan keyin (${attempt}-urinish)`.slice(0, 300);
+          log.error?.(`[bots] ${bot.key} ishga tushmadi (${stage}): ${msg} — ${Math.round(delay / 1000)} s dan keyin qayta urinadi`);
+          firstDone();
+          await sleep(delay, abort.signal, { unref: true });
+          delay = Math.min(maxDelay, delay * 2);
+        }
+      }
+    } finally {
+      firstDone();
+    }
   }
 
   const facade = {
@@ -135,7 +220,7 @@ export async function startBots(app, { tokens = config.bots, mode = config.botMo
     status() {
       return BOT_DEFS.map((d) => {
         const b = bots.get(d.key);
-        return { key: d.key, title: d.title, username: b?.username || d.username, configured: !!tokens?.[d.key], running: !!b?.running, mode, started_at: b?.startedAt || null, last_update_at: b?.lastUpdateAt || null, last_poll_at: b?.lastPollAt || null, last_error: b?.lastError || null, handled: b?.handled || 0 };
+        return { key: d.key, title: d.title, username: b?.username || d.username, configured: !!tokens?.[d.key], running: !!b?.running, mode, started_at: b?.startedAt || null, last_update_at: b?.lastUpdateAt || null, last_poll_at: b?.lastPollAt || null, last_error: b?.lastError || null, next_retry_at: b?.nextRetryAt || null, start_attempts: b?.startAttempts || 0, handled: b?.handled || 0 };
       });
     },
     /** POST /telegram/<bot> — Telegram webhook (X-Telegram-Bot-Api-Secret-Token tekshiriladi) */
@@ -162,24 +247,22 @@ export async function startBots(app, { tokens = config.bots, mode = config.botMo
   };
   app.bots = facade;
 
-  await Promise.all(registry.list().map(async (bot) => {
-    try {
-      await bot.init({ mode });
-      bot.running = true;
-      bot.startedAt = nowIso();
-      if (mode !== 'off') log.info?.(`[bots] @${bot.username} (${bot.key}) ishga tushdi — ${mode}`);
-    } catch (e) {
-      bot.lastError = `init: ${e.message}`.slice(0, 300);
-      log.error?.(`[bots] ${bot.key} ishga tushmadi: ${e.message}`);
-    }
-  }));
+  // Har bot o'z fon siklida (startOne): startBots faqat birinchi urinishlarni kutadi — qayta urinishlar qaytishni bloklamaydi
+  await Promise.all(registry.list().map((bot) => new Promise((firstDone) => {
+    pollers.push(startOne(bot, firstDone).catch((e) => log.error?.(`[bots] ${bot.key}:`, e?.stack || e)));
+  })));
 
-  if (mode === 'polling') for (const bot of registry.list()) if (bot.running) pollers.push(poll(bot));
-  if (mode === 'webhook') for (const bot of registry.list()) if (bot.running) await setWebhook(bot);
   if (mode !== 'off' && retryEveryMs) {
-    timer = setInterval(() => { dispatcher.retryPending().catch((e) => log.warn?.(`[bots] retry: ${e.message}`)); try { dialogs.purgeExpired(); } catch {} }, retryEveryMs);
+    // Tick'lar ustma-ust tushmasin (sekin tarmoqda bitta retryPending 60 s dan uzoq davom etishi mumkin); deliver() baribir atomik band qiladi
+    let retrying = false;
+    const retryTick = () => {
+      if (retrying) return;
+      retrying = true;
+      dispatcher.retryPending().catch((e) => log.warn?.(`[bots] retry: ${e.message}`)).finally(() => { retrying = false; });
+    };
+    timer = setInterval(() => { retryTick(); try { dialogs.purgeExpired(); } catch {} }, retryEveryMs);
     timer.unref();
-    setTimeout(() => dispatcher.retryPending().catch(() => {}), 3000).unref();
+    setTimeout(retryTick, 3000).unref();
   }
   return facade;
 }

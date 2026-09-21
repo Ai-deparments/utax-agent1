@@ -32,8 +32,53 @@ export function register(app) {
   }
   const telegramAllowed = (userId, type) => (db.get('SELECT telegram FROM notification_prefs WHERE user_id=? AND type=?', userId, type)?.telegram ?? 1) === 1;
 
+  /**
+   * CRITICAL → TELEGRAM_ALERT_CHAT_ID guruhi. Guruh uchun alohida dedupe: notifications jadvalida user_id NULL, channel='ALERT',
+   * dedupe_key = `${dedupe_key}:alert` yozuvi (foydalanuvchi yozuvlariga bog'liq emas — maqsad rollarda faol foydalanuvchi
+   * bo'lmasa ham alert guruhga bir marta yetadi). Yuborilgan bo'lsa (sent_at) — qayta yuborilmaydi; yuborilmasa — shu kalit bilan
+   * keyingi notify() da qayta urinadi (backoff, 5 urinish). dedupe_key yo'q bo'lsa — avvalgidek har chaqiruvda.
+   */
+  const ALERT_MAX_ATTEMPTS = 5;
+  const ALERT_LEASE_MS = 2 * 60e3; // yuborish davomida qayta olinmasligi uchun
+  const ALERT_RETRY_MS = 5 * 60e3;
+  const alertInflight = new Set();
+  function claimAlert(n) {
+    const now = nowIso();
+    const lease = new Date(Date.now() + ALERT_LEASE_MS).toISOString();
+    const key = n.dedupe_key ? `${n.dedupe_key}:alert` : null;
+    const row = { user_id: null, channel: 'ALERT', type: n.type, severity: n.severity, title: n.title, body: n.body || null, entity_type: n.entity_type || null, entity_id: n.entity_id || null, bot_key: 'signal', tg_chat_id: String(config.telegramAlertChat), attempts: 0, next_try_at: lease, dedupe_key: key, created_at: now };
+    if (!key) return db.insert('notifications', row);
+    const cols = Object.keys(row);
+    const ins = db.run(`INSERT INTO notifications (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')}) ON CONFLICT(dedupe_key) DO NOTHING`, ...cols.map((k) => row[k]));
+    if (ins.changes) return ins.lastId;
+    // Mavjud: yuborilgan / urinishlar tugagan / yuborilayotgan (lease) bo'lsa — o'tkazib yuboriladi; aks holda atomar qayta olish
+    const ex = db.get("SELECT id FROM notifications WHERE dedupe_key=? AND channel='ALERT'", key);
+    if (!ex) return null;
+    const upd = db.run("UPDATE notifications SET next_try_at=? WHERE id=? AND sent_at IS NULL AND COALESCE(attempts,0) < ? AND (next_try_at IS NULL OR next_try_at <= ?)", lease, ex.id, ALERT_MAX_ATTEMPTS, now);
+    return upd.changes ? ex.id : null;
+  }
+  function sendAlert(n) {
+    if (!config.telegramAlertChat || typeof app.bots?.alertChat !== 'function') return;
+    const id = claimAlert(n);
+    if (!id) return;
+    // notify() ko'pincha db.tx ichida — yuborish tranzaksiya tugagach (microtask); rollback bo'lsa yozuv yo'q → xabar ketmaydi
+    const p = Promise.resolve()
+      .then(async () => {
+        if (!db.get("SELECT id FROM notifications WHERE id=? AND channel='ALERT' AND sent_at IS NULL", id)) return;
+        let ok = false, err = null;
+        try { ok = (await app.bots?.alertChat?.(n)) !== false; } catch (e) { err = e; }
+        if (ok) db.run('UPDATE notifications SET sent_at=?, error=NULL, next_try_at=NULL, attempts=COALESCE(attempts,0)+1 WHERE id=?', nowIso(), id);
+        else db.run('UPDATE notifications SET attempts=COALESCE(attempts,0)+1, error=?, next_try_at=? WHERE id=?', String(err?.message || 'Alert guruhiga yuborilmadi (bot ishlamayapti yoki chat topilmadi)').slice(0, 300), new Date(Date.now() + ALERT_RETRY_MS).toISOString(), id);
+      })
+      .catch(() => {})
+      .finally(() => alertInflight.delete(p));
+    alertInflight.add(p);
+  }
+
   const svc = {
     sendEmail, isQuietNow,
+    /** Navbatdagi alert-guruh yuborishlari tugashini kutish (testlar, to'xtatish) */
+    async flushAlerts() { while (alertInflight.size) await Promise.allSettled([...alertInflight]); },
     /**
      * notify({user_ids, roles, department_id, type, severity, title, body, entity_type, entity_id, dedupe_key})
      * Har foydalanuvchiga CRM yozuvi; Telegram bog'langan bo'lsa — TELEGRAM kanal yozuvi (parent_id → CRM) va signal bot orqali yetkazish.
@@ -61,7 +106,7 @@ export function register(app) {
         }
         if (u.email && settings.get('notifications.email_enabled') && (n.severity === 'CRITICAL' || n.type === 'DAILY_DIGEST')) sendEmail(u.email, n.title, n.body || '').catch(() => {});
       }
-      if (n.severity === 'CRITICAL' && config.telegramAlertChat) app.bots?.alertChat(n);
+      if (n.severity === 'CRITICAL') sendAlert(n);
       return created;
     },
     /** {unread, from, to, limit} — from/to: sana oralig'i (web filtri) */

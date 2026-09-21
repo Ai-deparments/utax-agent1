@@ -140,12 +140,14 @@ export function register(app) {
     },
     /** Davr bo'yicha xarajatlar (accrual: APPROVED+PAID, expense_date bo'yicha) */
     totalsByGroup(from, to) {
-      return db.all(`SELECT COALESCE(ec.pnl_group,'OTHER_OPEX') AS pnl_group, COALESCE(SUM(e.amount),0) AS amount, COUNT(*) AS n FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id
+      // Kategoriyasiz xarajat (masalan Excel'dagi erkin matn) — taxminan boshqa guruhga qo'shilmaydi, alohida UNCATEGORIZED
+      return db.all(`SELECT COALESCE(ec.pnl_group,'UNCATEGORIZED') AS pnl_group, COALESCE(SUM(e.amount),0) AS amount, COUNT(*) AS n FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id
         WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? GROUP BY 1`, from, to);
     },
     totalsByCategory(from, to) {
       return db.all(`SELECT ec.id, ec.code, ec.name, ec.pnl_group, COALESCE(SUM(e.amount),0) AS amount, COUNT(e.id) AS n FROM expense_categories ec LEFT JOIN expenses e ON e.category_id=ec.id AND e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ?
-        WHERE ec.is_active=1 GROUP BY ec.id ORDER BY amount DESC`, from, to);
+        WHERE ec.is_active=1 GROUP BY ec.id ORDER BY amount DESC`, from, to).concat(db.all(`SELECT NULL AS id, NULL AS code, 'Kategoriyasiz' AS name, 'UNCATEGORIZED' AS pnl_group, SUM(e.amount) AS amount, COUNT(*) AS n FROM expenses e
+        WHERE e.category_id IS NULL AND e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? HAVING COUNT(*) > 0`, from, to));
     },
     total(from, to) { return db.get("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE reversed_at IS NULL AND status IN ('APPROVED','PAID') AND expense_date BETWEEN ? AND ?", from, to).s; },
     /** asOf berilsa: shu sanagacha sanalangan, shu sanada hali to'lanmagan tasdiqlangan xarajatlar */

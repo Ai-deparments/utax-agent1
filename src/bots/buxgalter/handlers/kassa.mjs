@@ -4,13 +4,15 @@
  */
 import { today } from '../../../core/util.mjs';
 import { esc } from '../../shared/html.mjs';
-import { money, date, lines, line, title, muted, clip, fmt, parseAmount } from '../../shared/format.mjs';
+import { money, date, lines, line, title, muted, clip, fmt, parseAmount, statusLabel } from '../../shared/format.mjs';
 import { BotError } from '../../shared/errors.mjs';
 import { T } from '../../shared/texts.mjs';
 import { shartnomaQidir, yonalish } from './umumiy.mjs';
 
 const D = 'b.kassa';
 const PERM = ['treasury', 'CREATE'];
+/** Bitta kassa operatsiyasi uchun oqilona yuqori chegara (/yangi summa qadami bilan bir xil) — xato yozilgan ortiqcha nollardan himoya */
+const KASSA_MAX = 1e12;
 
 const kassaOl = (S, id) => S.banking.cashAccounts().find((k) => k.id === Number(id)) || null;
 const qoldiq = (S, id) => S.banking.cashBalance().accounts.find((a) => a.id === Number(id))?.balance ?? 0;
@@ -101,7 +103,8 @@ export default {
         if (amal === 'ex') {
           if (st.step !== 'link' || d.direction !== 'EXPENSE') return ctx.answer(T.expired, true);
           const e = ctx.S.expenses.get(Number(arg));
-          if (!e || e.status !== 'APPROVED') return ctx.answer('Xarajat tasdiqlangan holatda emas', true);
+          const sabab = ctx.S.banking.expenseUnpayableReason(e); // servisdagi qoida: APPROVED, reversal emas, hali to'lanmagan
+          if (sabab) return ctx.answer(sabab, true);
           ctx.dialog.update({ step: 'confirm', data: { expense_id: e.id, counterparty: e.counterparty || null } });
           const k = tasdiqKartasi(ctx, ctx.dialog.get().data);
           await ctx.answer();
@@ -119,7 +122,23 @@ export default {
           ctx.need('treasury', 'CREATE');
           const k = kassaOl(ctx.S, d.account_id);
           if (!k) return ctx.answer('Kassa topilmadi', true);
-          const tx = ctx.S.banking.createCashTransaction({ cash_account_id: k.id, tx_date: today(), amount: d.amount, direction: d.direction, purpose: d.purpose, contract_id: d.contract_id || null, expense_id: d.expense_id || null, counterparty_name: d.counterparty || null }, ctx.actor);
+          if (d.expense_id) {
+            // Tasdiq kartasi 30 daqiqagacha eskirishi mumkin: shu orada xarajat /tolov, web yoki bank bog'lash orqali to'langan / bekor qilingan bo'lsa — yozilmaydi
+            const e0 = ctx.S.expenses.get(d.expense_id);
+            const sabab = ctx.S.banking.expenseUnpayableReason(e0);
+            if (sabab) {
+              ctx.dialog.clear();
+              await ctx.answer(sabab, true);
+              return ctx.edit(lines(title('⚠️', 'Kassa chiqimi yozilmadi'), esc(sabab), e0 ? line('Xarajat holati', e0.reversed_at ? 'Bekor qilingan (reversal)' : statusLabel(e0.status)) : null, muted('Qaytadan: /kassa')), e0 ? { buttons: [[{ text: '🌐 Xarajat', web: `expenses/${e0.id}` }]] } : {});
+            }
+          }
+          let tx;
+          try {
+            tx = ctx.S.banking.createCashTransaction({ cash_account_id: k.id, tx_date: today(), amount: d.amount, direction: d.direction, purpose: d.purpose, contract_id: d.contract_id || null, expense_id: d.expense_id || null, counterparty_name: d.counterparty || null }, ctx.actor);
+          } catch (err) {
+            if (err?.status && err.status < 500) ctx.dialog.clear(); // servis rad etdi (masalan, parallel to'lov) — eskirgan dialog qolmasin; xato matni foydalanuvchiga chiqadi
+            throw err;
+          }
           ctx.dialog.clear();
           const c = d.contract_id ? ctx.S.contracts.get(d.contract_id) : null;
           const e = d.expense_id ? ctx.S.expenses.get(d.expense_id) : null;
@@ -144,6 +163,7 @@ export default {
         if (st.step === 'amount') {
           const amount = parseAmount(ctx.text);
           if (!amount) return ctx.reply('❌ Summani tushunmadim. Masalan: <code>2 500 000</code> yoki <code>2,5 mln</code>.' + T.dialogHint);
+          if (amount > KASSA_MAX) return ctx.reply(`❌ Summa juda katta (kassa operatsiyasi ${esc(money(KASSA_MAX))} dan oshmaydi) — tekshirib qayta yozing.` + T.dialogHint);
           ctx.dialog.update({ step: 'purpose', data: { amount } });
           return ctx.reply(lines(line('Summa', money(amount)), '', '✍️ Maqsad (izoh) ni yozing:') + T.dialogHint);
         }
