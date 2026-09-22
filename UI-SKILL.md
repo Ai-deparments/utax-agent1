@@ -202,6 +202,20 @@ Markazda `form.card.box` (400px) turadi, fon esa ikki mint radial gradient. Ichi
 
 ---
 
+### 3.5 PWA (o'rnatiladigan ilova)
+
+| Fayl | Vazifa |
+|---|---|
+| `public/manifest.webmanifest` | nom, `start_url /#/dashboard`, `display: standalone`, `theme_color #059669`, `background_color #f4f6f9`, ikonlar, 4 ta shortcut |
+| `public/sw.js` | service worker. `/api/*` va GET bo'lmagan so'rovlar **keshlanmaydi**; `/v/<build>/` aktivlari cache-first (eski build o'chiriladi); sahifa network-first + oflayn sahifa |
+| `public/js/pwa.js` | `registerSW()` (HTTPS yoki localhost, iframe'dan tashqarida), `installMenuItem()` (userchip menyusida "Ilovani o'rnatish"), iOS/macOS Safari uchun qo'lda ko'rsatma modali, oflayn/onlayn toast |
+| `public/icons/*` | `scripts/gen-icons.mjs` bilan yaratiladi (zumrad fon + oq "X"). Ikon o'zgarsa skriptni qayta ishga tushiring |
+
+**Qoidalar:**
+- Yangi statik fayl turi qo'shilsa, `sw.js` dagi strategiyaga mosligini tekshiring. API javobi hech qachon SW keshiga tushmaydi.
+- `sw.js` o'zgarsa, `SHELL`/`ASSETS` kesh nomidagi versiyani oshiring.
+- Standalone rejimda brauzer paneli yo'q, shuning uchun har bir sahifaga ichki navigatsiya orqali kirish mumkin bo'lishi kerak.
+
 ## 4. Komponent tizimi (`public/js/ui.js`)
 
 > **Qoida:** yangi UI yozishdan oldin shu bo'limdagi komponentni ishlating. Yangi komponent faqat bu yerda yo'q bo'lsa yaratiladi. U `ui.js` ga qo'shiladi, stili esa `app.css` ga.

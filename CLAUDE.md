@@ -20,6 +20,16 @@ Tizimdagi barcha biznes ma'lumotlari **faqat Excel fayllardan** olinadi (yoki fo
 | Bank ko'chirmasi (Excel/CSV) | Integratsiyalar → "Excel / CSV fayl" |
 | Boshlang'ich qoldiqlar | Pul boshqaruvi → Hisoblar → tahrirlash (foydalanuvchi kiritadi) |
 
+### Texnik qoldiq tuzatmalari (foydalanuvchi so'rovi bilan, 2026-09-21)
+
+Excel'da 01.07 boshlang'ich qoldig'i yo'q edi. Shuning uchun bank va kassa minusga tushdi. Foydalanuvchi so'rovi bilan minus summasi **alohida** `balance_adjustments` jadvaliga kiritildi. Bank uchun +1 840 404 091,41, kassa uchun +61 804 920 so'm, turi `NEGATIVE_COVER`.
+
+- `opening_balance` va tranzaksiyalar o'zgarmagan, ular Excel ma'lumoti bo'lib qoladi.
+- Tuzatma qoldiqqa qo'shiladi, lekin kirim yoki daromad hisoblanmaydi.
+- UI'da "texnik tuzatma" belgisi va Ma'lumot sifati ogohlantirishi bilan ko'rinadi.
+- Haqiqiy qoldiq ma'lum bo'lganda `POST /api/banking/adjustments/:id/reverse` bilan bekor qilinadi, keyin haqiqiy `opening_balance` kiritiladi.
+- Bunday tuzatma faqat foydalanuvchi aniq so'raganda qilinadi.
+
 ### Test ma'lumotlari
 
 `tests/fixtures/demo-seed.mjs` — **to'qima** ma'lumot, faqat avtomatik testlar uchun (in-memory baza). Uni haqiqiy bazaga yuklash **taqiqlanadi**.

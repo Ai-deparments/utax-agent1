@@ -11,9 +11,11 @@ export function register(app) {
    */
   function balances(rows) {
     const accounts = rows.map((a) => {
-      const known = a.opening_balance !== null && a.opening_balance !== undefined;
-      const bal = known ? round2(a.opening_balance + a.movement) : null;
-      return { ...a, movement: round2(a.movement), balance: bal, balance_base: known ? round2(settings.toBase(bal, a.currency)) : null, opening_missing: !known };
+      // adjustment — balance_adjustments dagi texnik tuzatma (Excel ma'lumotidan alohida), opening_balance ga qo'shiladi
+      const adj = round2(a.adjustment || 0);
+      const known = (a.opening_balance !== null && a.opening_balance !== undefined) || adj !== 0;
+      const bal = known ? round2((a.opening_balance || 0) + adj + a.movement) : null;
+      return { ...a, adjustment: adj, adjusted: adj !== 0, movement: round2(a.movement), balance: bal, balance_base: known ? round2(settings.toBase(bal, a.currency)) : null, opening_missing: !known };
     });
     const unknown = accounts.some((a) => a.balance_base === null);
     return { total: unknown ? null : round2(accounts.reduce((s, a) => s + a.balance_base, 0)), accounts, movement: round2(accounts.reduce((s, a) => s + settings.toBase(a.movement, a.currency), 0)), opening_missing: accounts.filter((a) => a.opening_missing).map((a) => a.bank_name || a.name) };
@@ -22,13 +24,15 @@ export function register(app) {
   const svc = {
     bankBalance(asOf = today(), accountId) {
       const rows = db.all(`SELECT ba.id, ba.bank_name, ba.account_number, ba.currency, ba.opening_balance, ba.opening_date,
-          COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM bank_transactions t WHERE t.bank_account_id=ba.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement
+          COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM bank_transactions t WHERE t.bank_account_id=ba.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement,
+          COALESCE((SELECT SUM(amount) FROM balance_adjustments j WHERE j.account_type='BANK' AND j.account_id=ba.id AND j.reversed_at IS NULL),0) AS adjustment
         FROM bank_accounts ba WHERE ba.is_active=1 ${accountId ? 'AND ba.id=?' : ''}`, asOf, ...(accountId ? [accountId] : []));
       return balances(rows);
     },
     cashBalance(asOf = today()) {
       const rows = db.all(`SELECT ca.id, ca.name, ca.currency, ca.opening_balance, ca.opening_date,
-          COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM cash_transactions t WHERE t.cash_account_id=ca.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement
+          COALESCE((SELECT SUM(CASE WHEN direction='INCOME' THEN amount ELSE -amount END) FROM cash_transactions t WHERE t.cash_account_id=ca.id AND t.reversed_at IS NULL AND t.tx_date<=?),0) AS movement,
+          COALESCE((SELECT SUM(amount) FROM balance_adjustments j WHERE j.account_type='CASH' AND j.account_id=ca.id AND j.reversed_at IS NULL),0) AS adjustment
         FROM cash_accounts ca WHERE ca.is_active=1`, asOf);
       return balances(rows);
     },
@@ -207,6 +211,36 @@ export function register(app) {
   }
   r.patch('/api/banking/accounts/:id', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Bank hisobini tahrirlash (nom, raqam, boshlang‘ich qoldiq va sana)' }, async (ctx) => editAccount('bank_accounts', ctx.params.id, ctx.body || {}, ctx, ['bank_name', 'account_number', 'opening_balance', 'opening_date']));
   r.patch('/api/banking/cash-accounts/:id', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassani tahrirlash (nom, boshlang‘ich qoldiq va sana)' }, async (ctx) => editAccount('cash_accounts', ctx.params.id, ctx.body || {}, ctx, ['name', 'opening_balance', 'opening_date']));
+  // ---- Texnik qoldiq tuzatmalari (balance_adjustments) — Excel ma'lumotidan alohida ----
+  svc.adjustments = () => db.all(`SELECT j.*, COALESCE(ba.bank_name, ca.name) AS account_name, u.name AS created_by_name FROM balance_adjustments j
+      LEFT JOIN bank_accounts ba ON j.account_type='BANK' AND ba.id=j.account_id LEFT JOIN cash_accounts ca ON j.account_type='CASH' AND ca.id=j.account_id
+      LEFT JOIN users u ON u.id=j.created_by ORDER BY j.id DESC`);
+  /** Minusdagi har bir hisob uchun: qoldiq (asOf holatida) qancha minus bo'lsa, shuncha tuzatma — qoldiq 0 ga keladi */
+  svc.coverNegative = (ctx, asOf = today()) => {
+    const created = [];
+    const all = [...svc.bankBalance(asOf).accounts.map((a) => ({ type: 'BANK', a, name: a.bank_name })), ...svc.cashBalance(asOf).accounts.map((a) => ({ type: 'CASH', a, name: a.name }))];
+    for (const { type, a, name } of all) {
+      const bal = round2((a.opening_balance || 0) + a.adjustment + a.movement);
+      if (bal >= -0.005) continue;
+      const amount = round2(-bal);
+      const basis = { as_of: asOf, opening_balance: a.opening_balance, previous_adjustment: a.adjustment, movement: a.movement, balance_before: bal };
+      const id = db.insert('balance_adjustments', { account_type: type, account_id: a.id, amount, as_of: a.opening_date || null, kind: 'NEGATIVE_COVER', reason: 'Minus qoldiqni yopish uchun texnik tuzatma (haqiqiy boshlang‘ich qoldiq kiritilmagan)', basis: JSON.stringify(basis), created_by: ctx?.user?.id || null, created_at: nowIso() });
+      audit(ctx, { action: 'BALANCE_ADJUSTED', entity: type === 'BANK' ? 'bank_account' : 'cash_account', entityId: a.id, newValue: { adjustment_id: id, amount, ...basis } });
+      created.push({ id, account_type: type, account_id: a.id, account_name: name, amount, balance_before: bal });
+    }
+    return created;
+  };
+  svc.reverseAdjustment = (id, ctx, reason) => {
+    const j = db.get('SELECT * FROM balance_adjustments WHERE id=?', id);
+    if (!j) throw badRequest('Tuzatma topilmadi');
+    if (j.reversed_at) throw badRequest('Tuzatma allaqachon bekor qilingan');
+    db.run('UPDATE balance_adjustments SET reversed_at=?, reversed_by=?, reversal_reason=? WHERE id=?', nowIso(), ctx?.user?.id || null, reason || null, id);
+    audit(ctx, { action: 'BALANCE_ADJUSTMENT_REVERSED', entity: j.account_type === 'BANK' ? 'bank_account' : 'cash_account', entityId: j.account_id, oldValue: { adjustment_id: j.id, amount: j.amount }, newValue: { reason: reason || null } });
+    return db.get('SELECT * FROM balance_adjustments WHERE id=?', id);
+  };
+  r.get('/api/banking/adjustments', { perm: ['treasury', 'VIEW'], tags: ['banking'], summary: 'Texnik qoldiq tuzatmalari (Excel ma’lumotidan alohida)' }, async () => svc.adjustments());
+  r.post('/api/banking/adjustments/cover-negative', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Minusdagi hisoblarni texnik tuzatma bilan 0 ga keltirish' }, async (ctx) => ({ created: svc.coverNegative(ctx) }));
+  r.post('/api/banking/adjustments/:id/reverse', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Texnik tuzatmani bekor qilish {reason}' }, async (ctx) => svc.reverseAdjustment(ctx.params.id, ctx, ctx.body?.reason));
   r.post('/api/banking/cash-accounts', { perm: ['treasury', 'CREATE'], tags: ['banking'], summary: 'Kassa qo‘shish' }, async (ctx) => {
     const b = ctx.body || {};
     if (!b.name) throw badRequest('name majburiy');

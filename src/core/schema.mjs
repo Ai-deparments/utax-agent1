@@ -289,6 +289,19 @@ UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE((SELECT MAX(seq) FROM temp._v
 DROP TABLE temp._v5_seq;
 `,
   },
+  {
+    version: 6,
+    name: 'balance_adjustments',
+    // Texnik qoldiq tuzatmalari — Excel'dagi haqiqiy ma'lumotdan ALOHIDA saqlanadi (opening_balance o'zgarmaydi).
+    // Foydalanuvchi so'rovi bilan: minus qoldiqni yopish uchun kiritiladi; haqiqiy boshlang'ich qoldiq kiritilgach bekor qilinadi.
+    sql: `
+CREATE TABLE IF NOT EXISTS balance_adjustments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account_type TEXT NOT NULL CHECK (account_type IN ('BANK','CASH')), account_id INTEGER NOT NULL,
+  amount REAL NOT NULL, as_of TEXT, kind TEXT NOT NULL DEFAULT 'NEGATIVE_COVER', reason TEXT, basis TEXT,
+  created_by INTEGER, created_at TEXT NOT NULL, reversed_at TEXT, reversed_by INTEGER, reversal_reason TEXT);
+CREATE INDEX IF NOT EXISTS ix_baladj_acc ON balance_adjustments(account_type, account_id, reversed_at);
+`,
+  },
 ];
 
 export function migrate(db) {
