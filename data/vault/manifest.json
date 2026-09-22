@@ -1,0 +1,21 @@
+{
+  "format": "UTAXVLT1 (AES-256-GCM + gzip)",
+  "created_at": "2026-09-22T11:36:50.373Z",
+  "key_fingerprint": "392db9d4786d",
+  "files": [
+    {
+      "name": "finance.db",
+      "enc": "finance.db.enc",
+      "bytes": 708608,
+      "sha256": "bb32856cf3db17fd11fd9e0de951d711a09718d59a880019cc618297435235c5",
+      "enc_bytes": 85559
+    },
+    {
+      "name": "source/moliya-iyul-2026.xlsx",
+      "enc": "source/moliya-iyul-2026.xlsx.enc",
+      "bytes": 19410,
+      "sha256": "ea79b710ddd2b09ec0469775c51d5230c54e0d31cda660d554d5feb1ce08b1d5",
+      "enc_bytes": 16958
+    }
+  ]
+}

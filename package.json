@@ -15,7 +15,10 @@
     "openapi": "node -e \"import('./src/server.mjs').then(m=>console.log(JSON.stringify(m.buildOpenApi(),null,2)))\"",
     "check": "node scripts/check.mjs",
     "llm:check": "node scripts/llm-check.mjs",
-    "import:excel": "node scripts/excel-import.mjs"
+    "import:excel": "node scripts/excel-import.mjs",
+    "vault:pack": "node scripts/data-vault.mjs pack",
+    "vault:unpack": "node scripts/data-vault.mjs unpack",
+    "vault:verify": "node scripts/data-vault.mjs verify"
   },
   "license": "UNLICENSED"
 }
