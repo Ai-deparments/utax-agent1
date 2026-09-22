@@ -5,6 +5,25 @@ import { nowIso, parseJson, sha256, uid } from '../core/util.mjs';
 import { parseCsv, parseXlsx, excelDate } from '../core/export.mjs';
 import { sendMail } from '../core/smtp.mjs';
 import { parseLedger, importLedger } from '../import/ledger-journal.mjs';
+import { parseJournal } from '../import/excel-journal.mjs';
+import { applyJournal, verifyImport } from '../import/apply-journal.mjs';
+
+/** Bitta yozuvli jurnal rejasi → UI kutgan shakl (preview: sotuv/tushum/chiqim/transfer; skipped; warnings) */
+function singleEntryView(plan) {
+  const T = plan.excelTotals;
+  const skipped = [
+    ...plan.quarantine.map((q) => ({ row: q.rows.join(', '), acc: q.account, cp: '', amount: q.amount, reason: q.reason })),
+    ...plan.skipped.map((s) => ({ row: s.rows, acc: '', cp: '', amount: null, reason: s.reason })),
+  ];
+  const warnings = plan.warnings.map((w) => ({ row: (w.rows || []).join(', '), text: w.message }));
+  return {
+    format: 'SINGLE_ENTRY', rows: plan.meta.excel_rows,
+    sales: T.contracts.n, sales_amount: T.contracts.amount,
+    receipts: T.bank_income.n + T.cash_income.n, receipts_amount: Math.round((T.bank_income.amount + T.cash_income.amount) * 100) / 100,
+    payments: T.bank_expense.n + T.cash_expense.n, payments_amount: Math.round((T.bank_expense.amount + T.cash_expense.amount) * 100) / 100,
+    transfers: T.transfers.n, transfers_amount: T.transfers.amount, skipped, warnings,
+  };
+}
 
 /**
  * ADAPTER-BASED INTEGRATIONS. Har adapter: {type, name, description, config_schema, secret_schema, test(cfg,sec), pull(cfg,sec,since) → rows}
@@ -282,6 +301,27 @@ export function register(app) {
     catch (e) { throw badRequest('Faylni o‘qib bo‘lmadi: ' + e.message + '. Faqat .xlsx formatini yuklang.'); }
     if (!table) throw badRequest('Fayl kerak (.xlsx)');
     const fileName = String(b.file_name || 'jurnal.xlsx').slice(0, 200);
+    // Bitta yozuvli jurnal ("Договор" / "Расход Банк з/п" ...) — excel-journal rejasi + applyJournal (CLI bilan bir xil yo'l)
+    let plan = null;
+    try { plan = parseJournal(Buffer.from(b.xlsx_base64, 'base64'), { fileName }); } catch { plan = null; }
+    if (plan?.meta.format === 'SINGLE_ENTRY') {
+      if (plan.errors.length) throw badRequest(`Jurnalda ${plan.errors.length} ta xato — hech narsa yozilmadi: ` + plan.errors.slice(0, 5).map((e) => `qator ${e.rows.join('/')}: ${e.message}`).join('; '));
+      const view = singleEntryView(plan);
+      if (b.preview) return { file: fileName, ...view };
+      let applied;
+      try { applied = applyJournal(app, plan, { ctx }); } catch (e) { throw badRequest(e.message); }
+      const verify = verifyImport(app, plan);
+      const ex = applied.existing;
+      const res = { ...view, created: { contracts: applied.created.contracts, bank: applied.created.bank_transactions, cash: applied.created.cash_transactions, expenses: applied.created.expenses },
+        duplicates: ex.contracts + ex.bank_transactions + ex.cash_transactions + ex.expenses, uncategorized: applied.created.expenses ? plan.excelTotals.expenses.uncategorized.n : 0, verify_ok: verify.ok };
+      if (!verify.ok) res.warnings = [...res.warnings, { row: '', text: 'Excel ↔ baza yig‘indilari to‘liq mos emas — hisobotni tekshiring' }];
+      let integ = db.get("SELECT * FROM integrations WHERE type='LEDGER' ORDER BY id LIMIT 1");
+      if (!integ) { const id = db.insert('integrations', { type: 'LEDGER', name: 'Moliya jurnali (Excel)', config: '{}', secret_config: encryptSecret('{}'), created_at: nowIso() }); integ = { id }; }
+      db.insert('integration_sync_logs', { integration_id: integ.id, started_at: nowIso(), finished_at: nowIso(), status: verify.ok ? 'OK' : 'WARN', rows_in: plan.meta.excel_rows, rows_new: res.created.bank + res.created.cash + res.created.contracts, message: JSON.stringify({ file: fileName, format: 'SINGLE_ENTRY', created: res.created, duplicates: res.duplicates, skipped: res.skipped.length, verify_ok: verify.ok }) });
+      db.run('UPDATE integrations SET last_sync_at=?, last_status=? WHERE id=?', nowIso(), `Yuklandi: ${fileName} — ${res.created.contracts} shartnoma, ${res.created.bank} bank, ${res.created.cash} kassa, ${res.duplicates} takroriy`, integ.id);
+      audit(ctx, { action: 'IMPORT', entity: 'integration', entityId: integ.id, newValue: { file: fileName, format: 'SINGLE_ENTRY', created: res.created, duplicates: res.duplicates, verify_ok: verify.ok } });
+      return res;
+    }
     let parsed;
     try { parsed = parseLedger(table); } catch (e) { throw badRequest(e.message); }
     if (b.preview) return { file: fileName, ...parsed.stats, skipped: parsed.skipped, warnings: parsed.warnings };

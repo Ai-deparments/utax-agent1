@@ -18,7 +18,10 @@
     "check": "node scripts/check.mjs",
     "llm:check": "node scripts/llm-check.mjs",
     "import:excel": "node scripts/excel-import.mjs",
-    "vercel:check": "node scripts/vercel-check.mjs"
+    "vercel:check": "node scripts/vercel-check.mjs",
+    "vault:pack": "node scripts/data-vault.mjs pack",
+    "vault:unpack": "node scripts/data-vault.mjs unpack",
+    "vault:verify": "node scripts/data-vault.mjs verify"
   },
   "license": "UNLICENSED",
   "optionalDependencies": {

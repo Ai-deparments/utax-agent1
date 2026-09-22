@@ -17,12 +17,23 @@ Tizimdagi barcha biznes ma'lumotlari **faqat Excel fayllardan** olinadi (yoki fo
 | Manba | Qayerda |
 |---|---|
 | Moliya jurnali (double-entry Excel) | Integratsiyalar → "Moliya jurnali (Excel)" → Jurnal yuklash. Kod: `src/import/ledger-journal.mjs` |
+| Moliya jurnali (bitta yozuvli Excel — direktorning 2026-07 formati: "Договор", "Поступление БАНК", "Расход Банк з/п"...) | Xuddi shu tugma (format o'zi aniqlanadi) yoki CLI: `node scripts/excel-import.mjs <fayl> --reset`. Kod: `src/import/excel-journal.mjs` → `apply-journal.mjs` |
 | Bank ko'chirmasi (Excel/CSV) | Integratsiyalar → "Excel / CSV fayl" |
 | Boshlang'ich qoldiqlar | Pul boshqaruvi → Hisoblar → tahrirlash (foydalanuvchi kiritadi) |
 | Bank API / ERP (REST JSON) | Integratsiyalar → Ulash: manzil, autentifikatsiya, `list_path`, `field_map`. Har soatda BANK agenti sinxronlaydi |
 | 1C:Бухгалтерия | Integratsiyalar → 1C: standart OData (`Document_ПоступлениеНаРасчетныйСчет` / `СписаниеСРасчетногоСчета`) yoki o'z HTTP-servisi |
 | Google Sheets | Integratsiyalar → havola (Share → Anyone with the link) |
 | Tashqi tizim push | Integratsiyalar → Inbound webhook: `POST /api/integrations/webhook/<token>` |
+
+**Joriy haqiqiy ma'lumot (2026-09-22):** yagona manba — "Программистларга молия ИЮЛЬ.xlsx" (direktor bergan). Eski Excel bazalari `data/backups/` ga olindi.
+Foydalanuvchi kiritgan qiymatlar: 1-qatordagi 1965-07-20 → 2026-07-20 (`--fix-date 69=2026-07-20`); UTAX BANK boshlang'ich qoldig'i 1 092 584 868, kassa 100 368 000 (1-iyul 2026 holati).
+
+### Ma'lumot seyfi (jamoa bilan ulashish)
+
+Haqiqiy baza git'ga ochiq holda tushmaydi (`data/*.db` ignore'da). Jamoa uchun u **shifrlangan** holda `data/vault/` da saqlanadi (AES-256-GCM, `scripts/data-vault.mjs`).
+- Kalit `DATA_VAULT_KEY` — faqat `.env` da; loyiha egasi shaxsiy kanal orqali beradi. Kalit git'ga, chatga, logga yozilmaydi.
+- Ochish: `.env` ga kalitni qo'yish → server to'xtagan holda `npm run vault:unpack` → `npm start`.
+- Yangilash (ma'lumot o'zgarganda): `npm run vault:pack -- --add <manba.xlsx>` → commit `data/vault/`.
 
 ### Texnik qoldiq tuzatmalari (foydalanuvchi so'rovi bilan, 2026-09-21)
 

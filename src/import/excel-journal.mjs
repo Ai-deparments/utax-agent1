@@ -92,7 +92,7 @@ const plausible = (iso) => !!iso && Number(iso.slice(0, 4)) >= 2000 && Number(is
  * @param {Buffer} buf  XLSX fayl
  * @param {{ fileName?: string, sheet?: string, baseCurrency?: string }} opts
  */
-export function parseJournal(buf, { fileName = null, sheet, baseCurrency = 'UZS' } = {}) {
+export function parseJournal(buf, { fileName = null, sheet, baseCurrency = 'UZS', dateFixes = {} } = {}) {
   const book = readXlsx(buf, { sheet });
   const plan = {
     meta: { file: fileName, sha256: crypto.createHash('sha256').update(buf).digest('hex'), sheet: book.sheet, sheets: book.sheets, excel_rows: book.rows.length, header_row: null, key_prefix: null, period: null, base_currency: baseCurrency },
@@ -145,8 +145,10 @@ export function parseJournal(buf, { fileName = null, sheet, baseCurrency = 'UZS'
     if (filled(row, 'kurs') || filled(row, 'summa_usd')) { err([row.r], no, 'Kurs / Summa USD to‘ldirilgan — valyuta konvertatsiyasi taxmin qilinmaydi'); continue; }
     if (!account) { err([row.r], no, 'Shyot nomi bo‘sh'); continue; }
     const tolovRaw = val(row, 'tolov');
-    const date = toIsoDate(tolovRaw);
+    let date = toIsoDate(tolovRaw);
     if (date === undefined) { err([row.r], no, `To‘lov kuni tushunarsiz: ${JSON.stringify(tolovRaw)}`); continue; }
+    // Foydalanuvchi qo'lda tasdiqlagan sana tuzatishi (--fix-date qator=YYYY-MM-DD) — hisobotda ko'rsatiladi
+    if (dateFixes[row.r]) { warn([row.r], no, `To‘lov kuni foydalanuvchi tasdig‘i bilan tuzatildi: ${date ?? '--'} → ${dateFixes[row.r]}`); date = dateFixes[row.r]; }
     const sanaRaw = val(row, 'sana');
     const sana = toIsoDate(sanaRaw);
     if (sana === undefined) { err([row.r], no, `Sana tushunarsiz: ${JSON.stringify(sanaRaw)}`); continue; }
@@ -161,7 +163,10 @@ export function parseJournal(buf, { fileName = null, sheet, baseCurrency = 'UZS'
   for (const x of recs) { if (!groups.has(x.no)) groups.set(x.no, []); groups.get(x.no).push(x); }
   const counterRows = [];
   const planned = [];
-  for (const [no, rows] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
+  // Bitta yozuvli jurnal (har operatsiya bitta qator, summa musbat, yo'nalish hisob nomida) — alohida tahlil
+  if (isSingleEntry(recs)) { plan.meta.format = 'SINGLE_ENTRY'; planSingleEntry(groups, planned, plan, err, warn); }
+  else plan.meta.format = 'DOUBLE_ENTRY';
+  for (const [no, rows] of plan.meta.format === 'SINGLE_ENTRY' ? [] : [...groups.entries()].sort((a, b) => a[0] - b[0])) {
     const rn = rows.map((x) => x.r);
     const total = round2(rows.reduce((s, x) => s + x.amount, 0));
     if (Math.abs(total) > 0.009) { err(rn, no, `Guruh nolga yopilmaydi (Σ = ${total})`); continue; }
@@ -265,6 +270,92 @@ export function parseJournal(buf, { fileName = null, sheet, baseCurrency = 'UZS'
   if (plan.expenses.some((e) => !e.category_key)) plan.questions.push(`Kategoriyasiz xarajatlar (${plan.expenses.filter((e) => !e.category_key).length} ta, ${round2(plan.expenses.filter((e) => !e.category_key).reduce((s, e) => s + e.amount, 0))}): Excel’da kategoriya yo‘q — har biriga kategoriya tasdiqlansinmi?`);
   plan.excelTotals = excelTotals(plan);
   return plan;
+}
+
+/**
+ * Bitta yozuvli jurnal hisob nomi: "Договор" | "Поступление БАНК|КАССА" | "Расход Банк|Касса <modda>" | "Расход Трансфер в КАССУ".
+ * → { kind: 'CONTRACT' } | { kind: 'MONEY', side, dir, item } | { kind: 'TRANSFER', from, to } | null
+ */
+export function singleEntryAccount(account) {
+  const a = norm(account), k = keyOf(a);
+  if (k === 'договор') return { kind: 'CONTRACT' };
+  const t = /^(?:расход\s+)?трансфер\s+в\s+кассу$/.exec(k);
+  if (t) return { kind: 'TRANSFER', from: 'BANK', to: 'CASH' };
+  const m = /^(поступление|расход)\s+(банк|касса)(?:\s+|$)/.exec(k);
+  if (!m) return null;
+  return { kind: 'MONEY', side: m[2] === 'банк' ? 'BANK' : 'CASH', dir: m[1] === 'расход' ? 'EXPENSE' : 'INCOME', item: norm(a.slice(m[0].length)) || null };
+}
+
+/** Bitta yozuvli format: Дебитор juftlari yo'q, barcha summalar musbat, "Договор" yoki "<pul hisobi> <modda>" qatorlari bor */
+function isSingleEntry(recs) {
+  if (!recs.length || recs.some((x) => DEBITOR[x.akey] || x.amount < 0)) return false;
+  return recs.some((x) => { const s = singleEntryAccount(x.account); return s && (s.kind === 'CONTRACT' || (s.kind === 'MONEY' && s.item)); });
+}
+
+/**
+ * Bitta yozuvli jurnal → reja elementlari (planned). Hech narsa o'ylab topilmaydi:
+ *  - "Договор" qatori — shartnoma (summa, kontragent, yo'nalish faylda); sana faylda yo'q → null.
+ *  - Shu No va shu kontragentli "Поступление" qatorlari — o'sha shartnoma to'lovlari.
+ *  - "Расход Банк <modda>" — modda nomi (з/п, НДС ...) kategoriya xaritasi / dividend / qarz / qaytarim bo'yicha tasniflanadi.
+ *  - "Расход Касса <erkin matn>" — kategoriyasiz xarajat (matn o'zgarishsiz izoh bo'ladi).
+ */
+function planSingleEntry(groups, planned, plan, err, warn) {
+  for (const [no, rows] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
+    const rn = rows.map((x) => x.r);
+    const typed = rows.map((x) => ({ ...x, se: singleEntryAccount(x.account) }));
+    const unknown = typed.filter((x) => !x.se);
+    if (unknown.length) { err(unknown.map((x) => x.r), no, `Hisob nomi tanilmadi: ${unknown.map((x) => `"${x.account}"`).join(', ')}`); continue; }
+    const noDate = typed.find((x) => x.se.kind !== 'CONTRACT' && !x.date);
+    if (noDate) { err([noDate.r], no, `"${noDate.account}" qatorida To‘lov kuni yo‘q`); continue; }
+    const bad = typed.find((x) => x.date && !plausible(x.date));
+    if (bad) {
+      plan.quarantine.push({ no, rows: rn, amount: round2(rows.reduce((s, x) => s + x.amount, 0)), account: bad.account, date: bad.date, reason: `Sana xato (${bad.date}) — tasdiq kerak, yozilmadi` });
+      continue;
+    }
+    const contracts = typed.filter((x) => x.se.kind === 'CONTRACT');
+    // A) Shartnoma + uning tushumlari
+    if (contracts.length) {
+      const s = contracts[0];
+      const pays = typed.filter((x) => x.se.kind === 'MONEY' && x.se.dir === 'INCOME');
+      const problems = [];
+      if (contracts.length > 1) problems.push('bitta No da bir nechta "Договор" qatori');
+      if (pays.length + contracts.length !== typed.length) problems.push('shartnoma guruhida chiqim/transfer qatori');
+      if (!s.kontragent) problems.push('Kontragent bo‘sh');
+      if (pays.some((p) => keyOf(p.kontragent) !== keyOf(s.kontragent))) problems.push('tushum kontragenti shartnomanikidan farq qiladi');
+      if (!s.napr) problems.push('Napravleniye (xizmat turi) bo‘sh');
+      const paid = round2(pays.reduce((a, x) => a + x.amount, 0));
+      if (paid - s.amount > 0.009) problems.push(`tushum (${paid}) shartnoma summasidan (${s.amount}) katta`);
+      if (problems.length) { err(rn, no, 'Shartnoma tuzilmasi buzilgan: ' + problems.join('; ')); continue; }
+      planned.push({ type: 'contract', no, rows: rn, item: { no, rows: rn, sale_row: s.r, company: s.kontragent, service: s.napr, service_key: keyOf(s.napr), amount: s.amount, contract_date: s.sana || null,
+        payments: pays.map((p) => ({ row: p.r, pair_row: null, side: p.se.side, date: p.date, amount: p.amount, counterparty: p.kontragent, purpose: p.napr || s.napr })) } });
+      continue;
+    }
+    if (typed.length !== 1) { err(rn, no, `Tushunarsiz tuzilma (${typed.length} qator: ${typed.map((x) => x.account).join(' | ')})`); continue; }
+    const x = typed[0];
+    // B) Ichki o'tkazma (bank → kassa)
+    if (x.se.kind === 'TRANSFER') {
+      planned.push({ type: 'transfer', no, rows: rn, item: { no, rows: rn, date: x.date, amount: x.amount, from: x.se.from, to: x.se.to, from_row: x.r, to_row: x.r, counterparty: x.kontragent, purpose: x.account } });
+      continue;
+    }
+    const base = { no, rows: rn, money_row: x.r, row: x.r, side: x.se.side, date: x.date, amount: x.amount, counterparty: x.kontragent };
+    // C) Shartnomasiz kirim
+    if (x.se.dir === 'INCOME') {
+      const purpose = [x.se.item, x.napr].filter(Boolean).join(' · ') || x.account;
+      planned.push({ type: 'income', no, rows: rn, item: { ...base, account: x.account, account_key: x.akey, kind: 'OTHER', purpose, cf_class: 'UNCLASSIFIED' } });
+      plan.questions.push(`Shartnomasiz kirim "${x.kontragent || x.account}" (No ${no}, ${x.amount}): qanday tasniflanadi?`);
+      continue;
+    }
+    // D) Chiqim: modda nomi — hisobning o'zida ("Расход Банк з/п"), bo'lmasa kontragent ustunida
+    const item = x.se.item || x.kontragent;
+    if (!item) { err(rn, no, `"${x.account}" — chiqim moddasi yo‘q`); continue; }
+    const ikey = keyOf(item);
+    const ne = nonExpenseKind(ikey) || (keyOf(x.kontragent) === 'учредитель' ? nonExpenseKind('дивиденд') : null);
+    if (ne) { planned.push({ type: 'nonExpense', no, rows: rn, item: { ...base, account: item, account_key: ikey, ...ne, purpose: item } }); continue; }
+    const cat = CATEGORY_MAP[ikey] ? ikey : null;
+    if (!cat && x.se.side === 'BANK') warn(rn, no, `Bank chiqimi moddasi "${item}" kategoriya xaritasida yo‘q — kategoriyasiz yozildi`);
+    // Kassa erkin matnida kontragent = modda matni (Excel'da shunday) — izohda takrorlanmaydi
+    planned.push({ type: 'expense', no, rows: rn, item: { ...base, account: item, account_key: ikey, purpose: item, category_key: cat, category_name: cat ? item : null } });
+  }
 }
 
 function compactRows(rs) {
