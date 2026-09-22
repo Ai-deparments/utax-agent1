@@ -47,7 +47,9 @@ export function applyJournal(app, plan, { ctx = IMPORT_CTX } = {}) {
     }
 
     // ---------- 1) Minimal ma'lumotnoma ----------
-    let bank = db.get('SELECT id FROM bank_accounts WHERE bank_name=? AND account_number IS NULL AND is_active=1 ORDER BY id LIMIT 1', BANK_NAME);
+    // Hisob foydalanuvchi tomonidan qayta nomlangan bo'lishi mumkin (masalan "БАНК" → "UTAX BANK") — yagona faol bank hisobi o'sha hisob
+    const activeBanks = db.all('SELECT id FROM bank_accounts WHERE is_active=1 ORDER BY id');
+    let bank = db.get('SELECT id FROM bank_accounts WHERE bank_name=? AND account_number IS NULL AND is_active=1 ORDER BY id LIMIT 1', BANK_NAME) || (activeBanks.length === 1 ? activeBanks[0] : null);
     const needBank = plan.contracts.some((c) => c.payments.some((p) => p.side === 'BANK')) || [...plan.incomes, ...plan.expenses, ...plan.nonExpenses].some((x) => x.side === 'BANK') || plan.transfers.some((t) => t.from === 'BANK' || t.to === 'BANK');
     const needCash = plan.contracts.some((c) => c.payments.some((p) => p.side === 'CASH')) || [...plan.incomes, ...plan.expenses, ...plan.nonExpenses].some((x) => x.side === 'CASH') || plan.transfers.some((t) => t.from === 'CASH' || t.to === 'CASH');
     if (!bank && needBank) {
@@ -56,7 +58,8 @@ export function applyJournal(app, plan, { ctx = IMPORT_CTX } = {}) {
       audit(ctx, { action: 'CREATE', entity: 'bank_account', entityId: bank.id, newValue: { bank_name: BANK_NAME, opening_balance: null, source: 'EXCEL' } });
       res.created.bank_accounts++;
     } else if (bank) res.existing.bank_accounts++;
-    let cash = db.get('SELECT id FROM cash_accounts WHERE name=? AND is_active=1 ORDER BY id LIMIT 1', CASH_NAME);
+    const activeCash = db.all('SELECT id FROM cash_accounts WHERE is_active=1 ORDER BY id');
+    let cash = db.get('SELECT id FROM cash_accounts WHERE name=? AND is_active=1 ORDER BY id LIMIT 1', CASH_NAME) || (activeCash.length === 1 ? activeCash[0] : null);
     if (!cash && needCash) {
       cash = { id: db.insert('cash_accounts', { name: CASH_NAME, currency: base, opening_balance: null, opening_date: null, responsible_user_id: null }) };
       audit(ctx, { action: 'CREATE', entity: 'cash_account', entityId: cash.id, newValue: { name: CASH_NAME, opening_balance: null, source: 'EXCEL' } });
