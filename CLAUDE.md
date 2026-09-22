@@ -19,6 +19,10 @@ Tizimdagi barcha biznes ma'lumotlari **faqat Excel fayllardan** olinadi (yoki fo
 | Moliya jurnali (double-entry Excel) | Integratsiyalar → "Moliya jurnali (Excel)" → Jurnal yuklash. Kod: `src/import/ledger-journal.mjs` |
 | Bank ko'chirmasi (Excel/CSV) | Integratsiyalar → "Excel / CSV fayl" |
 | Boshlang'ich qoldiqlar | Pul boshqaruvi → Hisoblar → tahrirlash (foydalanuvchi kiritadi) |
+| Bank API / ERP (REST JSON) | Integratsiyalar → Ulash: manzil, autentifikatsiya, `list_path`, `field_map`. Har soatda BANK agenti sinxronlaydi |
+| 1C:Бухгалтерия | Integratsiyalar → 1C: standart OData (`Document_ПоступлениеНаРасчетныйСчет` / `СписаниеСРасчетногоСчета`) yoki o'z HTTP-servisi |
+| Google Sheets | Integratsiyalar → havola (Share → Anyone with the link) |
+| Tashqi tizim push | Integratsiyalar → Inbound webhook: `POST /api/integrations/webhook/<token>` |
 
 ### Texnik qoldiq tuzatmalari (foydalanuvchi so'rovi bilan, 2026-09-21)
 

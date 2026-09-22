@@ -2,40 +2,167 @@ import { badRequest, notFound, unauthorized } from '../core/http.mjs';
 import { encryptSecret, decryptSecret, maskSecret } from '../core/auth.mjs';
 import { config } from '../core/config.mjs';
 import { nowIso, parseJson, sha256, uid } from '../core/util.mjs';
-import { parseCsv, parseXlsx } from '../core/export.mjs';
+import { parseCsv, parseXlsx, excelDate } from '../core/export.mjs';
+import { sendMail } from '../core/smtp.mjs';
 import { parseLedger, importLedger } from '../import/ledger-journal.mjs';
 
 /**
  * ADAPTER-BASED INTEGRATIONS. Har adapter: {type, name, description, config_schema, secret_schema, test(cfg,sec), pull(cfg,sec,since) → rows}
  * rows = normalizatsiya qilinmagan jadval (header + qatorlar) yoki tayyor {tx_date, amount, direction, ...} obyektlari.
  */
-async function fetchJson(url, headers = {}) {
-  const res = await fetch(url, { headers: { Accept: 'application/json', ...headers } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+let normalizeRowsRef = () => []; // register() da banking.normalizeRows ga ulanadi (Google Sheets ustunlarini aniqlash)
+async function fetchJson(url, headers = {}, { timeoutMs = 30000 } = {}) {
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), timeoutMs);
+  let res;
+  try { res = await fetch(url, { headers: { Accept: 'application/json', ...headers }, signal: ac.signal }); }
+  catch (e) { throw new Error(e.name === 'AbortError' ? 'Server javob bermadi (timeout)' : `Ulanib bo‘lmadi: ${e.cause?.code || e.message}`); }
+  finally { clearTimeout(t); }
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) throw new Error(`HTTP ${res.status} — login/parol yoki kalit noto‘g‘ri`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}${text ? ': ' + text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) : ''}`);
+  try { return JSON.parse(text); } catch { throw new Error('Javob JSON emas' + (/<html/i.test(text) ? ' (HTML sahifa qaytdi — manzil noto‘g‘ri yoki login sahifasi)' : '')); }
 }
-const genericJsonRows = (data) => (Array.isArray(data) ? data : data.items || data.data || data.transactions || []).map((x) => ({
-  tx_date: x.tx_date || x.date || x.value_date, amount: Math.abs(Number(x.amount ?? x.sum ?? 0)), direction: x.direction || ((x.type || '').toString().toUpperCase().includes('DEB') || Number(x.amount) < 0 ? 'EXPENSE' : 'INCOME'),
-  counterparty_name: x.counterparty_name || x.counterparty || x.name, counterparty_inn: x.counterparty_inn || x.inn, purpose: x.purpose || x.description || x.details, external_id: x.external_id || x.id || x.doc_number,
-}));
+
+// ---- Umumiy JSON → tranzaksiya moslashtirish (Bank API, ERP, 1C HTTP, Inbound webhook) ----
+const getPath = (o, p) => (p ? String(p).split('.').reduce((a, k) => (a == null ? a : a[k]), o) : undefined);
+const DEFAULT_FIELDS = {
+  date: ['tx_date', 'date', 'value_date', 'operation_date', 'doc_date', 'Date', 'Дата'],
+  amount: ['amount', 'sum', 'summa', 'Amount', 'Сумма', 'СуммаДокумента'],
+  debit: ['debit', 'debet', 'Дебет'], credit: ['credit', 'kredit', 'Кредит'],
+  direction: ['direction', 'type', 'operation_type', 'dc'],
+  counterparty: ['counterparty_name', 'counterparty', 'name', 'payer_name', 'receiver_name', 'partner', 'Контрагент'],
+  inn: ['counterparty_inn', 'inn', 'tin', 'payer_inn', 'receiver_inn', 'ИНН'],
+  purpose: ['purpose', 'description', 'details', 'narrative', 'Назначение', 'НазначениеПлатежа'],
+  id: ['external_id', 'id', 'doc_number', 'document_number', 'transaction_id', 'Номер'],
+};
+const pick = (row, map, key) => { if (map[key]) return getPath(row, map[key]); for (const k of DEFAULT_FIELDS[key]) if (row[k] !== undefined && row[k] !== null && row[k] !== '') return row[k]; return undefined; };
+const num = (v) => { if (v === undefined || v === null || v === '') return NaN; if (typeof v === 'number') return v; const n = Number(String(v ?? '').replace(/\s| /g, '').replace(',', '.')); return Number.isFinite(n) ? n : NaN; };
+function isoDate(v) {
+  if (!v) return null;
+  const x = excelDate(typeof v === 'number' && v < 100000 ? v : String(v));
+  if (x) return x;
+  const d = new Date(v); return Number.isNaN(+d) ? null : d.toISOString().slice(0, 10);
+}
+/** JSON javobdan ro'yxatni topadi: list_path yoki umumiy kalitlar (items/data/transactions/results/value/records) */
+function listOf(data, listPath) {
+  const v = listPath ? getPath(data, listPath) : data;
+  if (Array.isArray(v)) return v;
+  for (const k of ['items', 'data', 'transactions', 'results', 'value', 'records', 'rows']) if (Array.isArray(v?.[k])) return v[k];
+  return [];
+}
+/** Har bir yozuvni {tx_date, amount, direction, ...} ga keltiradi. Sana yoki summa yo'q qatorlar tashlab yuboriladi (skipped). */
+function mapRows(list, fieldMap = {}) {
+  const rows = [], skipped = [];
+  for (const x of list) {
+    const tx_date = isoDate(pick(x, fieldMap, 'date'));
+    const deb = num(pick(x, fieldMap, 'debit')), cre = num(pick(x, fieldMap, 'credit'));
+    let amount = num(pick(x, fieldMap, 'amount')), direction;
+    if (Number.isFinite(deb) || Number.isFinite(cre)) {
+      // Bank ko'chirmasi: Debet — chiqim, Kredit — kirim (hisob egasi nuqtai nazaridan)
+      if ((cre || 0) > 0) { amount = cre; direction = 'INCOME'; } else { amount = deb; direction = 'EXPENSE'; }
+    } else {
+      const d = String(pick(x, fieldMap, 'direction') ?? '').toUpperCase();
+      direction = /EXP|OUT|DEB|CHIQ|РАСХ|СПИС|^D$|^-$/.test(d) || amount < 0 ? 'EXPENSE' : 'INCOME';
+    }
+    amount = Math.abs(amount);
+    if (!tx_date || !Number.isFinite(amount) || amount <= 0) { skipped.push(x); continue; }
+    const cp = pick(x, fieldMap, 'counterparty');
+    const id = pick(x, fieldMap, 'id');
+    rows.push({ tx_date, amount, direction, counterparty_name: typeof cp === 'object' ? cp?.Description || cp?.name || null : cp ?? null, counterparty_inn: pick(x, fieldMap, 'inn') ?? (typeof cp === 'object' ? cp?.ИНН || cp?.inn || null : null), purpose: pick(x, fieldMap, 'purpose') ?? null, external_id: id !== undefined && id !== null && id !== '' ? String(id) : undefined });
+  }
+  return { rows, skipped: skipped.length };
+}
+
+/** REST API (Bank API / ERP): manzil, autentifikatsiya, sana parametri va maydonlar sozlanadi */
+function restAuth(cfg, sec) {
+  const t = cfg.auth_type || 'bearer';
+  if (t === 'none') return {};
+  if (t === 'basic') return { Authorization: 'Basic ' + Buffer.from(`${sec.username || ''}:${sec.password || sec.api_key || ''}`).toString('base64') };
+  if (t === 'header') return { [cfg.auth_header || 'X-API-Key']: sec.api_key || '' };
+  return { Authorization: `Bearer ${sec.api_key || sec.token || ''}` };
+}
+function restUrl(cfg, since, extra = {}) {
+  if (!cfg.base_url) throw new Error('API manzili (base_url) kiritilmagan');
+  const u = new URL(String(cfg.base_url).replace(/\/$/, '') + String(cfg.endpoint || '').replace('{account_id}', encodeURIComponent(cfg.account_id || '')));
+  if (since && cfg.since_param !== '') u.searchParams.set(cfg.since_param || 'from', since);
+  for (const [k, v] of Object.entries(extra)) u.searchParams.set(k, v);
+  return u.toString();
+}
+const fieldMapOf = (cfg) => (typeof cfg.field_map === 'string' ? parseJson(cfg.field_map, {}) : cfg.field_map) || {};
+async function restPull(cfg, sec, since) {
+  const data = await fetchJson(restUrl(cfg, since || daysAgo(cfg.days_back)), restAuth(cfg, sec));
+  return mapRows(listOf(data, cfg.list_path), fieldMapOf(cfg)).rows;
+}
+async function restTest(cfg, sec) {
+  const data = await fetchJson(restUrl(cfg, daysAgo(cfg.days_back || 30)), restAuth(cfg, sec));
+  const list = listOf(data, cfg.list_path);
+  const { rows, skipped } = mapRows(list, fieldMapOf(cfg));
+  if (list.length && !rows.length) throw new Error(`Ulandi, lekin ${list.length} ta yozuvdan sana/summa aniqlanmadi — "Maydonlar moslashuvi"ni to‘ldiring. Namuna kalitlar: ${Object.keys(list[0] || {}).slice(0, 12).join(', ')}`);
+  const x = rows[0];
+  return `Ulandi: ${rows.length} ta tranzaksiya o‘qildi${skipped ? `, ${skipped} tasi tashlab yuborildi` : ''}${x ? ` · namuna: ${x.tx_date} ${x.direction === 'INCOME' ? '+' : '−'}${x.amount.toLocaleString('ru-RU')} ${x.counterparty_name || ''}` : ''}`;
+}
+const daysAgo = (n) => { const d = new Date(Date.now() - (Number(n) || 90) * 864e5); return d.toISOString().slice(0, 10); };
+
+// ---- 1C: standart OData interfeysi (1C:Бухгалтерия 3.0 — "Стандартный интерфейс OData") ----
+const ONEC_DOCS = [['Document_ПоступлениеНаРасчетныйСчет', 'INCOME'], ['Document_СписаниеСРасчетногоСчета', 'EXPENSE']];
+function onecBase(cfg) { if (!cfg.base_url) throw new Error('1C baza manzili (base_url) kiritilmagan'); return String(cfg.base_url).replace(/\/$/, '').replace(/\/odata\/standard\.odata.*$/i, '') + '/odata/standard.odata/'; }
+const onecAuth = (sec) => ({ Authorization: 'Basic ' + Buffer.from(`${sec.username || ''}:${sec.password || ''}`).toString('base64') });
+async function onecOdataPull(cfg, sec, since) {
+  const from = since || daysAgo(cfg.days_back);
+  const rows = [];
+  for (const [doc, direction] of ONEC_DOCS) {
+    const q = `?$format=json&$filter=${encodeURIComponent(`Date ge datetime'${from}T00:00:00' and Posted eq true`)}&$expand=Контрагент`;
+    let data;
+    try { data = await fetchJson(onecBase(cfg) + encodeURIComponent(doc) + q, onecAuth(sec)); }
+    catch (e) { if (/HTTP 400/.test(e.message)) data = await fetchJson(onecBase(cfg) + encodeURIComponent(doc) + q.replace('&$expand=Контрагент', ''), onecAuth(sec)); else throw e; }
+    for (const d of listOf(data, 'value')) {
+      const amount = Math.abs(num(d.СуммаДокумента));
+      const tx_date = isoDate(d.Date);
+      if (!tx_date || !(amount > 0)) continue;
+      rows.push({ tx_date, amount, direction, counterparty_name: d.Контрагент?.Description || d.Контрагент?.НаименованиеПолное || null, counterparty_inn: d.Контрагент?.ИНН || null, purpose: d.НазначениеПлатежа || d.Комментарий || null, external_id: `1c:${d.Ref_Key}` });
+    }
+  }
+  return rows;
+}
+async function onecOdataTest(cfg, sec) {
+  const base = onecBase(cfg);
+  let n = 0;
+  for (const [doc] of ONEC_DOCS) {
+    try { const d = await fetchJson(`${base}${encodeURIComponent(doc)}?$format=json&$top=1`, onecAuth(sec)); n += listOf(d, 'value').length; }
+    catch (e) { if (/HTTP 404/.test(e.message)) throw new Error(`${doc} topilmadi — 1C'da "Стандартный интерфейс OData" ni yoqing va shu hujjatni tarkibga qo‘shing (Администрирование → Настройки синхронизации данных)`); throw e; }
+  }
+  return `1C OData ulandi (${base}) — bank hujjatlari o‘qildi${n ? '' : ', hozircha hujjat yo‘q'}`;
+}
+
+// ---- Google Sheets: oddiy havola, ID yoki "Publish to web" CSV havolasi ----
+function sheetCsvUrl(cfg) {
+  const link = String(cfg.sheet_url || '').trim();
+  if (/output=csv|format=csv/.test(link)) return link;
+  const id = /\/d\/(?:e\/)?([\w-]{20,})/.exec(link)?.[1] || cfg.sheet_id;
+  if (!id) throw new Error('Google Sheets havolasi yoki ID kiritilmagan');
+  const gid = /[#&?]gid=(\d+)/.exec(link)?.[1] ?? cfg.gid ?? 0;
+  return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
+}
+async function fetchSheet(cfg) {
+  const res = await fetch(sheetCsvUrl(cfg), { redirect: 'follow' });
+  const text = await res.text();
+  if (!res.ok || /<html/i.test(text.slice(0, 300))) throw new Error(`Jadvalni o‘qib bo‘lmadi (HTTP ${res.status}) — Google Sheets'da "Share → Anyone with the link → Viewer" qiling`);
+  return parseCsv(text);
+}
 
 export const ADAPTERS = {
-  BANK_API: { name: 'Bank API', description: 'Bank REST API (JSON) — kirish/chiqish ko‘chirmasi', config_schema: { base_url: 'https://bank.example/api', account_id: '', bank_account_id: 1 }, secret_schema: { api_key: '' },
-    async test(cfg, sec) { await fetchJson(`${cfg.base_url.replace(/\/$/, '')}/accounts/${cfg.account_id}`, { Authorization: `Bearer ${sec.api_key}` }); return 'OK'; },
-    async pull(cfg, sec, since) { const d = await fetchJson(`${cfg.base_url.replace(/\/$/, '')}/accounts/${cfg.account_id}/transactions?since=${since || ''}`, { Authorization: `Bearer ${sec.api_key}` }); return genericJsonRows(d); } },
-  GOOGLE_SHEETS: { name: 'Google Sheets', description: 'Jadval (ommaviy/“link bilan”) CSV export orqali', config_schema: { sheet_id: '', gid: '0', bank_account_id: 1, mapping: {} }, secret_schema: {},
-    url: (cfg) => `https://docs.google.com/spreadsheets/d/${cfg.sheet_id}/export?format=csv&gid=${cfg.gid || 0}`,
-    async test(cfg) { const res = await fetch(this.url(cfg)); if (!res.ok) throw new Error(`HTTP ${res.status}`); return 'OK'; },
-    async pull(cfg) { const res = await fetch(this.url(cfg)); const text = await res.text(); return { table: parseCsv(text), mapping: cfg.mapping }; } },
+  BANK_API: { name: 'Bank API', description: 'Bankning REST API (JSON) — ko‘chirma avtomatik tortiladi (har soatda). Manzil, kalit va maydonlar bank hujjatiga ko‘ra sozlanadi', config_schema: { base_url: '', endpoint: '/accounts/{account_id}/transactions', account_id: '', auth_type: 'bearer', since_param: 'from', list_path: '', field_map: {}, days_back: 90, bank_account_id: 1 }, secret_schema: { api_key: '' },
+    test: (cfg, sec) => restTest(cfg, sec), pull: (cfg, sec, since) => restPull(cfg, sec, since) },
+  GOOGLE_SHEETS: { name: 'Google Sheets', description: 'Jadval havolasi (Share → Anyone with the link) — ustunlar avtomatik aniqlanadi, har soatda sinxronlanadi', config_schema: { sheet_url: '', bank_account_id: 1, mapping: {} }, secret_schema: {},
+    async test(cfg) { const table = await fetchSheet(cfg); const rows = normalizeRowsRef(table, cfg.mapping); if (!rows.length) throw new Error(`Jadval o‘qildi (${table.length} qator), lekin tranzaksiya topilmadi — Sana va Summa (yoki Debet/Kredit) ustunlari bo‘lishi kerak`); return `Ulandi: ${rows.length} ta tranzaksiya topildi (${table.length} qator)`; },
+    async pull(cfg) { return { table: await fetchSheet(cfg), mapping: cfg.mapping }; } },
   LEDGER: { name: 'Moliya jurnali (Excel)', description: 'Double-entry jurnal: shartnomalar (sotuv), bank/kassa tushumlari, xarajatlar, dividend va o‘tkazmalar — faqat fayldagi ma’lumot', config_schema: {}, secret_schema: {}, async test() { return 'Qo‘lda yuklanadi'; }, async pull() { return []; } },
   EXCEL: { name: 'Excel / CSV fayl', description: 'Bank ko‘chirmasini Excel (.xlsx) yoki CSV fayl sifatida yuklash', config_schema: { bank_account_id: 1 }, secret_schema: {}, async test() { return 'Manual'; }, async pull() { return []; } },
-  ONE_C: { name: '1C', description: '1C HTTP-servis (JSON) — bank/kassa hujjatlari', config_schema: { base_url: 'http://1c.local/base/hs/finance', endpoint: '/transactions', bank_account_id: 1 }, secret_schema: { username: '', password: '' },
-    auth: (sec) => ({ Authorization: 'Basic ' + Buffer.from(`${sec.username}:${sec.password}`).toString('base64') }),
-    async test(cfg, sec) { await fetchJson(`${cfg.base_url}${cfg.endpoint}?limit=1`, this.auth(sec)); return 'OK'; },
-    async pull(cfg, sec, since) { return genericJsonRows(await fetchJson(`${cfg.base_url}${cfg.endpoint}?since=${since || ''}`, this.auth(sec))); } },
-  ERP: { name: 'ERP', description: 'Umumiy ERP REST (JSON) adapteri', config_schema: { base_url: '', endpoint: '/api/bank-transactions', bank_account_id: 1 }, secret_schema: { token: '' },
-    async test(cfg, sec) { await fetchJson(`${cfg.base_url}${cfg.endpoint}?limit=1`, { Authorization: `Bearer ${sec.token}` }); return 'OK'; },
-    async pull(cfg, sec, since) { return genericJsonRows(await fetchJson(`${cfg.base_url}${cfg.endpoint}?since=${since || ''}`, { Authorization: `Bearer ${sec.token}` })); } },
+  ONE_C: { name: '1C', description: '1C:Бухгалтерия — standart OData (Поступление/Списание с расчетного счета) yoki o‘z HTTP-servisingiz (JSON). Har soatda sinxronlanadi', config_schema: { mode: 'odata', base_url: '', endpoint: '/transactions', days_back: 90, bank_account_id: 1 }, secret_schema: { username: '', password: '' },
+    async test(cfg, sec) { if ((cfg.mode || 'odata') === 'odata') return onecOdataTest(cfg, sec); return restTest({ ...cfg, auth_type: 'basic' }, sec); },
+    async pull(cfg, sec, since) { if ((cfg.mode || 'odata') === 'odata') return onecOdataPull(cfg, sec, since); return restPull({ ...cfg, auth_type: 'basic' }, sec, since); } },
+  ERP: { name: 'ERP', description: 'Istalgan ERP/hisob tizimining REST API (JSON) — manzil, autentifikatsiya va maydonlar sozlanadi', config_schema: { base_url: '', endpoint: '/api/bank-transactions', auth_type: 'bearer', since_param: 'from', list_path: '', field_map: {}, days_back: 90, bank_account_id: 1 }, secret_schema: { api_key: '' },
+    test: (cfg, sec) => restTest(cfg, sec), pull: (cfg, sec, since) => restPull(cfg, sec, since) },
   TELEGRAM: { name: 'Telegram', description: '4 ta bot: rahbar, buxgalter, so‘rov, signal (BOT_*_TOKEN .env); kritik ogohlantirishlar guruhi — alert_chat_id', config_schema: { alert_chat_id: '' }, secret_schema: {},
     async test(cfg) {
       const out = [];
@@ -52,13 +179,18 @@ export const ADAPTERS = {
       }
       return msg;
     }, async pull() { return []; } },
-  EMAIL: { name: 'Email', description: 'Webhook servis orqali elektron pochta xabarlari', config_schema: { webhook_url: '', recipients: '' }, secret_schema: {},
-    async test(cfg) {
-      const url = cfg.webhook_url || config.emailWebhook;
-      if (!url) throw new Error('Webhook manzili kiritilmagan');
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: cfg.recipients || '', subject: 'UTAX Finance: ulanish tekshiruvi', body: 'Elektron pochta integratsiyasi ishlayapti.' }) });
-      if (!res.ok) throw new Error(`Webhook javobi: HTTP ${res.status}`);
-      return 'Webhook javob berdi (HTTP ' + res.status + ')';
+  EMAIL: { name: 'Email', description: 'SMTP orqali email bildirishnomalari (Gmail, Yandex, mail.uz, korporativ server) — kritik ogohlantirishlar va kunlik xulosa', config_schema: { mode: 'smtp', smtp_host: '', smtp_port: 465, smtp_security: 'ssl', from: '', recipients: '', webhook_url: '' }, secret_schema: { smtp_user: '', smtp_pass: '' },
+    async test(cfg, sec) {
+      if (!cfg.recipients) throw new Error('Qabul qiluvchi email kiritilmagan (sinov xati shu manzilga yuboriladi)');
+      if ((cfg.mode || 'smtp') === 'webhook') {
+        const url = cfg.webhook_url || config.emailWebhook;
+        if (!url) throw new Error('Webhook manzili kiritilmagan');
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: cfg.recipients, subject: 'UTAX Finance: ulanish tekshiruvi', body: 'Elektron pochta integratsiyasi ishlayapti.' }) });
+        if (!res.ok) throw new Error(`Webhook javobi: HTTP ${res.status}`);
+        return 'Webhook javob berdi (HTTP ' + res.status + ')';
+      }
+      const r = await sendMail({ host: cfg.smtp_host, port: cfg.smtp_port, security: cfg.smtp_security, user: sec.smtp_user, pass: sec.smtp_pass, from: cfg.from || sec.smtp_user, to: cfg.recipients, subject: 'UTAX Finance: email ulanish tekshiruvi', text: 'Salom!\n\nUTAX Finance email bildirishnomalari ulandi. Kritik ogohlantirishlar va kunlik xulosa shu manzilga yuboriladi.\n\n— UTAX Finance' });
+      return `Sinov xati yuborildi: ${r.accepted.join(', ')}`;
     }, async pull() { return []; } },
   GEMINI: { name: 'Gemini AI', description: 'Google Gemini — AI javoblar uchun asosiy provayder (xato/limitda Groq). Javoblar faqat tizimdagi real ma’lumotlar asosida', config_schema: { model: 'gemini-3.6-flash' }, secret_schema: { api_key: '' },
     async test(cfg, sec) {
@@ -80,11 +212,14 @@ export const ADAPTERS = {
       if (!res.ok) throw new Error(`Groq javobi: ${String(j.error?.message || 'HTTP ' + res.status).replaceAll(key, '***')}`);
       return `Groq ulandi (${j.model || model})`;
     }, async pull() { return []; } },
-  WEBHOOK_IN: { name: 'Inbound webhook', description: 'Tashqi tizim POST /api/integrations/webhook/:token orqali tranzaksiya yuboradi', config_schema: { bank_account_id: 1 }, secret_schema: { token: '' }, async test() { return 'OK'; }, async pull() { return []; } },
+  WEBHOOK_IN: { name: 'Inbound webhook', description: 'Tashqi tizim (bank, 1C, Zapier/Make) POST /api/integrations/webhook/<token> ga tranzaksiyalarni yuboradi: {rows:[{date, amount, direction, counterparty, inn, purpose, id}]}', config_schema: { bank_account_id: 1, field_map: {} }, secret_schema: { token: '' },
+    async test(cfg, sec) { if (!sec.token) throw new Error('Token yo‘q — integratsiyani qayta yarating'); return `Qabul manzili: POST ${config.publicUrl || '<sayt manzili>'}/api/integrations/webhook/${sec.token} · JSON: {"rows":[{"date":"2026-07-01","amount":1000000,"direction":"INCOME","counterparty":"…","purpose":"…","id":"…"}]}`; },
+    async pull() { return []; } },
 };
 
 export function register(app) {
   const { r, db, audit } = app;
+  normalizeRowsRef = (table, mapping) => app.services.banking.normalizeRows(table || [], mapping || {});
   const ENV = { telegramAlertChat: config.telegramAlertChat, emailWebhook: config.emailWebhook, geminiKey: config.ai.geminiKey, geminiModel: config.ai.geminiModel, groqKey: config.ai.groqKey, groqModel: config.ai.groqModel };
   /** Tizimda saqlangan sozlamalar .env qiymatlaridan ustun: Telegram kritik guruhi, Email webhook, Gemini/Groq kalitlari (shifrlangan). Bot tokenlari — faqat .env (BOT_*_TOKEN). */
   async function applyRuntime() {
@@ -92,7 +227,13 @@ export function register(app) {
     const tgCfg = tg ? parseJson(tg.config, {}) : {};
     config.telegramAlertChat = tgCfg.alert_chat_id || ENV.telegramAlertChat;
     const em = db.get("SELECT * FROM integrations WHERE type='EMAIL' AND is_active=1 ORDER BY id DESC LIMIT 1");
-    config.emailWebhook = (em && parseJson(em.config, {}).webhook_url) || ENV.emailWebhook;
+    const emCfg = em ? parseJson(em.config, {}) : {};
+    config.emailWebhook = emCfg.webhook_url || ENV.emailWebhook;
+    // SMTP (asosiy): parol shifrlangan holda saqlanadi, faqat xotirada ochiladi
+    if (em && (emCfg.mode || 'smtp') === 'smtp' && emCfg.smtp_host) {
+      const emSec = parseJson(decryptSecret(em.secret_config) || '{}', {});
+      config.email = { mode: 'smtp', host: emCfg.smtp_host, port: emCfg.smtp_port, security: emCfg.smtp_security || 'ssl', user: emSec.smtp_user || '', pass: emSec.smtp_pass || '', from: emCfg.from || emSec.smtp_user || '' };
+    } else config.email = null;
     const gm = db.get("SELECT * FROM integrations WHERE type='GEMINI' AND is_active=1 ORDER BY id DESC LIMIT 1");
     const gq = db.get("SELECT * FROM integrations WHERE type='GROQ' AND is_active=1 ORDER BY id DESC LIMIT 1");
     const before = JSON.stringify([config.ai.geminiKey, config.ai.geminiModel, config.ai.groqKey, config.ai.groqModel]);
@@ -213,7 +354,8 @@ export function register(app) {
     const i = all.find((x) => parseJson(decryptSecret(x.secret_config) || '{}', {}).token === ctx.params.token);
     if (!i) throw unauthorized('Webhook token noto‘g‘ri');
     const cfg = parseJson(i.config, {});
-    const rows = genericJsonRows(ctx.body?.rows || ctx.body || []);
+    const { rows, skipped } = mapRows(listOf(ctx.body?.rows ? ctx.body.rows : ctx.body || []), fieldMapOf(cfg));
+    if (!rows.length) throw badRequest(`Yaroqli tranzaksiya yo‘q${skipped ? ` (${skipped} ta yozuvda sana yoki summa aniqlanmadi)` : ''}`);
     const res = app.services.banking.importRows(cfg.bank_account_id, rows, { source: 'WEBHOOK', ip: ctx.ip, user: null }, 'WEBHOOK');
     db.insert('integration_sync_logs', { integration_id: i.id, started_at: nowIso(), finished_at: nowIso(), status: 'OK', rows_in: res.rows, rows_new: res.created, message: JSON.stringify(res) });
     db.run('UPDATE integrations SET last_sync_at=?, last_status=? WHERE id=?', nowIso(), `Qabul qilindi: ${res.created} yangi`, i.id);

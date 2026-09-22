@@ -263,7 +263,7 @@ export async function seed(app, { log = console.log } = {}) {
   const { encryptSecret } = await import('../../src/core/auth.mjs');
   db.insert('integrations', { type: 'EXCEL', name: 'Bank ko‘chirmasi (Excel/CSV)', config: JSON.stringify({ bank_account_id: 1 }), secret_config: encryptSecret('{}'), created_at: nowIso(), last_status: 'Qo‘lda yuklanadi' });
   db.insert('integrations', { type: 'WEBHOOK_IN', name: 'Kapitalbank webhook (inbound)', config: JSON.stringify({ bank_account_id: 1 }), secret_config: encryptSecret(JSON.stringify({ token: 'demo-webhook-token-change-me' })), created_at: nowIso() });
-  db.insert('integrations', { type: 'GOOGLE_SHEETS', name: 'Google Sheets — kassa jadvali', config: JSON.stringify({ sheet_id: '', gid: '0', bank_account_id: 2 }), secret_config: encryptSecret('{}'), is_active: 0, created_at: nowIso() });
+  db.insert('integrations', { type: 'GOOGLE_SHEETS', name: 'Google Sheets — kassa jadvali', config: JSON.stringify({ sheet_url: 'https://docs.google.com/spreadsheets/d/TEST-demo-sheet-000000000000/edit#gid=0', bank_account_id: 2 }), secret_config: encryptSecret('{}'), is_active: 0, created_at: nowIso() });
   db.insert('integrations', { type: 'TELEGRAM', name: 'Telegram Finance Bot', config: '{}', secret_config: encryptSecret('{}'), created_at: nowIso() });
   db.insert('integrations', { type: 'ONE_C', name: '1C Buxgalteriya', config: JSON.stringify({ base_url: 'http://1c.local/utax/hs/finance', endpoint: '/transactions', bank_account_id: 1 }), secret_config: encryptSecret(JSON.stringify({ username: '', password: '' })), is_active: 0, created_at: nowIso() });
 
