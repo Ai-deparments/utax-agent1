@@ -1,0 +1,3 @@
+# Shifrlangan ma'lumot seyfi — qator oxiri o'zgarmasin (aks holda fayl ochilmaydi)
+data/vault/*.enc binary
+data/vault/**/*.enc binary
