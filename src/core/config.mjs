@@ -22,11 +22,16 @@ const TEST_MODE = !!process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === 't
 // util.today() ham shu zonadagi kalendar sanani qaytaradi — dailyAt vaqti va "bugun" sanasi bir xil zonada (UTC sana emas).
 if (!process.env.TZ) process.env.TZ = env('APP_TZ', 'Asia/Tashkent');
 
+// Vercel (serverless): diskka faqat /tmp ga yozish mumkin va u vaqtinchalik. Doimiy baza — Turso (TURSO_DATABASE_URL).
+export const ON_VERCEL = !!process.env.VERCEL;
+const VERCEL_URL = process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '';
+const TMP = (p) => path.join('/tmp', 'utax', p);
+
 export const config = {
   port: Number(env('PORT', 8100)),
   host: env('HOST', '127.0.0.1'),
   nodeEnv: env('NODE_ENV', 'development'),
-  dbPath: path.resolve(ROOT, env('DB_PATH', './data/finance.db')),
+  dbPath: ON_VERCEL ? env('DB_PATH', TMP('replica.db')) : path.resolve(ROOT, env('DB_PATH', './data/finance.db')),
   jwtSecret: env('JWT_SECRET', 'dev-secret-change-me-please-32-bytes-min'),
   accessTtl: Number(env('ACCESS_TOKEN_TTL', 900)),
   refreshTtl: Number(env('REFRESH_TOKEN_TTL', 604800)),
@@ -58,9 +63,10 @@ export const config = {
   },
   // Egalar: Telegram user id'lar (FOUNDER roli, barcha botlar, avtomatik bog'lanadi)
   botOwnerIds: String(env('BOT_OWNER_IDS', '')).split(/[\s,;]+/).filter((x) => /^\d{5,15}$/.test(x)),
-  botMode: env('BOT_MODE', 'polling'), // polling | webhook | off
-  publicUrl: env('PUBLIC_URL', ''), // webhook uchun https manzil
-  webappUrl: env('WEBAPP_URL', ''), // botlardagi "Web'da ochish" tugmalari (https bo'lsa Telegram Mini App)
+  // Vercel'da polling mumkin emas (doimiy jarayon yo'q) — standart webhook (PUBLIC_URL bo'lsa), aks holda off
+  botMode: env('BOT_MODE', ON_VERCEL ? (env('PUBLIC_URL', VERCEL_URL) ? 'webhook' : 'off') : 'polling'), // polling | webhook | off
+  publicUrl: env('PUBLIC_URL', ON_VERCEL ? VERCEL_URL : ''), // webhook uchun https manzil
+  webappUrl: env('WEBAPP_URL', ON_VERCEL ? VERCEL_URL : ''), // botlardagi "Web'da ochish" tugmalari (https bo'lsa Telegram Mini App)
   webhookSecret: env('WEBHOOK_SECRET', ''),
   telegramAlertChat: env('TELEGRAM_ALERT_CHAT_ID', ''),
   emailWebhook: env('EMAIL_WEBHOOK_URL', ''),
@@ -69,6 +75,8 @@ export const config = {
   // Web uchun birinchi administrator (FOUNDER): server ishga tushganda yaratiladi/yangilanadi (src/core/bootstrap.mjs). Parol logga chiqmaydi
   admin: { email: env('ADMIN_EMAIL', ''), password: env('ADMIN_PASSWORD', ''), name: env('ADMIN_NAME', '') },
   publicDir: path.join(ROOT, 'public'),
-  uploadsDir: path.join(ROOT, 'uploads'),
-  backupDir: path.join(ROOT, 'data', 'backups'),
+  uploadsDir: ON_VERCEL ? TMP('uploads') : path.join(ROOT, 'uploads'),
+  backupDir: ON_VERCEL ? TMP('backups') : path.join(ROOT, 'data', 'backups'),
+  // Vercel Cron → GET /api/cron/tick (Authorization: Bearer CRON_SECRET)
+  cronSecret: env('CRON_SECRET', ''),
 };

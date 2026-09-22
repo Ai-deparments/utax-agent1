@@ -32,7 +32,7 @@ export function register(app) {
   r.post('/api/settings/backup', { perm: ['settings', 'EDIT'], tags: ['settings'], summary: 'Bazani zaxiralash (SQLite backup API)' }, async (ctx) => {
     fs.mkdirSync(config.backupDir, { recursive: true });
     const file = path.join(config.backupDir, `finance-${nowIso().replace(/[:.]/g, '-')}.db`);
-    try { const { backup } = await import('node:sqlite'); await backup(db.raw, file); } catch { db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`); }
+    try { if (db.driver !== 'sqlite') throw new Error('libsql'); const { backup } = await import('node:sqlite'); await backup(db.raw, file); } catch { db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`); }
     audit(ctx, { action: 'BACKUP', entity: 'system', newValue: { file } });
     return { ok: true, file, size: fs.statSync(file).size, backups: fs.readdirSync(config.backupDir).filter((f) => f.endsWith('.db')).sort().reverse().slice(0, 30) };
   });

@@ -50,6 +50,11 @@ Excel'da 01.07 boshlang'ich qoldig'i yo'q edi. Shuning uchun bank va kassa minus
 
 Har qanday sahifa, komponent yoki stilni yaratishdan yoki o'zgartirishdan **oldin** [UI-SKILL.md](UI-SKILL.md) ni o'qing. Bu fayl loyiha UI'sining yagona manbai: tokenlar, komponentlar, sahifa naqshlari, responsiv tizim, kanonik variantlar va yangi sahifa qoidalari shu yerda.
 
+## Deploy
+
+- **VPS / Docker:** `deploy/`, `Dockerfile`. Kod o'zgarmaydi, cheklov yo'q.
+- **Vercel:** [DEPLOY-VERCEL.md](DEPLOY-VERCEL.md) ga qarang: `api/index.mjs`, `vercel.json`, Turso bazasi (`TURSO_DATABASE_URL`) va cron (`/api/cron/tick`). Deploydan oldin `npm run vercel:check` ni ishga tushiring.
+
 ## Texnik eslatmalar
 
 - Node 22.5+, paketsiz, `node:sqlite`. Ishga tushirish: `npm start` (port 8100). Testlar: `npm test`.

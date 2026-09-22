@@ -1,0 +1,10 @@
+# Vercel'ga yuklanmaydi: maxfiy va lokal ma'lumotlar
+.env
+.env.*
+!.env.example
+data/
+uploads/
+tests/
+node_modules/
+*.db
+*.db-*

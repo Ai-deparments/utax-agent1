@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install --omit=dev --no-audit --no-fund",
+  "buildCommand": "mkdir -p .vercel-static && echo 'UTAX Finance: barcha so‘rovlar api/index.mjs orqali'",
+  "outputDirectory": ".vercel-static",
+  "regions": ["fra1"],
+  "functions": {
+    "api/index.mjs": {
+      "maxDuration": 60,
+      "memory": 1024,
+      "includeFiles": "{public/**,src/**,package.json}"
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
+  "crons": [{ "path": "/api/cron/tick", "schedule": "30 4 * * *" }]
+}
