@@ -4,7 +4,9 @@
   "description": "UTAX AI Moliya CRM — Finance Operating System (MVP)",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "start": "node src/server.mjs",
     "dev": "node --watch src/server.mjs",
@@ -15,7 +17,11 @@
     "openapi": "node -e \"import('./src/server.mjs').then(m=>console.log(JSON.stringify(m.buildOpenApi(),null,2)))\"",
     "check": "node scripts/check.mjs",
     "llm:check": "node scripts/llm-check.mjs",
-    "import:excel": "node scripts/excel-import.mjs"
+    "import:excel": "node scripts/excel-import.mjs",
+    "vercel:check": "node scripts/vercel-check.mjs"
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "optionalDependencies": {
+    "libsql": "^0.5.29"
+  }
 }

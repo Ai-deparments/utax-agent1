@@ -73,7 +73,7 @@ function registerJobs(app) {
   app.scheduler.add({ ...ag('CASH_FLOW'), everyMs: 1800e3, description: 'Likvidlik nazorati' });
   app.scheduler.add({ ...ag('BANK'), everyMs: 3600e3, description: 'Bank/ERP sync' });
   app.scheduler.add({ ...ag('RECONCILIATION'), everyMs: 3600e3, description: 'Reconciliation' });
-  app.scheduler.add({ name: 'backup', dailyAt: '03:00', description: 'Kunlik zaxira', fn: async () => { fs.mkdirSync(config.backupDir, { recursive: true }); const file = path.join(config.backupDir, `finance-${today()}.db`); try { const { backup } = await import('node:sqlite'); await backup(app.db.raw, file); } catch { app.db.exec(`VACUUM INTO '${file}'`); } const keep = Number(app.settings.get('backup.retention_days') || 60); for (const f of fs.readdirSync(config.backupDir)) { const p = path.join(config.backupDir, f); if (Date.now() - fs.statSync(p).mtimeMs > keep * 86400e3) fs.unlinkSync(p); } return { file }; } });
+  app.scheduler.add({ name: 'backup', dailyAt: '03:00', description: 'Kunlik zaxira', fn: async () => { if (app.db.remote) return { skipped: 'Turso bazasi o‘z zaxirasini saqlaydi (point-in-time restore)' }; fs.mkdirSync(config.backupDir, { recursive: true }); const file = path.join(config.backupDir, `finance-${today()}.db`); if (app.db.driver === 'sqlite') { try { const { backup } = await import('node:sqlite'); await backup(app.db.raw, file); } catch { app.db.exec(`VACUUM INTO '${file}'`); } } else app.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`); const keep = Number(app.settings.get('backup.retention_days') || 60); for (const f of fs.readdirSync(config.backupDir)) { const p = path.join(config.backupDir, f); if (Date.now() - fs.statSync(p).mtimeMs > keep * 86400e3) fs.unlinkSync(p); } return { file }; } });
 }
 
 export function buildOpenApi(app) { return _buildOpenApi((app || createApp({ dbPath: ':memory:' })).r); }
@@ -83,6 +83,9 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 // Frontend build versiyasi: public/ ichidagi fayllarning eng oxirgi o‘zgarish vaqti.
 // Aktivlar /v/<build>/... orqali beriladi — yangi versiyada URL o‘zgaradi, eski brauzer keshi ishlatilmaydi.
 function frontendBuild() {
+  // Vercel'da fayl vaqtlari deploylar orasida bir xil bo'lishi mumkin — versiya deploy ID'dan olinadi
+  const dep = process.env.VERCEL_DEPLOYMENT_ID || process.env.VERCEL_GIT_COMMIT_SHA;
+  if (dep) return dep.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(-12) || 'vercel';
   let max = 0;
   const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else max = Math.max(max, fs.statSync(f).mtimeMs); } };
   try { walk(config.publicDir); } catch {}
@@ -107,15 +110,20 @@ function serveStatic(reqPath, res) {
     res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'Content-Security-Policy': FRAME_ANCESTORS });
     return res.end(html);
   }
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': versioned ? 'public, max-age=31536000, immutable' : 'no-cache', ...(ext === '.html' ? { 'Content-Security-Policy': FRAME_ANCESTORS } : {}) });
+  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': versioned ? 'public, max-age=31536000, s-maxage=31536000, immutable' : 'no-cache', ...(ext === '.html' ? { 'Content-Security-Policy': FRAME_ANCESTORS } : {}) });
   fs.createReadStream(p).pipe(res);
 }
 const SWAGGER = `<!doctype html><html><head><meta charset="utf-8"><title>UTAX Finance API</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="ui"></div><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/api/openapi.json',dom_id:'#ui',persistAuthorization:true})</script></body></html>`;
 
 export function createServer(app) {
+  return http.createServer(createHandler(app));
+}
+
+/** HTTP so'rov ishlovchisi — oddiy server (createServer) va Vercel funksiyasi (api/index.mjs) uchun umumiy */
+export function createHandler(app) {
   const apiLimit = rateLimiter({ windowMs: 60_000, max: 900 });
   let openapiCache = null;
-  return http.createServer(async (req, res) => {
+  return async (req, res) => {
     const started = Date.now();
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
@@ -128,6 +136,15 @@ export function createServer(app) {
       }
       if (!p.startsWith('/api/')) return serveStatic(p === '/' ? '/index.html' : p, res);
       if (p === '/api/health') return sendJson(res, 200, { ok: true, time: new Date().toISOString(), version: '1.0.0', build: frontendBuild() });
+      // Vercel Cron (yoki tashqi cron): vaqti kelgan fon vazifalarini bajaradi. Holat bazada saqlanadi — takroran ishga tushmaydi
+      if (p === '/api/cron/tick') {
+        if (!config.cronSecret || req.headers.authorization !== `Bearer ${config.cronSecret}`) throw new HttpError(401, 'UNAUTHORIZED', 'Cron kaliti noto‘g‘ri');
+        const started = Date.now();
+        await app.scheduler.tick();
+        // Serverless'da bot intervallari ishonchli ishlamaydi — yuborilmay qolgan Telegram xabarlari cron bilan qayta yuboriladi
+        try { await app.bots?.retryPending?.(); app.bots?.dialogs?.purgeExpired?.(); } catch (e) { console.warn('[cron] bot retry:', e.message); }
+        return sendJson(res, 200, { ok: true, ms: Date.now() - started, jobs: app.scheduler.list().map((j) => ({ name: j.name, last_run: j.last_run })) });
+      }
       if (p === '/api/openapi.json') { openapiCache ??= _buildOpenApi(app.r); return sendJson(res, 200, openapiCache); }
       if (p === '/api/docs') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(SWAGGER); }
       const ip = clientIp(req);
@@ -155,11 +172,11 @@ export function createServer(app) {
     } finally {
       if (p.startsWith('/api/') && config.nodeEnv !== 'test') { const ms = Date.now() - started; if (ms > 800) console.log(`[http] slow ${req.method} ${p} ${ms}ms`); }
     }
-  });
+  };
 }
 
-export async function main() {
-  const app = createApp();
+/** Ishga tushirishdagi umumiy qadamlar (server va Vercel funksiyasi uchun) */
+export async function prepareApp(app) {
   if (config.seedOnEmpty && app.db.get('SELECT COUNT(*) c FROM users').c === 0) {
     console.log('[seed] Baza bo‘sh — tizim tuzilmasi yaratilmoqda (biznes ma’lumotlari faqat Excel orqali)…');
     const { seed } = await import('./seed/seed.mjs');
@@ -172,6 +189,11 @@ export async function main() {
   }
   app.services.contracts.recomputeAll();
   if (config.botOwnerIds.length) { ensureOwners(app, config.botOwnerIds); console.log(`[bots] egalar (FOUNDER): ${config.botOwnerIds.length} ta Telegram id`); }
+  return app;
+}
+
+export async function main() {
+  const app = await prepareApp(createApp());
   const server = createServer(app);
   server.listen(config.port, config.host, () => {
     console.log(`UTAX Finance CRM → http://${config.host}:${config.port}  (API docs: /api/docs)`);

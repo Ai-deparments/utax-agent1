@@ -10,3 +10,5 @@ uploads/
 *.xls
 data/imports/
 data/import-*.json
+.vercel/
+.vercel-static/
