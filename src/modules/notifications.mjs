@@ -27,7 +27,11 @@ export function register(app) {
   const { r, db, settings } = app;
 
   async function sendEmail(to, subject, body) {
-    if (!config.emailWebhook || !settings.get('notifications.email_enabled')) return { ok: false, error: 'email disabled' };
+    if (!settings.get('notifications.email_enabled')) return { ok: false, error: 'email disabled' };
+    if (config.email?.mode === 'smtp') {
+      try { const { sendMail } = await import('../core/smtp.mjs'); await sendMail({ ...config.email, to, subject, text: body }); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+    }
+    if (!config.emailWebhook) return { ok: false, error: 'email disabled' };
     try { const res = await fetch(config.emailWebhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to, subject, body }) }); return { ok: res.ok }; } catch (e) { return { ok: false, error: e.message }; }
   }
   const telegramAllowed = (userId, type) => (db.get('SELECT telegram FROM notification_prefs WHERE user_id=? AND type=?', userId, type)?.telegram ?? 1) === 1;

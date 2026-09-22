@@ -103,12 +103,28 @@ export default async function render(root, { setTitle, can }) {
     webhook_url: ['Webhook manzili', 'POST {to, subject, body} qabul qiladigan pochta servisi manzili'], recipients: ['Qabul qiluvchilar', 'elektron pochtalar, vergul bilan'],
     model: ['Model', 'masalan: gemini-flash-latest (har doim eng yangi Flash) yoki gemini-2.5-pro'],
   };
-  const FIELD_BY_TYPE = { GEMINI: { api_key: ['API kalit', 'Google AI Studio → Get API key orqali olinadi'] }, GROQ: { api_key: ['API kalit', 'console.groq.com → API Keys orqali olinadi (gsk_…)'] } };
+  Object.assign(FIELD, {
+    sheet_url: ['Google Sheets havolasi', 'jadvalni oching → Share → «Anyone with the link» → havolani nusxalab shu yerga qo‘ying'],
+    auth_type: ['Autentifikatsiya', 'API hujjatiga ko‘ra'], since_param: ['Sana parametri nomi', 'masalan: from, date_from, since — bo‘sh qoldirilsa yuborilmaydi'],
+    list_path: ['Ro‘yxat yo‘li (JSON)', 'ixtiyoriy — masalan: data.transactions; bo‘sh bo‘lsa avtomatik (items/data/transactions/results)'],
+    field_map: ['Maydonlar moslashuvi (JSON)', 'ixtiyoriy — {"date":"operDate","amount":"sum","debit":"debet","credit":"kredit","counterparty":"partner.name","inn":"partner.tin","purpose":"details","id":"docId"}'],
+    days_back: ['Birinchi sinxronlashda necha kun oldindan', 'keyingi safar oxirgi sinxronlashdan boshlab olinadi'],
+    mode: ['Rejim'], smtp_host: ['SMTP server', 'Gmail: smtp.gmail.com · Yandex: smtp.yandex.ru · mail.uz: smtp.mail.uz'], smtp_port: ['Port', 'SSL — 465 · STARTTLS — 587'],
+    smtp_security: ['Himoya'], from: ['Jo‘natuvchi email', 'bo‘sh bo‘lsa SMTP login ishlatiladi'], smtp_user: ['SMTP login (email)'], smtp_pass: ['SMTP parol', 'Gmail/Yandex: oddiy parol emas — «App password» (ilova paroli) yarating'],
+  });
+  const FIELD_OPTIONS = {
+    auth_type: [['bearer', 'Bearer token (Authorization: Bearer …)'], ['header', 'X-API-Key sarlavhasi'], ['basic', 'Login/parol (Basic)'], ['none', 'Autentifikatsiyasiz']],
+    mode: { ONE_C: [['odata', 'Standart OData (1C:Бухгалтерия 3.0)'], ['http', 'O‘z HTTP-servisi (JSON)']], EMAIL: [['smtp', 'SMTP (to‘g‘ridan-to‘g‘ri)'], ['webhook', 'Tashqi webhook servis']] },
+    smtp_security: [['ssl', 'SSL/TLS (465)'], ['starttls', 'STARTTLS (587)'], ['none', 'Himoyasiz (faqat ichki tarmoq)']],
+  };
+  const FIELD_BY_TYPE = { ONE_C: { base_url: ['1C baza manzili', 'masalan: http://server/buh (1C veb-serverda nashr qilingan baza) — OData yo‘li avtomatik qo‘shiladi'], endpoint: ['HTTP-servis yo‘li', 'faqat «O‘z HTTP-servisi» rejimida'] }, BANK_API: { base_url: ['Bank API manzili', 'bank bergan API hujjatidagi asosiy manzil'], endpoint: ['Ko‘chirma endpoint', '{account_id} o‘rniga hisob ID qo‘yiladi'], api_key: ['API kalit / token', 'bank tomonidan beriladi'] }, ERP: { api_key: ['API kalit / token'] }, WEBHOOK_IN: { field_map: ['Maydonlar moslashuvi (JSON)', 'ixtiyoriy — yuboruvchi tizim boshqa nomlar ishlatsa'] }, GEMINI: { api_key: ['API kalit', 'Google AI Studio → Get API key orqali olinadi'] }, GROQ: { api_key: ['API kalit', 'console.groq.com → API Keys orqali olinadi (gsk_…)'] } };
   let bankAccounts = null;
   try { bankAccounts = (await get('/api/banking/accounts')).bank.accounts; } catch {}
   function schemaFields(a, values = {}, secrets = {}) {
     const cfg = Object.entries(a.config_schema || {}).map(([k, v]) => {
-      const [label, hint] = FIELD[k] || [k, ''];
+      const [label, hint] = FIELD_BY_TYPE[a.type]?.[k] || FIELD[k] || [k, ''];
+      const opts = Array.isArray(FIELD_OPTIONS[k]) ? FIELD_OPTIONS[k] : FIELD_OPTIONS[k]?.[a.type];
+      if (opts) return { name: 'cfg_' + k, label, hint, type: 'select', options: opts, value: values[k] ?? v };
       if (k === 'bank_account_id' && bankAccounts?.length) return { name: 'cfg_' + k, label, hint, type: 'select', options: bankAccounts.map((b) => [b.id, `${b.bank_name}${b.account_number ? ' · ' + b.account_number : ''}`]), value: values[k] ?? v };
       return { name: 'cfg_' + k, label, hint: hint || (typeof v === 'object' ? 'JSON' : ''), value: values[k] ?? (typeof v === 'object' ? JSON.stringify(v) : v), full: typeof v === 'object' || k === 'base_url' || k === 'webhook_url' };
     });
