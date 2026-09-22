@@ -2,7 +2,7 @@
 /**
  * UTAX Excel moliya jurnalini bazaga import qilish (faqat Excel ma'lumoti — demo/pilot ma'lumot yaratilmaydi).
  *
- *   node scripts/excel-import.mjs <fayl.xlsx> [--db data/finance.db] [--reset] [--dry-run] [--sheet Sheet1] [--report hisobot.json]
+ *   node scripts/excel-import.mjs <fayl.xlsx> [--db data/finance.db] [--reset] [--dry-run] [--sheet Sheet1] [--report hisobot.json] [--fix-date 69=2026-07-20]
  *
  *   --dry-run  faqat o'qish + tekshiruv + reja (bazaga hech narsa yozilmaydi)
  *   --reset    yangi toza baza: eski fayl (va -wal/-shm) <baza papkasi>/backups/ ga ko'chiriladi (o'chirilmaydi),
@@ -19,7 +19,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
 const opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
-const optNames = new Set(['--db', '--sheet', '--report']);
+const optNames = new Set(['--db', '--sheet', '--report', '--fix-date']);
 const file = args.find((a, i) => !a.startsWith('--') && !optNames.has(args[i - 1]));
 if (!file || flag('--help') || flag('-h')) {
   console.log('Foydalanish: node scripts/excel-import.mjs <fayl.xlsx> [--db data/finance.db] [--reset] [--dry-run] [--sheet <varaq>] [--report <fayl.json>]');
@@ -37,7 +37,14 @@ const { parseJournal } = await import('../src/import/excel-journal.mjs');
 const { applyJournal, verifyImport, formatReport } = await import('../src/import/apply-journal.mjs');
 const dbPath = config.dbPath;
 
-const plan = parseJournal(fs.readFileSync(file), { fileName: path.basename(file), sheet: opt('--sheet') });
+// --fix-date 69=2026-07-20 (bir nechta: 69=...,70=...) — foydalanuvchi tasdiqlagan sana tuzatishi
+const dateFixes = {};
+for (const pair of String(opt('--fix-date') || '').split(',').filter(Boolean)) {
+  const m = /^(\d+)=(\d{4}-\d{2}-\d{2})$/.exec(pair.trim());
+  if (!m) { console.error(`--fix-date noto‘g‘ri: ${pair} (kutilgan: qator=YYYY-MM-DD)`); process.exit(2); }
+  dateFixes[Number(m[1])] = m[2];
+}
+const plan = parseJournal(fs.readFileSync(file), { fileName: path.basename(file), sheet: opt('--sheet'), dateFixes });
 const writeReport = (obj) => { const p = opt('--report'); if (p) { fs.mkdirSync(path.dirname(path.resolve(p)), { recursive: true }); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); console.log(`\nHisobot (JSON): ${path.resolve(p)}`); } };
 
 if (plan.errors.length || dryRun) {
