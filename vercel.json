@@ -9,7 +9,7 @@
     "api/index.mjs": {
       "maxDuration": 60,
       "memory": 1024,
-      "includeFiles": "{public/**,src/**,package.json}"
+      "includeFiles": "{public/**,src/**,package.json,node_modules/libsql/**,node_modules/@libsql/**,node_modules/@neon-rs/**,node_modules/detect-libc/**}"
     }
   },
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
