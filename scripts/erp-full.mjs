@@ -10,14 +10,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config } from '../src/core/config.mjs'; // .env ni yuklaydi (ERP_TOKEN, ERP_BASE)
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-const base = opt('--base', 'https://api.utaxerp.uz');
-const dbFile = path.resolve(ROOT, opt('--db', 'data/finance-erp.db'));
+const base = opt('--base', config.erp.base);
+const dbFile = path.resolve(ROOT, opt('--db', process.env.DB_PATH || 'data/finance-erp.db'));
 const tokenFile = path.join(ROOT, '.erp-token');
-const token = (process.env.ERP_TOKEN || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : ''));
+const token = (process.env.ERP_TOKEN || config.erp.token || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : ''));
 if (!token) { console.error('ERP_TOKEN yo‘q (.erp-token yoki env)'); process.exit(2); }
 process.env.BOT_MODE = 'off';
 process.env.DB_PATH = dbFile;

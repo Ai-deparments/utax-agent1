@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-const dbFile = path.resolve(ROOT, opt('--db', 'data/finance-erp.db'));
+const dbFile = path.resolve(ROOT, opt('--db', process.env.DB_PATH || 'data/finance-erp.db'));
 process.env.BOT_MODE = 'off'; process.env.DB_PATH = dbFile;
 const { createApp } = await import('../src/server.mjs');
 const { erpMapAll } = await import('../src/import/erp-map.mjs');
