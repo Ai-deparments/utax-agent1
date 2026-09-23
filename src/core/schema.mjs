@@ -264,7 +264,6 @@ UPDATE users SET telegram_link_code=NULL WHERE telegram_link_code IS NOT NULL AN
     rebuild: ['contracts'],
     sql: `
 DROP TABLE IF EXISTS _v5_seq;
-DROP TABLE IF EXISTS contracts_v5;
 CREATE TABLE _v5_seq AS SELECT seq FROM sqlite_sequence WHERE name='contracts';
 CREATE TABLE contracts_v5 (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_number TEXT UNIQUE NOT NULL,
@@ -306,13 +305,33 @@ CREATE INDEX IF NOT EXISTS ix_baladj_acc ON balance_adjustments(account_type, ac
   },
 ];
 
+const tableExists = (db, name) => !!db.get('SELECT name FROM sqlite_master WHERE type=? AND name=?', 'table', name);
+
+/**
+ * Tranzaksiyasiz bajarilgan qayta qurish migratsiyasi yarmida uzilib qolgan bo'lsa (masofaviy bazada
+ * shunday bo'lishi mumkin), `<jadval>_v<versiya>` qolib ketadi. Ma'lumot yo'qotmasdan tiklaymiz:
+ *  - asl jadval yo'q, vaqtinchalikda esa bor → ko'chirish tugagan, faqat nom berilmagan: nomini beramiz;
+ *  - ikkalasi ham bor → ko'chirish yarim qolgan, ma'lumot asl jadvalda: vaqtinchalikni o'chiramiz.
+ * Shundan keyin migratsiya boshidan xavfsiz takrorlanadi.
+ */
+function repairRebuild(db, m) {
+  for (const t of m.rebuild) {
+    const tmp = `${t}_v${m.version}`;
+    if (!tableExists(db, tmp)) continue;
+    if (tableExists(db, t)) db.exec(`DROP TABLE ${tmp}`);
+    else db.exec(`ALTER TABLE ${tmp} RENAME TO ${t}`);
+  }
+}
+
 /**
  * Turso (libSQL replika): ko'p buyruqli batch ochiq tranzaksiya ichida qabul qilinmaydi —
  * `Sqlite3UnsupportedStatement`. Shuning uchun masofaviy bazada buyruqlar birma-bir, tranzaksiyasiz
- * bajariladi. Migratsiyalar idempotent (IF NOT EXISTS), shuning uchun yarmida uzilgan migratsiya
- * keyingi ishga tushishda boshidan xavfsiz takrorlanadi (schema_migrations faqat oxirida yoziladi).
+ * bajariladi. Migratsiyalar idempotent (IF NOT EXISTS), qayta qurish migratsiyasi esa avval
+ * `repairRebuild` bilan tozalanadi — shuning uchun yarmida uzilgan migratsiya keyingi ishga tushishda
+ * boshidan xavfsiz takrorlanadi (schema_migrations faqat oxirida yoziladi).
  */
 function applyRemote(db, m) {
+  if (m.rebuild) repairRebuild(db, m);
   for (const stmt of m.sql.split(';').map((s) => s.trim()).filter(Boolean)) db.exec(stmt);
   if (m.rebuild) {
     // PRAGMA'ni Turso qo'llab-quvvatlamasligi mumkin — tekshiruv imkoni bo'lsa bajariladi
