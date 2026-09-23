@@ -28,10 +28,17 @@ function norm(p) {
 function openDriver(dbPath, remote) {
   if (remote?.url) {
     const Database = createRequire(import.meta.url)('libsql');
-    const db = new Database(dbPath, { syncUrl: remote.url, authToken: remote.authToken || undefined, readYourWrites: true });
-    db.sync();
-    db.exec('PRAGMA foreign_keys = ON;');
-    return { db, kind: 'libsql', remote: true, sync: () => db.sync() };
+    // TURSO_REMOTE_ONLY=1 — lokal nusxasiz, to'g'ridan-to'g'ri ulanish. Replika rejimida ba'zi Turso bazalari
+    // sinxron sessiyaga yozishga ruxsat bermaydi ("SQL write operations are forbidden"), bundan tashqari
+    // katta bazada har sovuq start butun faylni /tmp ga yuklab oladi. To'g'ridan-to'g'ri rejimda bularning ikkisi ham yo'q.
+    const direct = process.env.TURSO_REMOTE_ONLY === '1';
+    const db = direct
+      ? new Database(remote.url, { authToken: remote.authToken || undefined })
+      : new Database(dbPath, { syncUrl: remote.url, authToken: remote.authToken || undefined, readYourWrites: true });
+    if (!direct) db.sync();
+    // Turso PRAGMA'ni rad etishi mumkin — FK tekshiruvi serverda o'z sozlamasi bilan ishlaydi
+    try { db.exec('PRAGMA foreign_keys = ON;'); } catch (e) { console.warn('[db] PRAGMA foreign_keys o‘tmadi:', e.message); }
+    return { db, kind: 'libsql', remote: true, sync: () => { if (!direct) db.sync(); } };
   }
   if (process.env.DB_DRIVER === 'libsql') { // lokal tekshiruv: libSQL drayverini sinxronlashsiz sinash (scripts/vercel-check.mjs)
     const Database = createRequire(import.meta.url)('libsql');
