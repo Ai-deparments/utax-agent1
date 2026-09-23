@@ -12,3 +12,7 @@ data/imports/
 data/import-*.json
 .vercel/
 .vercel-static/
+
+.vercel
+.env*
+.claude/settings.local.json

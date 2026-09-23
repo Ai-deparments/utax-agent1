@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "npm install --omit=dev --no-audit --no-fund",
-  "buildCommand": "mkdir -p .vercel-static && echo 'UTAX Finance: barcha so‘rovlar api/index.mjs orqali'",
+  "buildCommand": "mkdir -p .vercel-static && echo 'UTAX Finance: barcha so‘rovlar api/index.mjs orqali' > .vercel-static/build-info.txt",
   "outputDirectory": ".vercel-static",
   "regions": ["fra1"],
   "functions": {
