@@ -12,7 +12,8 @@ import { createAudit } from './core/audit.mjs';
 import { createScheduler } from './core/scheduler.mjs';
 import { buildOpenApi as _buildOpenApi } from './core/openapi.mjs';
 import { HttpError, parseUrl, readBody, sendJson, clientIp, rateLimiter } from './core/http.mjs';
-import { today } from './core/util.mjs';
+import { today, parseJson, nowIso } from './core/util.mjs';
+import { decryptSecret } from './core/auth.mjs';
 import * as auth from './modules/auth.mjs';
 import * as users from './modules/users.mjs';
 import * as companies from './modules/companies.mjs';
@@ -73,6 +74,32 @@ function registerJobs(app) {
   app.scheduler.add({ ...ag('CASH_FLOW'), everyMs: 1800e3, description: 'Likvidlik nazorati' });
   app.scheduler.add({ ...ag('BANK'), everyMs: 3600e3, description: 'Bank/ERP sync' });
   app.scheduler.add({ ...ag('RECONCILIATION'), everyMs: 3600e3, description: 'Reconciliation' });
+  app.scheduler.add({ name: 'erp-sync', everyMs: Number(config.erpSyncMs) || 3600e3, description: 'UTAXERP moliya sync (avtomatik)', fn: async () => {
+    const integ = app.db.get("SELECT * FROM integrations WHERE type='UTAXERP' AND is_active=1 ORDER BY id DESC LIMIT 1");
+    if (!integ) return { skipped: 'UTAXERP integratsiyasi ulanmagan' };
+    const cfg = parseJson(integ.config, {});
+    let sec = {}; try { sec = parseJson(decryptSecret(integ.secret_config), {}); } catch { return { error: 'token deshifrlanmadi' }; }
+    const token = sec.api_key || sec.token;
+    if (!token) return { skipped: 'token yo‘q' };
+    const { erpSync } = await import('./import/erp-sync.mjs');
+    const { res, verify } = await erpSync(app, { token, base: cfg.base_url || 'https://api.utaxerp.uz' });
+    app.db.run('UPDATE integrations SET last_sync_at=?, last_status=? WHERE id=?', nowIso(), `+${res.income} kirim · ${res.contracts} yangi shartnoma${verify.ok ? '' : ' · SOLISHTIRUV FARQ'}`, integ.id);
+    return { ...res, verify_ok: verify.ok };
+  } });
+  app.scheduler.add({ name: 'erp-full', dailyAt: config.erpFullAt || '04:00', description: 'UTAXERP to‘liq oyna (erp_raw) + kontragent INN boyitish', fn: async () => {
+    const integ = app.db.get("SELECT * FROM integrations WHERE type='UTAXERP' AND is_active=1 ORDER BY id DESC LIMIT 1");
+    if (!integ) return { skipped: 'UTAXERP integratsiyasi ulanmagan' };
+    const cfg = parseJson(integ.config, {});
+    if (cfg.full_mirror === false) return { skipped: 'to‘liq oyna o‘chirilgan (full_mirror=false)' };
+    let sec = {}; try { sec = parseJson(decryptSecret(integ.secret_config), {}); } catch { return { error: 'token deshifrlanmadi' }; }
+    const token = sec.api_key || sec.token;
+    if (!token) return { skipped: 'token yo‘q' };
+    const { erpFullMirror } = await import('./import/erp-sync.mjs');
+    const r = await erpFullMirror(app, { token, base: cfg.base_url || 'https://api.utaxerp.uz' });
+    const { erpMapAll } = await import('./import/erp-map.mjs');
+    const mapped = erpMapAll(app);
+    return { ...r, mapped };
+  } });
   app.scheduler.add({ name: 'backup', dailyAt: '03:00', description: 'Kunlik zaxira', fn: async () => { if (app.db.remote) return { skipped: 'Turso bazasi o‘z zaxirasini saqlaydi (point-in-time restore)' }; fs.mkdirSync(config.backupDir, { recursive: true }); const file = path.join(config.backupDir, `finance-${today()}.db`); if (app.db.driver === 'sqlite') { try { const { backup } = await import('node:sqlite'); await backup(app.db.raw, file); } catch { app.db.exec(`VACUUM INTO '${file}'`); } } else app.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`); const keep = Number(app.settings.get('backup.retention_days') || 60); for (const f of fs.readdirSync(config.backupDir)) { const p = path.join(config.backupDir, f); if (Date.now() - fs.statSync(p).mtimeMs > keep * 86400e3) fs.unlinkSync(p); } return { file }; } });
 }
 

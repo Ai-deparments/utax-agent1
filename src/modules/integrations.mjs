@@ -122,6 +122,49 @@ async function restTest(cfg, sec) {
 }
 const daysAgo = (n) => { const d = new Date(Date.now() - (Number(n) || 90) * 864e5); return d.toISOString().slice(0, 10); };
 
+// ---- Prisma-uslub REST (UTAXERP: POST .../find-many, tanada {take, skip, where, include}) ----
+async function postJson(url, headers, body, { timeoutMs = 30000 } = {}) {
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), timeoutMs);
+  let res;
+  try { res = await fetch(url, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ac.signal }); }
+  catch (e) { throw new Error(e.name === 'AbortError' ? 'Server javob bermadi (timeout)' : `Ulanib bo‘lmadi: ${e.cause?.code || e.message}`); }
+  finally { clearTimeout(t); }
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) throw new Error(`HTTP ${res.status} — token noto‘g‘ri/muddati o‘tgan yoki IP ruxsat etilmagan`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}${text ? ': ' + text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) : ''}`);
+  try { return JSON.parse(text); } catch { throw new Error('Javob JSON emas'); }
+}
+const prismaUrl = (cfg) => { if (!cfg.base_url) throw new Error('API manzili (base_url) kiritilmagan'); return String(cfg.base_url).replace(/\/$/, '') + (cfg.endpoint || '/api/inOutMoney/find-many'); };
+function prismaWhere(cfg, since) {
+  const from = since || daysAgo(cfg.days_back);
+  const field = cfg.since_field || 'date';
+  return from ? { [field]: { gte: new Date(from + 'T00:00:00Z').toISOString() } } : {};
+}
+async function prismaPull(cfg, sec, since) {
+  const url = prismaUrl(cfg), headers = restAuth(cfg, sec), where = prismaWhere(cfg, since);
+  const include = typeof cfg.include === 'string' ? parseJson(cfg.include, undefined) : cfg.include;
+  const take = Math.min(Number(cfg.page_size) || 200, 1000);
+  const rows = [];
+  for (let skip = 0; skip < 100000; skip += take) {
+    const body = { take, skip, where, ...(include ? { include } : {}) };
+    const data = await postJson(url, headers, body);
+    const list = listOf(data, cfg.list_path);
+    if (!list.length) break;
+    rows.push(...mapRows(list, fieldMapOf(cfg)).rows);
+    if (list.length < take) break;
+  }
+  return rows;
+}
+async function prismaTest(cfg, sec) {
+  const url = prismaUrl(cfg), headers = restAuth(cfg, sec);
+  const data = await postJson(url, headers, { take: 3, skip: 0, where: prismaWhere(cfg, daysAgo(cfg.days_back || 90)) });
+  const list = listOf(data, cfg.list_path);
+  const { rows, skipped } = mapRows(list, fieldMapOf(cfg));
+  if (list.length && !rows.length) throw new Error(`Ulandi, lekin ${list.length} ta yozuvdan sana/summa aniqlanmadi — "Maydonlar moslashuvi"ni tekshiring. Namuna kalitlar: ${Object.keys(list[0] || {}).slice(0, 12).join(', ')}`);
+  const x = rows[0];
+  return `Ulandi (Prisma): ${rows.length} ta yozuv o‘qildi${skipped ? `, ${skipped} tasi tashlab yuborildi` : ''}${x ? ` · namuna: ${x.tx_date} ${x.direction === 'INCOME' ? '+' : '−'}${x.amount.toLocaleString('ru-RU')}` : ''}`;
+}
+
 // ---- 1C: standart OData interfeysi (1C:Бухгалтерия 3.0 — "Стандартный интерфейс OData") ----
 const ONEC_DOCS = [['Document_ПоступлениеНаРасчетныйСчет', 'INCOME'], ['Document_СписаниеСРасчетногоСчета', 'EXPENSE']];
 function onecBase(cfg) { if (!cfg.base_url) throw new Error('1C baza manzili (base_url) kiritilmagan'); return String(cfg.base_url).replace(/\/$/, '').replace(/\/odata\/standard\.odata.*$/i, '') + '/odata/standard.odata/'; }
@@ -180,8 +223,10 @@ export const ADAPTERS = {
   ONE_C: { name: '1C', description: '1C:Бухгалтерия — standart OData (Поступление/Списание с расчетного счета) yoki o‘z HTTP-servisingiz (JSON). Har soatda sinxronlanadi', config_schema: { mode: 'odata', base_url: '', endpoint: '/transactions', days_back: 90, bank_account_id: 1 }, secret_schema: { username: '', password: '' },
     async test(cfg, sec) { if ((cfg.mode || 'odata') === 'odata') return onecOdataTest(cfg, sec); return restTest({ ...cfg, auth_type: 'basic' }, sec); },
     async pull(cfg, sec, since) { if ((cfg.mode || 'odata') === 'odata') return onecOdataPull(cfg, sec, since); return restPull({ ...cfg, auth_type: 'basic' }, sec, since); } },
-  ERP: { name: 'ERP', description: 'Istalgan ERP/hisob tizimining REST API (JSON) — manzil, autentifikatsiya va maydonlar sozlanadi', config_schema: { base_url: '', endpoint: '/api/bank-transactions', auth_type: 'bearer', since_param: 'from', list_path: '', field_map: {}, days_back: 90, bank_account_id: 1 }, secret_schema: { api_key: '' },
-    test: (cfg, sec) => restTest(cfg, sec), pull: (cfg, sec, since) => restPull(cfg, sec, since) },
+  ERP: { name: 'ERP', description: 'Istalgan ERP/hisob tizimining REST API (JSON) — GET (?from=) yoki Prisma POST (find-many). mode: rest | prisma', config_schema: { base_url: '', endpoint: '/api/bank-transactions', mode: 'rest', auth_type: 'bearer', since_param: 'from', since_field: 'date', list_path: '', field_map: {}, include: '', page_size: 200, days_back: 90, bank_account_id: 1 }, secret_schema: { api_key: '' },
+    test: (cfg, sec) => (cfg.mode === 'prisma' ? prismaTest(cfg, sec) : restTest(cfg, sec)), pull: (cfg, sec, since) => (cfg.mode === 'prisma' ? prismaPull(cfg, sec, since) : restPull(cfg, sec, since)) },
+  UTAXERP: { name: 'UTAXERP', description: 'UTAXERP moliya moduli (api.utaxerp.uz) — inOutMoney kirim/chiqim tranzaksiyalari. Prisma POST /find-many, Bearer token. Har soatda sinxronlanadi', config_schema: { base_url: 'https://api.utaxerp.uz', endpoint: '/api/inOutMoney/find-many', mode: 'prisma', auth_type: 'bearer', since_field: 'date', list_path: '', field_map: { date: 'date', amount: 'value', direction: 'inOrOut', purpose: 'comment', id: 'id' }, include: '', page_size: 200, days_back: 90, bank_account_id: 1 }, secret_schema: { api_key: '' },
+    test: (cfg, sec) => prismaTest(cfg, sec), pull: (cfg, sec, since) => prismaPull(cfg, sec, since) },
   TELEGRAM: { name: 'Telegram', description: '4 ta bot: rahbar, buxgalter, so‘rov, signal (BOT_*_TOKEN .env); kritik ogohlantirishlar guruhi — alert_chat_id', config_schema: { alert_chat_id: '' }, secret_schema: {},
     async test(cfg) {
       const out = [];

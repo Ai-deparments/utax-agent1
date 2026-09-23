@@ -41,6 +41,21 @@ before(async () => {
       if (doc === 'Document_СписаниеСРасчетногоСчета') return json(200, { value: [{ Ref_Key: 'r-out-1', Date: '2026-07-16T09:00:00', СуммаДокумента: 1500000, НазначениеПлатежа: 'Hosting', Контрагент: { Description: 'AHOST' } }] });
       return json(404, {});
     }
+    if (p === '/api/inOutMoney/find-many') {
+      // UTAXERP Prisma-uslub: POST, tanada {take, skip, where}. Bearer token.
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      return req.on('end', () => {
+        if (req.headers.authorization !== 'Bearer erp-jwt') return json(401, { message: 'Unauthorized' });
+        const b = JSON.parse(raw || '{}');
+        const all = [
+          { id: 'IO-1', date: '2026-07-05T00:00:00Z', value: 12500000, currency: 'UZS', inOrOut: 'INCOME', transactionType: 'Transfer', comment: 'Shartnoma to‘lovi', contractId: 'C-1' },
+          { id: 'IO-2', date: '2026-07-08T00:00:00Z', value: 3200000, currency: 'UZS', inOrOut: 'EXPENSE', transactionType: 'Cash', comment: 'Ijara iyul' },
+          { id: 'IO-3', date: '2026-07-12T00:00:00Z', value: 900000, currency: 'UZS', inOrOut: 'EXPENSE', transactionType: 'Terminal', comment: 'Internet' },
+        ];
+        json(200, all.slice(b.skip || 0, (b.skip || 0) + (b.take || 100)));
+      });
+    }
     if (p === '/sheet.csv') { res.writeHead(200, { 'content-type': 'text/csv' }); return res.end('Sana;Summa;Kontragent;Maqsad\n01.07.2026;2 000 000;DELTA;To‘lov\n02.07.2026;-350 000;Taksi;Transport\n'); }
     if (p === '/private.csv') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<html><body>Sign in</body></html>'); }
     json(404, {});
@@ -103,6 +118,21 @@ test('ERP: X-API-Key sarlavhasi, avtomatik maydonlar, manfiy summa → chiqim', 
   const t = app.db.get("SELECT * FROM bank_transactions WHERE external_id='E-1'");
   assert.equal(t.direction, 'EXPENSE'); assert.equal(t.amount, 450000);
   assert.equal(hits.at(-1).q.from, undefined, 'since_param bo‘sh — sana yuborilmaydi');
+});
+
+test('UTAXERP (Prisma POST): Bearer JWT, find-many, inOrOut→yo‘nalish, value→summa, takroriy sinxron', async () => {
+  const cfg = { base_url: base, endpoint: '/api/inOutMoney/find-many', mode: 'prisma', auth_type: 'bearer', since_field: 'date', field_map: { date: 'date', amount: 'value', direction: 'inOrOut', purpose: 'comment', id: 'id' }, page_size: 2, days_back: 90, bank_account_id: 1 };
+  await assert.rejects(ADAPTERS.UTAXERP.test(cfg, { api_key: 'wrong' }), /401 — token noto‘g‘ri/);
+  assert.match(await ADAPTERS.UTAXERP.test(cfg, { api_key: 'erp-jwt' }), /Ulandi \(Prisma\)/);
+  const before = txCount();
+  const r = await app.services.integrations.sync(add('UTAXERP', cfg, { api_key: 'erp-jwt' }), ctx);
+  assert.equal(r.created, 3, 'sahifalash (take=2) bilan 3 yozuv');
+  assert.equal(txCount(), before + 3);
+  assert.equal(app.db.get("SELECT direction FROM bank_transactions WHERE external_id='IO-1'").direction, 'INCOME');
+  assert.equal(app.db.get("SELECT amount FROM bank_transactions WHERE external_id='IO-2'").amount, 3200000);
+  assert.equal(app.db.get("SELECT direction FROM bank_transactions WHERE external_id='IO-3'").direction, 'EXPENSE');
+  const r2 = await app.services.integrations.sync(app.db.get("SELECT * FROM integrations WHERE type='UTAXERP' ORDER BY id DESC LIMIT 1"), ctx);
+  assert.equal(r2.created, 0, 'qayta sync takror yozmaydi');
 });
 
 test('1C OData: standart hujjatlar (Поступление/Списание), Basic login, $filter, kontragent $expand', async () => {
