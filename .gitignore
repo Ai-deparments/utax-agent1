@@ -12,3 +12,7 @@ data/imports/
 data/import-*.json
 .vercel/
 .vercel-static/
+
+# ERP token (hech qachon commit qilinmaydi)
+.erp-token
+ERP/

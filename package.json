@@ -21,7 +21,11 @@
     "vercel:check": "node scripts/vercel-check.mjs",
     "vault:pack": "node scripts/data-vault.mjs pack",
     "vault:unpack": "node scripts/data-vault.mjs unpack",
-    "vault:verify": "node scripts/data-vault.mjs verify"
+    "vault:verify": "node scripts/data-vault.mjs verify",
+    "erp:setup": "node scripts/erp-import.mjs && node scripts/erp-full.mjs && node scripts/erp-map.mjs",
+    "erp:sync": "node scripts/erp-import.mjs",
+    "erp:full": "node scripts/erp-full.mjs",
+    "erp:map": "node scripts/erp-map.mjs"
   },
   "license": "UNLICENSED",
   "optionalDependencies": {

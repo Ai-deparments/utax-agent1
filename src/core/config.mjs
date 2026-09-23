@@ -55,6 +55,15 @@ export const config = {
     live: !TEST_MODE || env('AI_LIVE_IN_TESTS', '') === '1',
   },
   // Telegram botlar (src/bots). TELEGRAM_BOT_TOKEN — eski yagona bot kaliti, rahbar botiga fallback.
+  // UTAXERP (api.utaxerp.uz) — moliya ma'lumoti manbai. Token FAQAT .env da (git'ga tushmaydi):
+  // repoga va tashkilotga ruxsati bor xodimgagina shaxsiy kanal orqali beriladi.
+  erp: {
+    token: env('ERP_TOKEN', ''),
+    base: env('ERP_BASE', 'https://api.utaxerp.uz'),
+    syncMs: intEnv('ERP_SYNC_MS', 3600000, 60000),
+    fullAt: env('ERP_FULL_AT', '04:00'),
+    autoRegister: env('ERP_AUTO_REGISTER', '1') !== '0',
+  },
   bots: {
     rahbar: env('BOT_RAHBAR_TOKEN', env('TELEGRAM_BOT_TOKEN', '')),
     buxgalter: env('BOT_BUXGALTER_TOKEN', ''),
