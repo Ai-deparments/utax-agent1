@@ -264,6 +264,7 @@ UPDATE users SET telegram_link_code=NULL WHERE telegram_link_code IS NOT NULL AN
     rebuild: ['contracts'],
     sql: `
 DROP TABLE IF EXISTS _v5_seq;
+DROP TABLE IF EXISTS contracts_v5;
 CREATE TABLE _v5_seq AS SELECT seq FROM sqlite_sequence WHERE name='contracts';
 CREATE TABLE contracts_v5 (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_number TEXT UNIQUE NOT NULL,
