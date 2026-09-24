@@ -89,6 +89,33 @@ npm run vercel:check
 
 Skript `api/index.mjs` ni Vercel muhitiga o'xshatib ishga tushiradi va 18 ta tekshiruv o'tkazadi: libSQL drayveri, cron, login, asosiy sahifalar va yozish. Haqiqiy baza o'zgarmaydi, uning nusxasi ishlatiladi.
 
+**Muhim:** bu tekshiruv lokal libSQL **fayli** bilan ishlaydi, shuning uchun Turso serveriga xos farqlarni ko'rmaydi. Turso ulangach:
+
+```bash
+npm run turso:check
+```
+
+`.env` dagi `TURSO_*` bilan ulanib, barcha asosiy API yo'llarini haqiqiy Turso bazasiga qarshi ishga tushiradi va javoblardagi KATTA HARFLI kalitlarni skanerdan o'tkazadi (quyidagi 5.1 ga qarang).
+
+### 5.1 Turso'ning SQLite'dan farqlari (amalda uchragan)
+
+| Muammo | Belgisi | Yechim |
+|---|---|---|
+| Ko'p buyruqli SQL ochiq tranzaksiya ichida | `Sqlite3UnsupportedStatement` | migratsiya masofaviy bazada birma-bir bajariladi (`schema.mjs: applyRemote`) |
+| `CREATE TEMP TABLE` keyingi buyruqda yo'qoladi | `no such table: TEMP._v5_seq` | vaqtinchalik jadval oddiy jadval sifatida yaratiladi |
+| `GROUP BY`siz `HAVING` | `SQL_PARSE_ERROR: near HAVING` | `GROUP BY` qo'shiladi (SQLite kechiradi, Turso yo'q) |
+| Kalit so'z taxalluslari (`AS first`, `AS last`) | ustun nomi KATTA HARFDA qaytadi, frontend topa olmaydi | neytral nom (`span_first`), API shakli JS'da yig'iladi |
+| `PRAGMA` | rad etilishi mumkin | `try/catch` ichida (`db.mjs`) |
+
+### 5.2 Ma'lumotni Turso'ga yuborish
+
+ERP'dan to'liq tortishni Vercel funksiyasida bajarib **bo'lmaydi** — 60 soniya chegarasi (`Task timed out`, keyin `database is locked`). Shuning uchun:
+
+1. Sinxron lokalda (yoki doimiy serverda) ishlaydi: `npm run erp:setup`
+2. Natija Turso'ga ko'chiriladi: `npm run turso:push` (`--dry` bilan avval solishtirib ko'rish mumkin)
+
+`erp_raw` ataylab yuborilmaydi: u 186 mingdan ortiq xom yozuv, saytda ishlatilmaydi va bazani 0,8 MB dan 166 MB ga kattalashtiradi. Nusxa (embedded replica) rejimida har sovuq start bazani to'liq yuklab oladi, shuning uchun hajm muhim.
+
 ## 6. Cheklovlar (bilish kerak)
 
 - **Fayllar:** botlar orqali yuklangan fayllar (`uploads`) Vercel'da `/tmp` ga tushadi va saqlanmaydi. Doimiy fayl saqlash kerak bo'lsa, Vercel Blob yoki S3 kerak bo'ladi.
