@@ -3,8 +3,13 @@ import { actionLabel, ROLE_LABEL, h, kpiCard, card, fmt, money, short, date, dt,
 
 let META = null;
 export default async function render(root, { setTitle, can, params, query, navigate, me }) {
-  META ??= await get('/api/contracts/meta');
-  const companies = await get('/api/companies');
+  // Uchala so'rov bir vaqtda ketadi (ilgari ketma-ket edi: meta → kontragentlar → shartnomalar).
+  // Masofadan har so'rov alohida tarmoq safari, shuning uchun sahifa uch barobar kech ochilardi.
+  const metaP = META ? Promise.resolve(META) : get('/api/contracts/meta');
+  const companiesP = get('/api/companies');
+  let rowsP = get('/api/contracts');
+  META = await metaP;
+  const companies = await companiesP;
   const box = h('div', {});
   const stats = h('div', { class: 'kpis mb16' });
   const cols = [
@@ -14,7 +19,8 @@ export default async function render(root, { setTitle, can, params, query, navig
   ];
   const table = dataTable({ columns: cols, rows: [], onRow: (r) => openDetail(r.id), dateKey: 'contract_date', exportName: 'shartnomalar', filters: [{ key: 'contract_status', label: 'Holat', options: META.contract_statuses }, { key: 'service_name', label: 'Xizmat turi', options: META.service_types.map((s) => [s.name, s.name]) }, { key: 'manager_name', label: 'Menejer', options: META.managers.map((m) => [m.name, m.name]) }] });
   async function load() {
-    let rows = await get('/api/contracts');
+    let rows = await (rowsP || get('/api/contracts'));
+    rowsP = null; // birinchi yuklashdan keyin har safar yangisi olinadi
     if (query.company) rows = rows.filter((c) => String(c.company_id) === String(query.company));
     table.setRows(rows);
     const active = rows.filter((c) => !['DRAFT', 'CANCELLED', 'CLOSED'].includes(c.contract_status));
