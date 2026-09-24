@@ -220,7 +220,10 @@ export async function prepareApp(app) {
     const a = ensureBootstrapAdmin(app, config.admin);
     console.log(`[admin] ADMIN_EMAIL: ${a.action}${a.reason ? ' — ' + a.reason : ''}`);
   }
-  app.services.contracts.recomputeAll();
+  // Serverless (Vercel): har sovuq startda barcha shartnomani qayta hisoblash — eng qimmat qadam
+  // (353 shartnomada sekundlar, masofaviy bazada undan ham ko'p) va u har instansiyada takrorlanadi.
+  // Natija bazada saqlanadi, shuning uchun bu ishni `recompute-contracts` cron vazifasi bajaradi.
+  if (!ON_VERCEL) app.services.contracts.recomputeAll();
   if (config.botOwnerIds.length) { ensureOwners(app, config.botOwnerIds); console.log(`[bots] egalar (FOUNDER): ${config.botOwnerIds.length} ta Telegram id`); }
   ensureErpIntegration(app);
   return app;
