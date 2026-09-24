@@ -19,7 +19,12 @@ async function init() {
   if (!process.env.TURSO_DATABASE_URL && !process.env.LIBSQL_URL) {
     console.warn('[vercel] TURSO_DATABASE_URL berilmagan — baza /tmp da, har ishga tushishda YO‘QOLADI. Faqat sinov uchun.');
   }
-  const app = await prepareApp(createApp());
+  // Sovuq start narxi loglarda ko'rinib tursin: bu yerda baza ochiladi (nusxa rejimida — sinxronlash)
+  const t0 = Date.now();
+  const app0 = createApp();
+  const tDb = Date.now() - t0;
+  const app = await prepareApp(app0);
+  console.log(`[vercel] init: baza ${tDb} ms · jami ${Date.now() - t0} ms · drayver ${app.db.driver}${app.db.remote ? ' (masofaviy)' : ''}`);
   if (config.botMode === 'webhook') {
     // Webhook rejimida doimiy jarayon kerak emas: Telegram update'larni POST /telegram/<bot> ga yuboradi
     try { await startBots(app); } catch (e) { console.error('[bots] ishga tushmadi:', e.message); }
