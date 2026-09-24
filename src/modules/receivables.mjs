@@ -4,6 +4,35 @@ import { nowIso, today, round2, addDays, daysBetween, sum } from '../core/util.m
 export function register(app) {
   const { r, db, audit, settings } = app;
 
+  /**
+   * Shartnomalar ro'yxati uchun to'lov jadvallarini BITTA so'rovda olib, contract_id bo'yicha guruhlaydi.
+   * (Ilgari har shartnoma uchun alohida so'rov ketardi — masofaviy bazada har biri alohida tarmoq safari.)
+   * SQLite parametr chegarasiga urilmaslik uchun 500 tadan bo'lib so'raladi.
+   */
+  function scheduleMap(ids) {
+    const map = new Map();
+    for (let i = 0; i < ids.length; i += 500) {
+      const part = ids.slice(i, i + 500);
+      if (!part.length) break;
+      for (const s of db.all(`SELECT * FROM payment_schedules WHERE contract_id IN (${part.map(() => '?').join(',')}) ORDER BY due_date, id`, ...part)) {
+        const list = map.get(s.contract_id);
+        if (list) list.push(s); else map.set(s.contract_id, [s]);
+      }
+    }
+    return map;
+  }
+
+  /** Shu sanagacha to'langan summa, shartnomalar bo'yicha — bitta so'rovda (o'tgan sanaga taqqoslash uchun) */
+  function paidAsOfMap(ids, asOf) {
+    const map = new Map();
+    for (let i = 0; i < ids.length; i += 500) {
+      const part = ids.slice(i, i + 500);
+      if (!part.length) break;
+      for (const p of db.all(`SELECT contract_id, COALESCE(SUM(amount),0) s FROM payments WHERE reversed_at IS NULL AND paid_at<=? AND contract_id IN (${part.map(() => '?').join(',')}) GROUP BY contract_id`, asOf, ...part)) map.set(p.contract_id, p.s);
+    }
+    return map;
+  }
+
   function bucketOf(days) {
     if (days <= 0) return 'CURRENT';
     if (days <= 7) return '0-7';
@@ -27,11 +56,18 @@ export function register(app) {
       let rows = app.services.contracts.list({ active: true, service_code: f.service, manager_user_id: f.manager_user_id, company_id: f.company_id });
       // O'tgan sana: shu sanagacha tuzilgan shartnomalar va shu sanagacha kelgan to'lovlar bo'yicha
       // (shartnoma sanasi noma'lum — NULL, masalan Excel importi — chiqarib tashlanmaydi: sanasi yo'q qarz yo'qolib qolmasin)
-      if (asOf < today()) rows = rows.filter((c) => !c.contract_date || c.contract_date <= asOf).map((c) => { const paid = round2(db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE contract_id=? AND reversed_at IS NULL AND paid_at<=?', c.id, asOf).s); return { ...c, paid, remaining: round2(Math.max(0, c.amount - paid)) }; });
+      if (asOf < today()) {
+        rows = rows.filter((c) => !c.contract_date || c.contract_date <= asOf);
+        const paidMap = paidAsOfMap(rows.map((c) => c.id), asOf);
+        rows = rows.map((c) => { const paid = round2(paidMap.get(c.id) || 0); return { ...c, paid, remaining: round2(Math.max(0, c.amount - paid)) }; });
+      }
       rows = rows.filter((c) => c.remaining > 0.005);
+      // Barcha jadval qatorlari bitta so'rovda olinadi. Ilgari har shartnoma uchun alohida so'rov
+      // ketardi (195 qarzdorda — 195 so'rov); masofaviy bazada har biri alohida tarmoq safari.
+      const byContract = scheduleMap(rows.map((c) => c.id));
       rows = rows.map((c) => {
         // To'lovlarni jadvalga FIFO taqsimlash → to'lanmagan qismlar (portions) va ularning muddati
-        const schedules = db.all('SELECT * FROM payment_schedules WHERE contract_id=? ORDER BY due_date, id', c.id);
+        const schedules = byContract.get(c.id) || [];
         let paidLeft = c.paid;
         const portions = [];
         for (const s of schedules) { const alloc = Math.min(paidLeft, s.amount); paidLeft = round2(paidLeft - alloc); const unpaid = round2(s.amount - alloc); if (unpaid > 0.005) portions.push({ due: s.due_date, amount: unpaid, kind: s.kind }); }
