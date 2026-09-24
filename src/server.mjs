@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config } from './core/config.mjs';
+import { config, ON_VERCEL } from './core/config.mjs';
 import { openDb } from './core/db.mjs';
 import { migrate } from './core/schema.mjs';
 import { Router } from './core/router.mjs';
@@ -74,7 +74,12 @@ function registerJobs(app) {
   app.scheduler.add({ ...ag('CASH_FLOW'), everyMs: 1800e3, description: 'Likvidlik nazorati' });
   app.scheduler.add({ ...ag('BANK'), everyMs: 3600e3, description: 'Bank/ERP sync' });
   app.scheduler.add({ ...ag('RECONCILIATION'), everyMs: 3600e3, description: 'Reconciliation' });
+  // Serverless (Vercel): ERP sinxroni funksiyaning 60 s chegarasiga sig'maydi — urinish "Task timed out"
+  // bilan uziladi va yarim qolgan yozuv bazani qulflaydi. U yerda sinxron doimiy serverda/lokalda
+  // ishlaydi, natija `npm run turso:push` bilan ko'chiriladi (DEPLOY-VERCEL.md §5.2).
+  const ERP_SKIP = { skipped: 'serverless: ERP sinxroni lokal/doimiy serverda ishlaydi (erp:setup → turso:push)' };
   app.scheduler.add({ name: 'erp-sync', everyMs: config.erp.syncMs, description: 'UTAXERP moliya sync (avtomatik)', fn: async () => {
+    if (ON_VERCEL) return ERP_SKIP;
     const integ = app.db.get("SELECT * FROM integrations WHERE type='UTAXERP' AND is_active=1 ORDER BY id DESC LIMIT 1");
     if (!integ) return { skipped: 'UTAXERP integratsiyasi ulanmagan' };
     const cfg = parseJson(integ.config, {});
@@ -87,6 +92,7 @@ function registerJobs(app) {
     return { ...res, verify_ok: verify.ok };
   } });
   app.scheduler.add({ name: 'erp-full', dailyAt: config.erp.fullAt, description: 'UTAXERP to‘liq oyna (erp_raw) + kontragent INN boyitish', fn: async () => {
+    if (ON_VERCEL) return ERP_SKIP;
     const integ = app.db.get("SELECT * FROM integrations WHERE type='UTAXERP' AND is_active=1 ORDER BY id DESC LIMIT 1");
     if (!integ) return { skipped: 'UTAXERP integratsiyasi ulanmagan' };
     const cfg = parseJson(integ.config, {});
@@ -167,10 +173,10 @@ export function createHandler(app) {
       if (p === '/api/cron/tick') {
         if (!config.cronSecret || req.headers.authorization !== `Bearer ${config.cronSecret}`) throw new HttpError(401, 'UNAUTHORIZED', 'Cron kaliti noto‘g‘ri');
         const started = Date.now();
-        await app.scheduler.tick();
+        const tickRes = await app.scheduler.tick({ budgetMs: 45000 });
         // Serverless'da bot intervallari ishonchli ishlamaydi — yuborilmay qolgan Telegram xabarlari cron bilan qayta yuboriladi
         try { await app.bots?.retryPending?.(); app.bots?.dialogs?.purgeExpired?.(); } catch (e) { console.warn('[cron] bot retry:', e.message); }
-        return sendJson(res, 200, { ok: true, ms: Date.now() - started, jobs: app.scheduler.list().map((j) => ({ name: j.name, last_run: j.last_run })) });
+        return sendJson(res, 200, { ok: true, ms: Date.now() - started, ...tickRes, jobs: app.scheduler.list().map((j) => ({ name: j.name, last_run: j.last_run })) });
       }
       if (p === '/api/openapi.json') { openapiCache ??= _buildOpenApi(app.r); return sendJson(res, 200, openapiCache); }
       if (p === '/api/docs') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(SWAGGER); }

@@ -118,6 +118,10 @@ export function openDb(dbPath, { remote = remoteFromEnv() } = {}) {
 
 /** TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN) — libSQL masofaviy baza; bo'lmasa lokal node:sqlite */
 export function remoteFromEnv() {
+  // Testlarda masofaviy baza HECH QACHON ishlatilmaydi: `.env` da TURSO_* bo'lsa, fayl bazasi bilan
+  // ishlaydigan testlar ishlab turgan Turso bazasiga ulanib, to'qima ma'lumotni yozib yuborardi
+  // (1-QOIDA buzilishi). Test rejimida har doim lokal fayl/xotira.
+  if (process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === 'test') return null;
   const url = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL || '';
   return url ? { url, authToken: process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN || '' } : null;
 }
