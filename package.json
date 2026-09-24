@@ -26,7 +26,8 @@
     "erp:sync": "node scripts/erp-import.mjs",
     "erp:full": "node scripts/erp-full.mjs",
     "erp:map": "node scripts/erp-map.mjs",
-    "turso:check": "node scripts/turso-check.mjs"
+    "turso:check": "node scripts/turso-check.mjs",
+    "turso:push": "node scripts/turso-push.mjs"
   },
   "license": "UNLICENSED",
   "optionalDependencies": {
