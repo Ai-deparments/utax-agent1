@@ -24,7 +24,7 @@ const PATHS = [
 ];
 
 const size = (v) => (Array.isArray(v) ? `${v.length} ta` : v && typeof v === 'object' ? `${Object.keys(v).length} maydon` : String(v));
-let ok = 0; const bad = []; const upper = [];
+let ok = 0; const bad = []; const upper = []; const times = [];
 
 // Turso kalit so'z bo'lgan SQL taxalluslarini KATTA HARFDA qaytaradi (masalan `MIN(d) first` → FIRST).
 // Bunday kalit frontendga mos kelmaydi va jimgina buziladi — javoblarni skanerdan o'tkazamiz.
@@ -44,7 +44,11 @@ for (const full of PATHS) {
   if (!m) { bad.push([full, 'ROUTE YO‘Q']); continue; }
   const ctx = { req: { headers: {} }, res: { writableEnded: false }, params: m.params, query, ip: '127.0.0.1', source: 'WEB', user, body: {} };
   try {
+    const t0 = Date.now();
     const out = await m.route.handler(ctx);
+    const ms = Date.now() - t0;
+    const bytes = JSON.stringify(out ?? null).length;
+    times.push([full, ms, bytes]);
     ok++;
     scanKeys(out, full);
     let extra = '';
@@ -53,7 +57,7 @@ for (const full of PATHS) {
       const rows = out.rows || out.items || out.data;
       extra = Array.isArray(rows) ? `${rows.length} qator` : Object.keys(out).slice(0, 6).map((k) => `${k}=${size(out[k])}`).join(' · ');
     }
-    console.log(`  OK   ${full.padEnd(38)} ${extra}`);
+    console.log(`  OK   ${full.padEnd(38)} ${String(ms).padStart(6)} ms  ${String(Math.round(bytes / 1024)).padStart(5)} KB  ${extra}`);
   } catch (e) {
     bad.push([full, e.message]);
     console.log(`  XATO ${full.padEnd(38)} ${e.message.slice(0, 110)}`);

@@ -1,4 +1,5 @@
 import { URL } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 export class HttpError extends Error {
   constructor(status, code, message, details) {
@@ -43,10 +44,30 @@ export async function readBody(req, limit = 25 * 1024 * 1024) {
   return { raw };
 }
 
+/**
+ * Javobni gzip bilan siqish. Vercel Node funksiyalarining javobini o'zi siqmaydi, shuning uchun
+ * katta ro'yxatlar (masalan 353 shartnoma — 345 KB JSON) to'liq holda tarmoqdan o'tardi.
+ * `res.gzip` — so'rov boshida qo'yiladi (createHandler), mijoz gzip qabul qilsa true.
+ * Kichik javobni siqish foyda bermaydi (CPU + sarlavha), shuning uchun chegara bor.
+ */
+const GZIP_MIN = 1400;
+// Javob obyektiga oddiy xususiyat qo'shib bo'lmaydi (Node'da o'rnatilmaydi), shuning uchun WeakSet
+const gzipClients = new WeakSet();
+/** So'rov boshida: mijoz gzip qabul qiladimi (createHandler chaqiradi) */
+export function setGzip(res, ok) { if (ok) gzipClients.add(res); else gzipClients.delete(res); }
+export function sendBuffer(res, status, buf, headers = {}) {
+  if (gzipClients.has(res) && buf.length >= GZIP_MIN) {
+    const z = gzipSync(buf);
+    res.writeHead(status, { ...headers, 'Content-Encoding': 'gzip', 'Content-Length': z.length, Vary: 'Accept-Encoding' });
+    return res.end(z);
+  }
+  res.writeHead(status, { ...headers, 'Content-Length': buf.length });
+  res.end(buf);
+}
+
 export function sendJson(res, status, data, headers = {}) {
-  const body = JSON.stringify(data);
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
-  res.end(body);
+  const body = Buffer.from(JSON.stringify(data), 'utf8');
+  sendBuffer(res, status, body, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
 }
 
 export function clientIp(req) {

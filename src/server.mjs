@@ -11,7 +11,7 @@ import { createSettings } from './core/settings.mjs';
 import { createAudit } from './core/audit.mjs';
 import { createScheduler } from './core/scheduler.mjs';
 import { buildOpenApi as _buildOpenApi } from './core/openapi.mjs';
-import { HttpError, parseUrl, readBody, sendJson, clientIp, rateLimiter } from './core/http.mjs';
+import { HttpError, parseUrl, readBody, sendJson, clientIp, rateLimiter, sendBuffer, setGzip } from './core/http.mjs';
 import { today, parseJson, nowIso } from './core/util.mjs';
 import { decryptSecret, encryptSecret } from './core/auth.mjs';
 import * as auth from './modules/auth.mjs';
@@ -126,6 +126,7 @@ function frontendBuild() {
 }
 // Telegram Mini App: web.telegram.org ilovani iframe'da ochadi — faqat Telegram domenlariga ruxsat (X-Frame-Options'dan ustun)
 const FRAME_ANCESTORS = "frame-ancestors 'self' https://web.telegram.org https://webk.telegram.org https://webz.telegram.org";
+const TEXT_EXT = new Set(['.js', '.mjs', '.css', '.html', '.json', '.svg', '.webmanifest', '.map', '.txt']);
 function serveStatic(reqPath, res) {
   let versioned = false;
   const vm = /^\/v\/[a-z0-9]+(\/.*)$/.exec(reqPath);
@@ -140,10 +141,12 @@ function serveStatic(reqPath, res) {
   if (p === path.join(config.publicDir, 'index.html')) {
     const build = frontendBuild();
     const html = fs.readFileSync(p, 'utf8').replace(/(href|src)="\/(css|js)\//g, `$1="/v/${build}/$2/`).replace('<head>', `<head>\n<meta name="app-build" content="${build}">`);
-    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'Content-Security-Policy': FRAME_ANCESTORS });
-    return res.end(html);
+    return sendBuffer(res, 200, Buffer.from(html, 'utf8'), { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'Content-Security-Policy': FRAME_ANCESTORS });
   }
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': versioned ? 'public, max-age=31536000, s-maxage=31536000, immutable' : 'no-cache', ...(ext === '.html' ? { 'Content-Security-Policy': FRAME_ANCESTORS } : {}) });
+  const head = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': versioned ? 'public, max-age=31536000, s-maxage=31536000, immutable' : 'no-cache', ...(ext === '.html' ? { 'Content-Security-Policy': FRAME_ANCESTORS } : {}) };
+  // Matnli aktivlar (js/css/svg/json) siqiladi; rasm va shrift allaqachon siqilgan — oqim bilan beriladi
+  if (TEXT_EXT.has(ext)) return sendBuffer(res, 200, fs.readFileSync(p), head);
+  res.writeHead(200, head);
   fs.createReadStream(p).pipe(res);
 }
 const SWAGGER = `<!doctype html><html><head><meta charset="utf-8"><title>UTAX Finance API</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="ui"></div><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/api/openapi.json',dom_id:'#ui',persistAuthorization:true})</script></body></html>`;
@@ -157,6 +160,8 @@ export function createHandler(app) {
   const apiLimit = rateLimiter({ windowMs: 60_000, max: 900 });
   let openapiCache = null;
   return async (req, res) => {
+    // Javobni siqish (sendJson/serveStatic shuni tekshiradi) — Vercel funksiya javobini o'zi siqmaydi
+    setGzip(res, /gzip/.test(String(req.headers['accept-encoding'] || '')));
     const started = Date.now();
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
