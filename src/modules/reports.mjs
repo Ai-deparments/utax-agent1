@@ -285,7 +285,7 @@ export function register(app) {
   };
   app.services.reports = svc;
 
-  r.get('/api/dashboard', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr; auto=1 — joriy oy bo‘sh bo‘lsa oxirgi ma’lumotli oy)', query: ['from', 'to', 'auto'] }, async (ctx) => {
+  r.get('/api/dashboard', { cache: true, perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr; auto=1 — joriy oy bo‘sh bo‘lsa oxirgi ma’lumotli oy)', query: ['from', 'to', 'auto'] }, async (ctx) => {
     const { from, to, auto } = ctx.query;
     if (from && to && from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas');
     // auto=1: avval web ikki marta so'rardi (birinchisi faqat data_span ni bilish uchun). Endi davrni server tanlaydi.
@@ -296,8 +296,8 @@ export function register(app) {
     }
     return svc.dashboard(from && to ? { from, to } : null, ctx.user);
   });
-  r.get('/api/reports/trends', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'Oylik trendlar (pul oqimi, daromad, P&L)', query: ['months'] }, async (ctx) => svc.trends(ctx.query.months));
-  r.get('/api/treasury', { perm: ['treasury', 'VIEW'], tags: ['reports'], summary: 'Pul boshqaruvi: bank/kassa/avans/available/kutilayotgan; from+to berilsa — shu davrdagi kirim/chiqim', query: ['as_of', 'from', 'to'] }, async (ctx) => {
+  r.get('/api/reports/trends', { cache: true, perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'Oylik trendlar (pul oqimi, daromad, P&L)', query: ['months'] }, async (ctx) => svc.trends(ctx.query.months));
+  r.get('/api/treasury', { cache: true, perm: ['treasury', 'VIEW'], tags: ['reports'], summary: 'Pul boshqaruvi: bank/kassa/avans/available/kutilayotgan; from+to berilsa — shu davrdagi kirim/chiqim', query: ['as_of', 'from', 'to'] }, async (ctx) => {
     const to = ctx.query.to || ctx.query.as_of || today();
     const t = svc.treasury(to);
     if (ctx.query.from) {
@@ -312,9 +312,9 @@ export function register(app) {
     }
     return t;
   });
-  r.get('/api/reports/pnl', { perm: ['pnl', 'VIEW'], tags: ['reports'], summary: 'P&L (day/week/month/quarter/year/custom)', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.pnl(ctx.query));
-  r.get('/api/reports/service-profitability', { perm: ['pnl', 'VIEW'], tags: ['reports'], summary: 'Xizmat turlari rentabelligi', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.serviceProfitability(ctx.query));
-  r.get('/api/reports/cash-flow', { perm: ['cashflow', 'VIEW'], tags: ['reports'], summary: 'Cash Flow (operating/investing/financing)', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.cashFlow(ctx.query));
-  r.get('/api/reports/balance-sheet', { perm: ['balance', 'VIEW'], tags: ['reports'], summary: 'Boshqaruv balansi', query: ['as_of'] }, async (ctx) => svc.balance(ctx.query.as_of || today()));
-  r.get('/api/reports/data-quality', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'Data Quality Agent hisoboti' }, async () => svc.dataQuality());
+  r.get('/api/reports/pnl', { cache: true, perm: ['pnl', 'VIEW'], tags: ['reports'], summary: 'P&L (day/week/month/quarter/year/custom)', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.pnl(ctx.query));
+  r.get('/api/reports/service-profitability', { cache: true, perm: ['pnl', 'VIEW'], tags: ['reports'], summary: 'Xizmat turlari rentabelligi', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.serviceProfitability(ctx.query));
+  r.get('/api/reports/cash-flow', { cache: true, perm: ['cashflow', 'VIEW'], tags: ['reports'], summary: 'Cash Flow (operating/investing/financing)', query: ['period', 'month', 'from', 'to'] }, async (ctx) => svc.cashFlow(ctx.query));
+  r.get('/api/reports/balance-sheet', { cache: true, perm: ['balance', 'VIEW'], tags: ['reports'], summary: 'Boshqaruv balansi', query: ['as_of'] }, async (ctx) => svc.balance(ctx.query.as_of || today()));
+  r.get('/api/reports/data-quality', { cache: true, perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'Data Quality Agent hisoboti' }, async () => svc.dataQuality());
 }
