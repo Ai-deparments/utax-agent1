@@ -44,7 +44,23 @@ export function createScheduler({ db, log = console }) {
       if (!j) throw new Error('Job topilmadi: ' + name);
       return runJob(j, force);
     },
-    async tick() { for (const j of jobs) await runJob(j); },
+    /**
+     * Vaqti kelgan vazifalarni bajaradi. `budgetMs` berilsa (serverless: Vercel funksiyasining
+     * chegarasi 60 s), budjet tugagach to'xtaydi — qolgan vazifalar keyingi chaqiruvda bajariladi,
+     * chunki har bir vazifaning last_run'i alohida saqlanadi. Aks holda butun so'rov timeout bilan
+     * uzilib, hech bir vazifa yozib qo'yilmasdi va baza qulflanib qolardi.
+     */
+    async tick({ budgetMs = 0 } = {}) {
+      const t0 = Date.now();
+      const done = []; const skipped = [];
+      for (const j of jobs) {
+        if (budgetMs && Date.now() - t0 > budgetMs) { skipped.push(j.name); continue; }
+        await runJob(j);
+        done.push(j.name);
+      }
+      if (skipped.length) log.info?.(`[scheduler] budjet tugadi (${Date.now() - t0}ms) — keyingi chaqiruvga qoldi: ${skipped.join(', ')}`);
+      return { done, skipped };
+    },
     start(intervalMs = 60000) {
       timer = setInterval(() => this.tick().catch(() => {}), intervalMs);
       timer.unref();

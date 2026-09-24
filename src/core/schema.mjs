@@ -263,7 +263,8 @@ UPDATE users SET telegram_link_code=NULL WHERE telegram_link_code IS NOT NULL AN
     // SQLite ustun cheklovini ALTER bilan olib tashlamaydi → jadval qayta quriladi (ma'lumot, id, indekslar, FK saqlanadi).
     rebuild: ['contracts'],
     sql: `
-CREATE TEMP TABLE _v5_seq AS SELECT seq FROM sqlite_sequence WHERE name='contracts';
+DROP TABLE IF EXISTS _v5_seq;
+CREATE TABLE _v5_seq AS SELECT seq FROM sqlite_sequence WHERE name='contracts';
 CREATE TABLE contracts_v5 (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_number TEXT UNIQUE NOT NULL,
   company_id INTEGER NOT NULL REFERENCES companies(id), service_type_id INTEGER NOT NULL REFERENCES service_types(id),
@@ -285,8 +286,8 @@ DROP TABLE contracts;
 ALTER TABLE contracts_v5 RENAME TO contracts;
 CREATE INDEX IF NOT EXISTS ix_contracts_company ON contracts(company_id);
 CREATE INDEX IF NOT EXISTS ix_contracts_status ON contracts(contract_status);
-UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE((SELECT MAX(seq) FROM temp._v5_seq), 0)) WHERE name='contracts';
-DROP TABLE temp._v5_seq;
+UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE((SELECT MAX(seq) FROM _v5_seq), 0)) WHERE name='contracts';
+DROP TABLE _v5_seq;
 `,
   },
   {
@@ -304,11 +305,49 @@ CREATE INDEX IF NOT EXISTS ix_baladj_acc ON balance_adjustments(account_type, ac
   },
 ];
 
+const tableExists = (db, name) => !!db.get('SELECT name FROM sqlite_master WHERE type=? AND name=?', 'table', name);
+
+/**
+ * Tranzaksiyasiz bajarilgan qayta qurish migratsiyasi yarmida uzilib qolgan bo'lsa (masofaviy bazada
+ * shunday bo'lishi mumkin), `<jadval>_v<versiya>` qolib ketadi. Ma'lumot yo'qotmasdan tiklaymiz:
+ *  - asl jadval yo'q, vaqtinchalikda esa bor → ko'chirish tugagan, faqat nom berilmagan: nomini beramiz;
+ *  - ikkalasi ham bor → ko'chirish yarim qolgan, ma'lumot asl jadvalda: vaqtinchalikni o'chiramiz.
+ * Shundan keyin migratsiya boshidan xavfsiz takrorlanadi.
+ */
+function repairRebuild(db, m) {
+  for (const t of m.rebuild) {
+    const tmp = `${t}_v${m.version}`;
+    if (!tableExists(db, tmp)) continue;
+    if (tableExists(db, t)) db.exec(`DROP TABLE ${tmp}`);
+    else db.exec(`ALTER TABLE ${tmp} RENAME TO ${t}`);
+  }
+}
+
+/**
+ * Turso (libSQL replika): ko'p buyruqli batch ochiq tranzaksiya ichida qabul qilinmaydi —
+ * `Sqlite3UnsupportedStatement`. Shuning uchun masofaviy bazada buyruqlar birma-bir, tranzaksiyasiz
+ * bajariladi. Migratsiyalar idempotent (IF NOT EXISTS), qayta qurish migratsiyasi esa avval
+ * `repairRebuild` bilan tozalanadi — shuning uchun yarmida uzilgan migratsiya keyingi ishga tushishda
+ * boshidan xavfsiz takrorlanadi (schema_migrations faqat oxirida yoziladi).
+ */
+function applyRemote(db, m) {
+  if (m.rebuild) repairRebuild(db, m);
+  for (const stmt of m.sql.split(';').map((s) => s.trim()).filter(Boolean)) db.exec(stmt);
+  if (m.rebuild) {
+    // PRAGMA'ni Turso qo'llab-quvvatlamasligi mumkin — tekshiruv imkoni bo'lsa bajariladi
+    let bad = [];
+    try { bad = db.all('PRAGMA foreign_key_check').filter((x) => m.rebuild.includes(x.table) || m.rebuild.includes(x.parent)); } catch { bad = []; }
+    if (bad.length) throw new Error(`Migratsiya ${m.version}: FK buzildi (${bad.length} ta, masalan ${bad[0].table}#${bad[0].rowid} → ${bad[0].parent})`);
+  }
+  db.run('INSERT INTO schema_migrations (version,name,applied_at) VALUES (?,?,?)', m.version, m.name, new Date().toISOString());
+}
+
 export function migrate(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)`);
   const applied = new Set(db.all('SELECT version FROM schema_migrations').map((r) => r.version));
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
+    if (db.remote) { applyRemote(db, m); continue; }
     // Jadvalni qayta qurish (m.rebuild): SQLite hujjatidagi tartib — FK tekshiruvi tranzaksiyadan TASHQARIDA o'chiriladi
     // (aks holda DROP TABLE bola jadvallardagi havolalarni buzadi), oxirida foreign_key_check bilan tekshiriladi.
     if (m.rebuild) db.exec('PRAGMA foreign_keys = OFF');
