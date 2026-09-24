@@ -4,7 +4,7 @@
   "installCommand": "npm install --omit=dev --no-audit --no-fund",
   "buildCommand": "mkdir -p .vercel-static && echo 'UTAX Finance: barcha so‘rovlar api/index.mjs orqali' > .vercel-static/build-info.txt",
   "outputDirectory": ".vercel-static",
-  "regions": ["fra1"],
+  "regions": ["dub1"],
   "functions": {
     "api/index.mjs": {
       "maxDuration": 60,
