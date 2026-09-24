@@ -69,6 +69,18 @@ export function openDb(dbPath, { remote = remoteFromEnv() } = {}) {
     return s;
   };
   let depth = 0;
+  /**
+   * So'rov ichidagi o'qish keshi. Bitta HTTP so'rov davomida AYNAN bir xil SQL + parametr
+   * qayta so'ralsa, bazaga ikkinchi marta borilmaydi. Lokal SQLite'da bu sezilmaydi, Turso'da esa
+   * har bir takror o'qish alohida tarmoq so'rovi (~25 ms) edi — dashboard 20 ga yaqin takror o'qirdi.
+   *
+   * Xavfsizlik: har qanday yozuv (run/exec/tx) keshni butunlay tozalaydi, shuning uchun eskirgan
+   * qiymat qaytmaydi. Kesh har so'rov boshida yangidan ochiladi (createHandler), shuning uchun
+   * so'rovlar orasida ma'lumot saqlanmaydi. Qaytariladigan obyekt har safar nusxa — chaqiruvchi uni
+   * o'zgartirsa kesh buzilmaydi.
+   */
+  let rcache = null;
+  const copy = (v) => (v === null || typeof v !== 'object' ? v : structuredClone(v));
   const api = {
     raw: db,
     path: dbPath,
@@ -77,16 +89,33 @@ export function openDb(dbPath, { remote = remoteFromEnv() } = {}) {
     remote: !!drv.remote,
     /** Serverless: boshqa instansiyalar yozgan o'zgarishlarni tortib olish (sqlite'da hech narsa qilmaydi) */
     sync: () => drv.sync(),
-    exec: (sql) => db.exec(sql),
+    exec: (sql) => { rcache?.clear(); return db.exec(sql); },
     run: (sql, ...p) => {
+      rcache?.clear();
       const r = prep(sql).run(...norm(p));
       return { changes: Number(r.changes), lastId: Number(r.lastInsertRowid) };
     },
-    get: (sql, ...p) => clean(prep(sql).get(...norm(p))) ?? null,
-    all: (sql, ...p) => { const rows = prep(sql).all(...norm(p)); for (const r of rows) clean(r); return rows; },
+    get: (sql, ...p) => {
+      const np = norm(p);
+      if (!rcache) return clean(prep(sql).get(...np)) ?? null;
+      const k = `g|${sql}|${JSON.stringify(np)}`;
+      if (!rcache.has(k)) rcache.set(k, clean(prep(sql).get(...np)) ?? null);
+      return copy(rcache.get(k));
+    },
+    all: (sql, ...p) => {
+      const np = norm(p);
+      const read = () => { const rows = prep(sql).all(...np); for (const r of rows) clean(r); return rows; };
+      if (!rcache) return read();
+      const k = `a|${sql}|${JSON.stringify(np)}`;
+      if (!rcache.has(k)) rcache.set(k, read());
+      return copy(rcache.get(k));
+    },
+    /** So'rov boshida chaqiriladi: yangi (bo'sh) o'qish keshi. `false` — keshni butunlay o'chirish */
+    cacheScope: (on) => { rcache = on === false ? null : new Map(); },
     tx: (fn) => {
       if (depth > 0) return fn();
       depth++;
+      rcache?.clear();
       db.exec('BEGIN');
       try {
         const r = fn();
@@ -97,6 +126,7 @@ export function openDb(dbPath, { remote = remoteFromEnv() } = {}) {
         throw e;
       } finally {
         depth--;
+        rcache?.clear();
       }
     },
     close: () => db.close(),

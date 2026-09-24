@@ -1,5 +1,5 @@
 import { badRequest, notFound, forbidden } from '../core/http.mjs';
-import { nowIso, today, round2, parseJson, resolvePeriod, padCode, monthOf, addMonths, monthRange } from '../core/util.mjs';
+import { nowIso, today, round2, parseJson, resolvePeriod, padCode, monthOf, addMonths, monthRange, sumByPeriods } from '../core/util.mjs';
 
 export const EXPENSE_STATUSES = ['DRAFT', 'PENDING', 'APPROVED', 'REJECTED', 'POSTPONED', 'PAID', 'CANCELLED'];
 
@@ -156,6 +156,10 @@ export function register(app) {
         GROUP BY e.category_id`, from, to));
     },
     total(from, to) { return db.get("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE reversed_at IS NULL AND status IN ('APPROVED','PAID') AND expense_date BETWEEN ? AND ?", from, to).s; },
+    /** Bir nechta davr uchun jami — bitta so'rov (grafik/sparkline; `total()` ni sikl ichida chaqirish o'rniga) */
+    totalSeries(periods) {
+      return sumByPeriods(db, { from: 'expenses', where: "reversed_at IS NULL AND status IN ('APPROVED','PAID')", dateCol: 'expense_date', exprs: { s: 'amount' }, periods }).map((x) => x.s);
+    },
     /** asOf berilsa: shu sanagacha sanalangan, shu sanada hali to'lanmagan tasdiqlangan xarajatlar */
     approvedUnpaidAsOf(asOf) { return db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status IN ('APPROVED','PAID') AND expense_date<=? AND (paid_at IS NULL OR paid_at>?)", asOf, asOf); },
     approvedUnpaid() { return db.get("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM expenses WHERE reversed_at IS NULL AND status='APPROVED'"); },

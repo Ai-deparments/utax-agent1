@@ -1,5 +1,5 @@
 import { badRequest, notFound } from '../core/http.mjs';
-import { nowIso, today, round2, parseJson, monthOf, monthRange, addMonths, monthsBetween, resolvePeriod, sum } from '../core/util.mjs';
+import { nowIso, today, round2, parseJson, monthOf, monthRange, addMonths, monthsBetween, resolvePeriod, sum, sumByPeriods } from '../core/util.mjs';
 
 /**
  * REVENUE RECOGNITION ENGINE
@@ -159,6 +159,26 @@ export function register(app) {
           COALESCE((SELECT SUM(re.amount) FROM revenue_events re WHERE re.contract_id=c.id AND re.state='REFUNDED' AND substr(COALESCE(re.state_changed_at, re.event_date),1,10)<=?),0) AS refunded
         FROM contracts c)`, asOf, asOf, asOf);
     },
+    /**
+     * Bir nechta sanadagi mijoz avanslari — har sana uchun alohida `positionAsOf()` o'rniga 3 ta so'rov.
+     * Hisob-kitob `positionAsOf` bilan bir xil: har shartnoma uchun max(0, to'langan − tan olingan − qaytarilgan).
+     * Shartnomasi yo'q (yoki contract_id bo'sh) to'lovlar avvalgidek hisobga olinmaydi.
+     */
+    advancesSeries(dates) {
+      if (!dates.length) return [];
+      const cases = (col, pre) => dates.map((_, i) => `COALESCE(SUM(CASE WHEN ${col}<=? THEN amount END),0) ${pre}${i}`).join(', ');
+      const paid = db.all(`SELECT contract_id, ${cases('paid_at', 'v')} FROM payments WHERE reversed_at IS NULL AND contract_id IN (SELECT id FROM contracts) GROUP BY contract_id`, ...dates);
+      const rec = db.all(`SELECT contract_id, ${cases('recognized_at', 'v')} FROM revenue_recognition WHERE status='RECOGNIZED' AND contract_id IN (SELECT id FROM contracts) GROUP BY contract_id`, ...dates);
+      const ref = db.all(`SELECT contract_id, ${cases("substr(COALESCE(state_changed_at, event_date),1,10)", 'v')} FROM revenue_events WHERE state='REFUNDED' AND contract_id IN (SELECT id FROM contracts) GROUP BY contract_id`, ...dates);
+      const idx = (rows) => { const m = new Map(); for (const r of rows) m.set(r.contract_id, r); return m; };
+      const P = idx(paid), R = idx(rec), F = idx(ref);
+      const ids = new Set([...P.keys(), ...R.keys(), ...F.keys()]);
+      return dates.map((_, i) => {
+        let s = 0;
+        for (const id of ids) s += Math.max(0, (P.get(id)?.[`v${i}`] || 0) - (R.get(id)?.[`v${i}`] || 0) - (F.get(id)?.[`v${i}`] || 0));
+        return s;
+      });
+    },
     /** asOf berilmasa — joriy holat (revenue_events); berilsa — o'sha sanadagi holat */
     advancesBalance(asOf) {
       if (!asOf) return db.get("SELECT COALESCE(SUM(amount),0) s FROM revenue_events WHERE state='CUSTOMER_ADVANCE'").s;
@@ -171,18 +191,19 @@ export function register(app) {
     expectedRevenue() {
       return db.get(`SELECT COALESCE(SUM(c.amount - COALESCE((SELECT SUM(rr.amount) FROM revenue_recognition rr WHERE rr.contract_id=c.id AND rr.status='RECOGNIZED'),0)),0) s FROM contracts c WHERE c.contract_status NOT IN ('DRAFT','CANCELLED','CLOSED')`).s;
     },
+    /** Bir nechta davr uchun tan olingan daromad — bitta so'rov (`recognizedInPeriod` ni sikl ichida chaqirish o'rniga) */
+    recognizedSeries(periods) {
+      return sumByPeriods(db, { from: 'revenue_recognition rr JOIN contracts c ON c.id=rr.contract_id', where: "rr.status='RECOGNIZED'", dateCol: 'rr.recognized_at', exprs: { s: 'rr.amount' }, periods }).map((x) => x.s);
+    },
     monthlySeries(months = 6, asOf = today()) {
-      const out = [];
+      const periods = [];
       let p = addMonths(monthOf(asOf), -(months - 1));
-      for (let i = 0; i < months; i++) {
-        const { from, to } = monthRange(p);
-        const recognized = svc.recognizedInPeriod(from, to);
-        const expected = db.get(`SELECT COALESCE(SUM(ps.amount),0) s FROM payment_schedules ps JOIN contracts c ON c.id=ps.contract_id WHERE ps.due_date BETWEEN ? AND ? AND c.contract_status NOT IN ('DRAFT','CANCELLED')`, from, to).s;
-        const cash = db.get('SELECT COALESCE(SUM(amount),0) s FROM payments WHERE reversed_at IS NULL AND paid_at BETWEEN ? AND ?', from, to).s;
-        out.push({ period: p, recognized: round2(recognized), expected: round2(expected), cash_received: round2(cash) });
-        p = addMonths(p, 1);
-      }
-      return out;
+      for (let i = 0; i < months; i++) { periods.push({ period: p, ...monthRange(p) }); p = addMonths(p, 1); }
+      // 3 × months ta so'rov o'rniga 3 ta: har biri davrlar bo'yicha CASE bilan yig'adi (natija aynan bir xil)
+      const recognized = svc.recognizedSeries(periods);
+      const expected = sumByPeriods(db, { from: 'payment_schedules ps JOIN contracts c ON c.id=ps.contract_id', where: "c.contract_status NOT IN ('DRAFT','CANCELLED')", dateCol: 'ps.due_date', exprs: { s: 'ps.amount' }, periods }).map((x) => x.s);
+      const cash = sumByPeriods(db, { from: 'payments', where: 'reversed_at IS NULL', dateCol: 'paid_at', exprs: { s: 'amount' }, periods }).map((x) => x.s);
+      return periods.map((r, i) => ({ period: r.period, recognized: round2(recognized[i]), expected: round2(expected[i]), cash_received: round2(cash[i]) }));
     },
     /**
      * Tan olish yozuvlari {status, from, to, limit?, offset?}. limit berilmasa — cheklovsiz (web «Hisobotlar» eksporti

@@ -8,6 +8,19 @@ export function register(app) {
   const { r, db, settings } = app;
   const S = () => app.services;
 
+  /**
+   * N oylik daromad/xarajat qatori — oyiga 2 ta so'rov o'rniga jami 2 ta.
+   * Har oy uchun xuddi o'sha `BETWEEN oy_boshi AND oy_oxiri` sharti ishlatiladi, natija o'zgarmaydi.
+   */
+  function monthlySeries(firstPeriod, months) {
+    const periods = [];
+    let mp = firstPeriod;
+    for (let i = 0; i < months; i++) { periods.push({ period: mp, ...monthRange(mp) }); mp = addMonths(mp, 1); }
+    const rev = S().revenue.recognizedSeries(periods);
+    const exp = S().expenses.totalSeries(periods);
+    return periods.map((r, i) => { const rv = round2(rev[i]); const ex = round2(exp[i]); return { period: r.period, revenue: rv, expense: ex, profit: round2(rv - ex) }; });
+  }
+
   const svc = {
     /** TREASURY — Founder savoli: hozir xavfsiz qancha pul olish mumkin? */
     treasury(asOf = today()) {
@@ -64,9 +77,7 @@ export function register(app) {
       const prevRevenue = round2(S().revenue.recognizedInPeriod(prev.from, prev.to));
       const prevExp = round2(S().expenses.total(prev.from, prev.to));
       const byService = S().revenue.recognizedInPeriod ? db.all(`SELECT st.code, st.name, st.color, COALESCE(SUM(rr.amount),0) revenue FROM service_types st LEFT JOIN contracts c ON c.service_type_id=st.id LEFT JOIN revenue_recognition rr ON rr.contract_id=c.id AND rr.status='RECOGNIZED' AND rr.recognized_at BETWEEN ? AND ? GROUP BY st.id ORDER BY st.sort`, p.from, p.to) : [];
-      const monthly = [];
-      let mp = addMonths(monthOf(p.to), -5);
-      for (let i = 0; i < 6; i++) { const { from, to } = monthRange(mp); const rv = round2(S().revenue.recognizedInPeriod(from, to)); const ex = round2(S().expenses.total(from, to)); monthly.push({ period: mp, revenue: rv, expense: ex, profit: round2(rv - ex) }); mp = addMonths(mp, 1); }
+      const monthly = monthlySeries(addMonths(monthOf(p.to), -5), 6);
       return { period: p, lines, totals: { revenue, direct, gross, opex, operating, taxes, other, net, net_margin: pct(net, revenue) }, by_category: S().expenses.totalsByCategory(p.from, p.to).filter((c) => c.amount > 0), by_service: byService, previous: { ...prev, revenue: prevRevenue, expense: prevExp, net: round2(prevRevenue - prevExp) }, monthly };
     },
     /** Xizmat rentabelligi — "Sporniy xizmatini davom ettirish foydalimi?" */
@@ -76,18 +87,32 @@ export function register(app) {
       const totalRevenue = round2(S().revenue.recognizedInPeriod(p.from, p.to));
       const sharedOpex = db.get(`SELECT COALESCE(SUM(e.amount),0) s FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id LEFT JOIN departments d ON d.id=e.department_id
         WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND e.contract_id IS NULL AND e.service_type_id IS NULL AND (d.service_type_id IS NULL) AND COALESCE(ec.pnl_group,'OTHER_OPEX') NOT IN ('DIRECT','PAYROLL')`, p.from, p.to).s;
-      const rows = types.map((st) => {
-        const revenue = round2(S().revenue.recognizedInPeriod(p.from, p.to, st.id));
-        const direct = db.get(`SELECT COALESCE(SUM(e.amount),0) s FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id LEFT JOIN contracts c ON c.id=e.contract_id
-          WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND (c.service_type_id=? OR e.service_type_id=?) AND COALESCE(ec.pnl_group,'OTHER_OPEX')<>'PAYROLL'`, p.from, p.to, st.id, st.id).s;
-        const payroll = db.get(`SELECT COALESCE(SUM(e.amount),0) s FROM expenses e JOIN expense_categories ec ON ec.id=e.category_id JOIN departments d ON d.id=e.department_id
-          WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND ec.pnl_group='PAYROLL' AND d.service_type_id=?`, p.from, p.to, st.id).s;
-        const deptOpex = db.get(`SELECT COALESCE(SUM(e.amount),0) s FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id JOIN departments d ON d.id=e.department_id
-          WHERE e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND d.service_type_id=? AND e.contract_id IS NULL AND e.service_type_id IS NULL AND COALESCE(ec.pnl_group,'OTHER_OPEX') NOT IN ('PAYROLL','DIRECT')`, p.from, p.to, st.id).s;
+      // Har xizmat turi uchun 5 ta so'rov (8 tur = 40 ta) o'rniga 5 ta: shart CASE ichiga ko'chirildi, natija o'zgarmaydi
+      const perType = (from, where, expr, cond, tail = []) => {
+        const cols = types.map(() => `COALESCE(SUM(CASE WHEN ${cond} THEN ${expr} END),0)`).map((c, i) => `${c} s${i}`);
+        const nq = (cond.match(/\?/g) || []).length; // `cond` ichidagi ? lar soni (har biri xizmat turi id'si)
+        const pp = [];
+        for (const st of types) for (let k = 0; k < nq; k++) pp.push(st.id);
+        const row = db.get(`SELECT ${cols.join(', ')} FROM ${from} WHERE ${where}`, ...pp, ...tail);
+        return types.map((_, i) => Number(row?.[`s${i}`] ?? 0));
+      };
+      const revS = perType('revenue_recognition rr JOIN contracts c ON c.id=rr.contract_id', "rr.status='RECOGNIZED' AND rr.recognized_at BETWEEN ? AND ?", 'rr.amount', 'c.service_type_id=?', [p.from, p.to]);
+      const directS = perType(`expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id LEFT JOIN contracts c ON c.id=e.contract_id`,
+        `e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND COALESCE(ec.pnl_group,'OTHER_OPEX')<>'PAYROLL'`, 'e.amount', '(c.service_type_id=? OR e.service_type_id=?)', [p.from, p.to]);
+      const payrollS = perType(`expenses e JOIN expense_categories ec ON ec.id=e.category_id JOIN departments d ON d.id=e.department_id`,
+        `e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND ec.pnl_group='PAYROLL'`, 'e.amount', 'd.service_type_id=?', [p.from, p.to]);
+      const deptS = perType(`expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id JOIN departments d ON d.id=e.department_id`,
+        `e.reversed_at IS NULL AND e.status IN ('APPROVED','PAID') AND e.expense_date BETWEEN ? AND ? AND e.contract_id IS NULL AND e.service_type_id IS NULL AND COALESCE(ec.pnl_group,'OTHER_OPEX') NOT IN ('PAYROLL','DIRECT')`, 'e.amount', 'd.service_type_id=?', [p.from, p.to]);
+      const cntS = perType('contracts', "contract_status NOT IN ('DRAFT','CANCELLED') AND contract_date BETWEEN ? AND ?", '1', 'service_type_id=?', [p.from, p.to]);
+      const rows = types.map((st, ti) => {
+        const revenue = round2(revS[ti]);
+        const direct = directS[ti];
+        const payroll = payrollS[ti];
+        const deptOpex = deptS[ti];
         const allocated = round2(totalRevenue ? sharedOpex * revenue / totalRevenue : 0);
         const grossProfit = round2(revenue - direct);
         const netProfit = round2(grossProfit - payroll - deptOpex - allocated);
-        const contracts = db.get("SELECT COUNT(*) n FROM contracts WHERE service_type_id=? AND contract_status NOT IN ('DRAFT','CANCELLED') AND contract_date BETWEEN ? AND ?", st.id, p.from, p.to).n;
+        const contracts = cntS[ti];
         return { code: st.code, name: st.name, color: st.color, revenue, direct_expense: round2(direct), payroll: round2(payroll), dept_opex: round2(deptOpex), allocated_opex: allocated, gross_profit: grossProfit, net_profit: netProfit, margin: pct(netProfit, revenue), gross_margin: pct(grossProfit, revenue), contracts, verdict: revenue === 0 ? 'NO_DATA' : netProfit < 0 ? 'LOSS' : pct(netProfit, revenue) < 15 ? 'LOW' : 'OK' };
       });
       return { period: p, shared_opex: round2(sharedOpex), total_revenue: totalRevenue, rows: rows.sort((a, b) => b.net_profit - a.net_profit) };
@@ -162,10 +187,15 @@ export function register(app) {
     /** Oylik trendlar (grafik davr filtri uchun) */
     trends(months = 6) {
       months = Math.max(2, Math.min(24, Number(months) || 6));
-      const pnl = [];
-      let mp = addMonths(monthOf(today()), -(months - 1));
-      for (let i = 0; i < months; i++) { const { from, to } = monthRange(mp); const rv = round2(S().revenue.recognizedInPeriod(from, to)); const ex = round2(S().expenses.total(from, to)); pnl.push({ period: mp, revenue: rv, expense: ex, profit: round2(rv - ex) }); mp = addMonths(mp, 1); }
+      const pnl = monthlySeries(addMonths(monthOf(today()), -(months - 1)), months);
       return { months, cash_flow: S().banking.monthlyFlows(months), revenue: S().revenue.monthlySeries(months), pnl };
+    },
+    /** Manbadagi eng erta va eng kech yozuv sanasi.
+     *  `first`/`last` — Turso parserida kalit so'z (NULLS FIRST/LAST) va ustun nomi katta harfda qaytadi;
+     *  shuning uchun SQL'da neytral nom, API shakli esa o'zgarmaydi ({first, last}). */
+    dataSpan() {
+      const s = db.get("SELECT MIN(d) span_first, MAX(d) span_last FROM (SELECT tx_date d FROM bank_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT tx_date FROM cash_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT recognized_at FROM revenue_recognition WHERE status='RECOGNIZED')");
+      return { first: s?.span_first ?? null, last: s?.span_last ?? null };
     },
     /** range = {from, to} ixtiyoriy. Berilmasa — joriy oy va o'tgan oy bilan taqqoslash (avvalgi xatti-harakat, o'zgarishsiz) */
     /** @param user  — berilsa debitorlik bloki shu foydalanuvchi scope'ida (SALES — faqat o'z shartnomalari; /api/receivables bilan bir xil) */
@@ -206,9 +236,12 @@ export function register(app) {
       }
       // Qoldiq noma'lum (boshlang'ich qoldiq yo'q) nuqta bo'lsa — grafik chizilmaydi (0 deb ko'rsatilmaydi)
       const known = (xs) => (xs.some((x) => x === null) ? [] : xs.map(round2));
+      // 12 nuqta × 4 qator = 48 ta so'rov edi; endi bank/kassa/xarajat uchun bittadan so'rov (natija aynan bir xil)
+      const bankPts = S().banking.balanceSeries('BANK', points), cashPts = S().banking.balanceSeries('CASH', points);
+      const expPts = S().expenses.totalSeries(points.map((d) => ({ from: addDays(d, -(win - 1)), to: d })));
       const sparklines = {
-        bank: known(points.map((d) => S().banking.bankBalance(d).total)), cash: known(points.map((d) => S().banking.cashBalance(d).total)),
-        advances: points.map((d) => round2(S().revenue.advancesBalance(d))), expenses: points.map((d) => round2(S().expenses.total(addDays(d, -(win - 1)), d))),
+        bank: known(bankPts.map((b) => b.total)), cash: known(cashPts.map((b) => b.total)),
+        advances: S().revenue.advancesSeries(points).map(round2), expenses: expPts.map(round2),
       };
       sparklines.total = sparklines.bank.length && sparklines.cash.length ? sparklines.bank.map((v, i) => round2(v + sparklines.cash[i])) : [];
       const bal = svc.balance(asOf);
@@ -226,13 +259,11 @@ export function register(app) {
       const chartMonths = R && nMonths >= 2 ? nMonths : 6;
       const chartEnd = R ? to : realToday;
       let pnlMonthly = pnl.monthly;
-      if (R && nMonths >= 2) { pnlMonthly = []; for (let p = monthOf(from); p <= monthOf(to); p = addMonths(p, 1)) { const mr = monthRange(p); const rv = round2(S().revenue.recognizedInPeriod(mr.from, mr.to)); const ex = round2(S().expenses.total(mr.from, mr.to)); pnlMonthly.push({ period: p, revenue: rv, expense: ex, profit: round2(rv - ex) }); } }
+      if (R && nMonths >= 2) pnlMonthly = monthlySeries(monthOf(from), nMonths);
       const rangeSql = R ? ' AND t.tx_date BETWEEN ? AND ?' : '', rangeSqlE = R ? ' AND e.expense_date BETWEEN ? AND ?' : '', rp = R ? [from, to] : [];
       return {
         as_of: asOf, month, range: R ? { from, to } : null,
-        // `first`/`last` — Turso parserida kalit so'z (NULLS FIRST/LAST) va ustun nomi katta harfda qaytadi;
-        // shuning uchun SQL'da neytral nom, API shakli esa o'zgarmaydi ({first, last}).
-        data_span: (() => { const s = db.get("SELECT MIN(d) span_first, MAX(d) span_last FROM (SELECT tx_date d FROM bank_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT tx_date FROM cash_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT recognized_at FROM revenue_recognition WHERE status='RECOGNIZED')"); return { first: s?.span_first ?? null, last: s?.span_last ?? null }; })(),
+        data_span: svc.dataSpan(),
         kpi: { bank_balance: tr.bank_balance, cash_balance: tr.cash_balance, total_cash: tr.total_cash, available_cash: tr.available_cash, customer_advances: tr.customer_advances, recognized_revenue: pnl.totals.revenue, accounts_receivable: rc.total_receivable, expected_income: tr.expected_30d_income, expected_expenses: tr.expected_30d_expense, net_profit: pnl.totals.net, overdue_receivable: rc.overdue, low_liquidity: tr.low_liquidity, reserved: tr.reserved.total, expenses_month: round2(expCur) },
         deltas: { bank_balance: pctChange(tr.bank_balance, bankPrev), cash_balance: pctChange(tr.cash_balance, cashPrev), total_cash: pctChange(tr.total_cash, nadd(bankPrev, cashPrev)), customer_advances: pctChange(tr.customer_advances, advPrev), expenses_month: pctChange(expCur, expPrev), recognized_revenue: pctChange(pnl.totals.revenue, pnlPrev.totals.revenue), net_profit: pctChange(pnl.totals.net, pnlPrev.totals.net), accounts_receivable: pctChange(rc.total_receivable, rcPrev.total_receivable) },
         sparklines,
@@ -254,7 +285,17 @@ export function register(app) {
   };
   app.services.reports = svc;
 
-  r.get('/api/dashboard', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr)', query: ['from', 'to'] }, async (ctx) => { const { from, to } = ctx.query; if (from && to && from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas'); return svc.dashboard(from && to ? { from, to } : null, ctx.user); });
+  r.get('/api/dashboard', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr; auto=1 — joriy oy bo‘sh bo‘lsa oxirgi ma’lumotli oy)', query: ['from', 'to', 'auto'] }, async (ctx) => {
+    const { from, to, auto } = ctx.query;
+    if (from && to && from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas');
+    // auto=1: avval web ikki marta so'rardi (birinchisi faqat data_span ni bilish uchun). Endi davrni server tanlaydi.
+    if (!from && !to && auto === '1') {
+      const last = svc.dataSpan().last;
+      const lastM = last ? last.slice(0, 7) : null;
+      if (lastM && lastM < monthOf(today())) return { ...svc.dashboard(monthRange(lastM), ctx.user), auto_period: lastM };
+    }
+    return svc.dashboard(from && to ? { from, to } : null, ctx.user);
+  });
   r.get('/api/reports/trends', { perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'Oylik trendlar (pul oqimi, daromad, P&L)', query: ['months'] }, async (ctx) => svc.trends(ctx.query.months));
   r.get('/api/treasury', { perm: ['treasury', 'VIEW'], tags: ['reports'], summary: 'Pul boshqaruvi: bank/kassa/avans/available/kutilayotgan; from+to berilsa — shu davrdagi kirim/chiqim', query: ['as_of', 'from', 'to'] }, async (ctx) => {
     const to = ctx.query.to || ctx.query.as_of || today();

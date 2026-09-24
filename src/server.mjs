@@ -173,6 +173,8 @@ export function createHandler(app) {
         return await app.bots.handleWebhook(p.slice('/telegram/'.length).replace(/\/$/, ''), req, res);
       }
       if (!p.startsWith('/api/')) return serveStatic(p === '/' ? '/index.html' : p, res);
+      // Shu so'rov davomida bir xil o'qishni takrorlamaslik uchun bo'sh kesh (yozuv bo'lsa o'zi tozalanadi)
+      app.db.cacheScope(true);
       if (p === '/api/health') return sendJson(res, 200, { ok: true, time: new Date().toISOString(), version: '1.0.0', build: frontendBuild() });
       // Vercel Cron (yoki tashqi cron): vaqti kelgan fon vazifalarini bajaradi. Holat bazada saqlanadi — takroran ishga tushmaydi
       if (p === '/api/cron/tick') {
@@ -208,6 +210,7 @@ export function createHandler(app) {
       console.error(`[http] ${req.method} ${p} →`, e);
       sendJson(res, 500, { error: 'INTERNAL', message: config.nodeEnv === 'production' ? 'Ichki xato' : e.message });
     } finally {
+      app.db.cacheScope(false); // so'rov tugadi — kesh saqlanmaydi (fon vazifalari doim yangi o'qiydi)
       if (p.startsWith('/api/') && config.nodeEnv !== 'test') { const ms = Date.now() - started; if (ms > 800) console.log(`[http] slow ${req.method} ${p} ${ms}ms`); }
     }
   };

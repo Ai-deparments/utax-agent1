@@ -133,3 +133,37 @@ export function normalizeName(s) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/**
+ * Bir nechta davr uchun yig'indini BITTA so'rov bilan oladi.
+ *
+ * Nega: grafik va sparkline'lar avval har oy (yoki har nuqta) uchun alohida `SELECT SUM(...)` yuborardi —
+ * 6 oylik grafik = 6 ta so'rov. Lokal SQLite'da bu sezilmaydi, Turso'da esa har biri alohida tarmoq
+ * so'rovi (~25 ms) bo'lib, dashboard 200 dan ortiq so'rovga yetardi.
+ *
+ * Semantika o'zgarmaydi: har bir davr uchun xuddi o'sha `dateCol BETWEEN from AND to` sharti
+ * CASE ichida qo'llanadi, ya'ni natija ketma-ket so'rovlar bilan aynan bir xil.
+ *
+ * @param db       baza adapteri
+ * @param from     FROM qismi (JOIN'lar bilan birga)
+ * @param where    umumiy shart (davr sharti bundan tashqari)
+ * @param params   `where` uchun parametrlar
+ * @param dateCol  davr tekshiriladigan ustun
+ * @param exprs    yig'iladigan ifodalar: {kalit: 'SQL ifoda'}
+ * @param periods  [{from, to}, ...]
+ * @returns        har bir davr uchun {kalit: son} obyektlari massivi
+ */
+export function sumByPeriods(db, { from, where, params = [], dateCol, exprs, periods }) {
+  const keys = Object.keys(exprs);
+  if (!periods.length) return [];
+  const cols = [];
+  const p = [];
+  periods.forEach((r, i) => {
+    for (const k of keys) {
+      cols.push(`COALESCE(SUM(CASE WHEN ${dateCol} BETWEEN ? AND ? THEN ${exprs[k]} END),0) ${k}_${i}`);
+      p.push(r.from, r.to);
+    }
+  });
+  const row = db.get(`SELECT ${cols.join(', ')} FROM ${from}${where ? ` WHERE ${where}` : ''}`, ...p, ...params);
+  return periods.map((_, i) => Object.fromEntries(keys.map((k) => [k, Number(row?.[`${k}_${i}`] ?? 0)])));
+}

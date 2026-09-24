@@ -3,6 +3,8 @@ data/*.db
 data/*.db-*
 data/backups/
 .env
+.env.local
+.env.*.local
 uploads/
 # Haqiqiy moliyaviy Excel fayllari va import hisobotlari — git'ga tushmasin
 *.xlsx
