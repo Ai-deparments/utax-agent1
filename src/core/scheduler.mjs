@@ -29,7 +29,9 @@ export function createScheduler({ db, log = console }) {
     try {
       const r = await j.fn();
       setLastRun(j.name, nowIso());
-      log.info?.(`[scheduler] ${j.name} ok (${Date.now() - started}ms)`);
+      // Vazifa xatoni qaytarsa (masalan ERP 401) — keyingi urinish odatiy oraliqda, logda esa "ok" emas, xato ko'rinadi
+      if (r?.error) log.error?.(`[scheduler] ${j.name} xato (keyingi urinish odatiy oraliqda): ${r.error}`);
+      else log.info?.(`[scheduler] ${j.name} ok (${Date.now() - started}ms)`);
       return r;
     } catch (e) {
       log.error?.(`[scheduler] ${j.name} failed: ${e.message}`);

@@ -15,7 +15,7 @@ export function h(tag, attrs = {}, ...children) {
 export const frag = (...c) => { const f = document.createDocumentFragment(); for (const x of c.flat(Infinity)) if (x !== null && x !== undefined && x !== false) f.append(x instanceof Node ? x : document.createTextNode(String(x))); return f; };
 export const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
 export const CUR = 'so‘m';
-export const fmt = (n, d = 0) => (n === null || n === undefined || n === '' || Number.isNaN(Number(n)) ? '--' : Number(n).toLocaleString('ru-RU', { minimumFractionDigits: d, maximumFractionDigits: d }).replace(/,/g, ' ').replace(/ /g, ' '));
+export const fmt = (n, d = 0) => (n === null || n === undefined || n === '' || Number.isNaN(Number(n)) ? '--' : Number(n).toLocaleString('ru-RU', { minimumFractionDigits: d, maximumFractionDigits: d }).replace(/[\u00a0\u202f]/g, ' ')); // mingliklar — oddiy bo'shliq, kasr ajratgich vergul saqlanadi (37 521 972,67)
 export const money = (n) => (n === null || n === undefined || n === '' || Number.isNaN(Number(n)) ? '--' : fmt(n) + ' ' + CUR);
 export const short = (n) => { if (n === null || n === undefined || n === '' || Number.isNaN(Number(n))) return '--'; const a = Math.abs(Number(n) || 0); const s = Number(n) < 0 ? '−' : ''; if (a >= 1e9) return s + (a / 1e9).toFixed(2) + ' mlrd'; if (a >= 1e6) return s + (a / 1e6).toFixed(1) + ' mln'; if (a >= 1e3) return s + (a / 1e3).toFixed(0) + ' ming'; return s + fmt(a); };
 export const date = (d) => (d ? String(d).slice(0, 10).split('-').reverse().join('.') : '--');
@@ -36,6 +36,7 @@ const STATUS = {
   OPEN: ['warn', 'Ochiq'], DONE: ['good', 'Bajarildi'], SUPERSEDED: ['', 'Eskirgan'], PROPOSED: ['warn', 'Taklif'], EXECUTED: ['good', 'Bajarildi'], FAILED: ['crit', 'Xato'],
   INFO: ['info', 'Ma’lumot'], WARNING: ['warn', 'Ogohlantirish'], CRITICAL: ['crit', 'Kritik'], OK: ['good', 'Yaxshi'], WARN: ['warn', 'Diqqat'], BAD: ['crit', 'Bajarilmadi'], NO_PLAN: ['', 'Reja yo‘q'], LOSS: ['crit', 'Zarar'], LOW: ['warn', 'Past'], NO_DATA: ['', 'Ma’lumot yo‘q'], HIGH: ['crit', 'Yuqori'], MEDIUM: ['warn', 'O‘rta'],
   INCOME: ['good', 'Kirim'], EXPENSE: ['crit', 'Chiqim'], RUNNING: ['info', 'Ishlamoqda'], ERROR: ['crit', 'Xato'], EMPTY: ['', 'Bo‘sh'],
+  SRC_BANK_FILE: ['info', 'Manba: bank fayli'], SRC_ERP: ['good', 'Manba: ERP'], SRC_MANUAL: ['', 'Manba: qo‘lda'], INTERNAL: ['', 'Ichki o‘tkazma'],
 };
 export const badge = (s, label) => { const [cls, lb] = STATUS[s] || ['', s]; return h('span', { class: 'badge ' + cls }, label || lb || s || '--'); };
 export const statusLabel = (s) => (STATUS[s] || [null, s])[1];
@@ -162,10 +163,11 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
 
 // ---------- KPI kartalar ----------
 /** kpiCard({ icon, tone, label, value, unit, delta, deltaLabel, invert, spark, accent, sub, size }) */
-export function kpiCard({ icon: ic = 'wallet', tone = 'green', label, value, unit, delta: dl, deltaLabel = 'O‘tgan oyga nisbatan', invert = false, spark, accent = false, sub, size = '', cls = '', href }) {
+export function kpiCard({ icon: ic = 'wallet', tone = 'green', label, value, unit, delta: dl, deltaLabel = 'O‘tgan oyga nisbatan', invert = false, spark, accent = false, sub, size = '', cls = '', href, digits = 0 }) {
+  // digits — kasr xonalari (bank ko'chirmasi kabi tiyingacha aniq raqamlar uchun 2; standart 0)
   const isNum = typeof value === 'number';
-  const el = h(href ? 'a' : 'div', { class: `kpi-card ${size} ${accent ? 'accent' : ''} ${cls} ${href ? 'link' : ''}`, title: (isNum ? money(value) : '') + (href ? (isNum ? ' · ' : '') + 'Batafsil ko‘rish' : ''), ...(href ? { href } : {}) },
-    h('div', { class: 'top' }, h('div', { class: 'tile ' + tone }, icon(ic, 20)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'vl' + (isNum && fmt(value).length > 13 ? ' xl' : isNum && fmt(value).length > 10 ? ' lg' : '') }, isNum ? fmt(value) : value ?? '--', isNum ? h('span', { class: 'un' }, unit ?? CUR) : null))),
+  const el = h(href ? 'a' : 'div', { class: `kpi-card ${size} ${accent ? 'accent' : ''} ${cls} ${href ? 'link' : ''}`, title: (isNum ? fmt(value, digits) + ' ' + CUR : '') + (href ? (isNum ? ' · ' : '') + 'Batafsil ko‘rish' : ''), ...(href ? { href } : {}) },
+    h('div', { class: 'top' }, h('div', { class: 'tile ' + tone }, icon(ic, 20)), h('div', { class: 'grow' }, h('div', { class: 'lb' }, label), h('div', { class: 'vl' + (isNum && fmt(value, digits).length > 13 ? ' xl' : isNum && fmt(value, digits).length > 10 ? ' lg' : '') }, isNum ? fmt(value, digits) : value ?? '--', isNum ? h('span', { class: 'un' }, unit ?? CUR) : null))),
     dl !== undefined ? h('div', { class: 'dl' }, delta(dl, { invert }), h('span', {}, deltaLabel)) : sub ? h('div', { class: 'dl' }, sub) : null);
   if (spark && spark.length > 1) import('./charts.js').then(({ sparkline }) => el.append(h('div', { class: 'spark' }, sparkline(spark, { color: `var(--${{ green: 's1', blue: 's3', orange: 's2', red: 'crit', violet: 's5', amber: 's4', teal: 's6', gray: 'muted-2' }[tone] || 's1'})` }))));
   return el;
