@@ -31,6 +31,8 @@ const TABLES = [
   'service_types', 'expense_categories', 'departments', 'companies', 'employees',
   'contracts', 'payments', 'bank_accounts', 'cash_accounts', 'bank_transactions',
   'cash_transactions', 'collections', 'employee_kpis', 'forecasts',
+  // Ko'p kompaniyali bank qatlami (bank ko'chirmalari, kassa yig'indisi, manba fayllari) — git'ga emas, faqat shu yo'l bilan serverga boradi
+  'own_companies', 'own_accounts', 'bank_statements', 'bank_statement_lines', 'cash_period_entries', 'source_files',
 ];
 const CHUNK = 100; // bitta so'rovda 100 qator — tarmoq safarlari kam bo'lsin
 

@@ -520,6 +520,14 @@ Har bir sahifa `public/js/pages/<route>.js` faylida. **Umumiy xulq:**
 
 - **Maqsad:** butun moliyaviy holatni bir sahifada ko'rsatish.
 - **Header:** `dateRange({allowEmpty})`. Oraliq bo'lmasa "joriy oy va o'tgan oyga nisbatan" rejimi. Oraliq tanlansa barcha labellar "(davr)" va "Oldingi davrga nisbatan" ga o'zgaradi.
+- **Mustaqil bloklar** (`public/js/bank-ledger.js`): biri yiqilsa, qolgani ishlaydi.
+  - **ERP banneri:** token eskirgan yoki oxirgi sinxron 401 bo'lsa `alert.warn` + "Tokenni yangilash" (`integrations EDIT`). Token `password` maydonda kiritiladi.
+  - **"Bank hisoblari" kartasi** (`treasury VIEW`): Kompaniya (Global/UGS/UTAX) → Hisob (kompaniyaga qarab filtrlanadi) → Oy select'lari, manba badge'lari (`SRC_BANK_FILE`, `SRC_MANUAL`). Tanlov URL'da: `#/dashboard?company=ugs&account=<raqam>&month=2026-07` (`history.replaceState`). `.kpis.c4`: Boshlang'ich qoldiq · Tushum · Xarajat · Balans (accent). Tushum/Xarajat kartasi `sub` da yalpi summani ko'rsatadi. Karta bosilsa drawer ochiladi: Tushum/Xarajat → operatsiyalar `dataTable`, Boshlang'ich/Balans → hisoblar kesimidagi tekshiruv jadvali.
+  - Kartalar ostida tanlovga bog'liq ikki jadval turadi:
+    - **"Hisoblar kesimi"** — xom `table.tbl`: kompaniya `tr.sec` → hisoblar `tr.sub` → jami `tr.total` → barcha bank hisoblari → umumiy jami. Summalar yalpi, Excel'dagidek.
+    - **"Operatsiyalar"** — `dataTable`: kirim/chiqim, hisob va ichki o'tkazma filtrlari, Excel eksport.
+  - **Manba badge'i bosiladi** (`.badge.link` + download ikoni) va raqam olingan asl faylni yuklab beradi: bank ko'chirmasi yoki kassa uchun berilgan Excel (`/api/bank-ledger/source-files/:entity/:id`). Filtr qatoridagi manba tugmasi doiradagi barcha fayllar ro'yxatini ochadi.
+  - Asosiy ERP ko'rsatkichlari ustida `.sec-title` va `badge('SRC_ERP')` turadi.
 - **Tuzilma (yuqoridan pastga):**
   1. **Ma'lumot oyi ogohlantirishi.** Joriy oyda yozuv bo'lmasa `alert.info` chiqadi: "Oxirgi ma'lumot: Iyul 26" va `btn sm pri` "Iyul 26 ni ko'rsatish" (oraliqni o'rnatadi).
   2. `.kpis`: 5 ta **katta** `kpiCard`, sparkline va delta bilan. Bank, Kassa, Jami pul, Mijoz avanslari va Xarajatlar. Hammasi `href` bilan.
