@@ -303,6 +303,48 @@ CREATE TABLE IF NOT EXISTS balance_adjustments (
 CREATE INDEX IF NOT EXISTS ix_baladj_acc ON balance_adjustments(account_type, account_id, reversed_at);
 `,
   },
+  {
+    version: 7,
+    name: 'bank_ledger_multi_company',
+    // Ko'p kompaniyali bank qatlami — ERP jadvallaridan (companies = kontragentlar, bank_accounts, bank_transactions) ALOHIDA.
+    // Manba: bank ko'chirmasi fayli (haqiqat manbai) va kassa uchun qo'lda kiritilgan oylik yig'indi.
+    sql: `
+CREATE TABLE IF NOT EXISTS own_companies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, inn TEXT, client_code TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS own_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL REFERENCES own_companies(id),
+  account_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK (kind IN ('BANK','CASH')), label TEXT NOT NULL,
+  bank_name TEXT, branch TEXT, mfo TEXT, currency TEXT NOT NULL DEFAULT 'UZS', is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bank_statements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL REFERENCES own_accounts(id),
+  period_from TEXT NOT NULL, period_to TEXT NOT NULL, opening REAL NOT NULL, closing REAL NOT NULL,
+  inflow REAL NOT NULL, outflow REAL NOT NULL, op_count INTEGER NOT NULL, format TEXT, file_name TEXT, file_sha TEXT,
+  imported_by INTEGER, imported_at TEXT NOT NULL, UNIQUE (account_id, period_from, period_to));
+CREATE TABLE IF NOT EXISTS bank_statement_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL REFERENCES own_accounts(id), statement_id INTEGER REFERENCES bank_statements(id),
+  tx_date TEXT NOT NULL, tx_time TEXT, doc_no TEXT, op_code TEXT, pay_code TEXT,
+  corr_account TEXT, corr_name TEXT, corr_inn TEXT, corr_mfo TEXT, corr_bank TEXT, purpose TEXT,
+  amount REAL NOT NULL, direction TEXT NOT NULL CHECK (direction IN ('IN','OUT')), is_internal INTEGER NOT NULL DEFAULT 0,
+  uniq_key TEXT NOT NULL UNIQUE, source TEXT NOT NULL DEFAULT 'BANK_FILE', created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_bsl_acc_date ON bank_statement_lines(account_id, tx_date);
+CREATE INDEX IF NOT EXISTS ix_bsl_corr ON bank_statement_lines(corr_account);
+CREATE TABLE IF NOT EXISTS cash_period_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL REFERENCES own_accounts(id), period TEXT NOT NULL,
+  opening REAL NOT NULL, inflow REAL NOT NULL, outflow REAL NOT NULL, closing REAL NOT NULL, note TEXT,
+  source TEXT NOT NULL DEFAULT 'MANUAL', created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT, UNIQUE (account_id, period));
+`,
+  },
+  {
+    version: 8,
+    name: 'source_files',
+    // Ma'lumot olingan asl fayl (bank ko'chirmasi .xls, kassa uchun foydalanuvchi bergan Excel) — UI'da "Manba" bosilganda yuklab olinadi,
+    // raqam aynan qaysi fayldan kelganini tekshirish uchun. entity: 'bank_statement' | 'cash_period'. base64 TEXT — sqlite va Turso'da bir xil.
+    sql: `
+CREATE TABLE IF NOT EXISTS source_files (
+  entity TEXT NOT NULL, entity_id INTEGER NOT NULL, file_name TEXT NOT NULL, size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL, content_b64 TEXT NOT NULL, stored_at TEXT NOT NULL, PRIMARY KEY (entity, entity_id));
+`,
+  },
 ];
 
 const tableExists = (db, name) => !!db.get('SELECT name FROM sqlite_master WHERE type=? AND name=?', 'table', name);

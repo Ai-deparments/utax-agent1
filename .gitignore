@@ -18,3 +18,7 @@ data/import-*.json
 # ERP token (hech qachon commit qilinmaydi)
 .erp-token
 ERP/
+.env.member
+
+# Ko‘p kompaniyali bank reyestri (hisob raqamlari, kassa yig‘indilari) — foydalanuvchi ma’lumoti
+data/bank-registry.json

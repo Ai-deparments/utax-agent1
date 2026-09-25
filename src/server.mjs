@@ -20,6 +20,8 @@ import * as companies from './modules/companies.mjs';
 import * as contracts from './modules/contracts.mjs';
 import * as revenue from './modules/revenue.mjs';
 import * as banking from './modules/banking.mjs';
+import * as bankLedger from './modules/bank-ledger.mjs';
+import { jwtExpiry } from './modules/bank-ledger.mjs';
 import * as reconciliation from './modules/reconciliation.mjs';
 import * as approvals from './modules/approvals.mjs';
 import * as expenses from './modules/expenses.mjs';
@@ -37,7 +39,7 @@ import * as botsMod from './modules/bots.mjs';
 import { startBots, registerBotJobs, botCatalog } from './bots/index.mjs';
 import { ensureOwners } from './bots/shared/owners.mjs';
 
-const MODULES = [auth, users, companies, contracts, revenue, banking, reconciliation, approvals, expenses, receivables, payroll, budget, reports, forecast, notifications, integrations, ai, auditMod, settingsMod, botsMod];
+const MODULES = [auth, users, companies, contracts, revenue, banking, bankLedger, reconciliation, approvals, expenses, receivables, payroll, budget, reports, forecast, notifications, integrations, ai, auditMod, settingsMod, botsMod];
 
 export function createApp({ dbPath = config.dbPath } = {}) {
   const db = openDb(dbPath);
@@ -87,7 +89,17 @@ function registerJobs(app) {
     const token = sec.api_key || sec.token;
     if (!token) return { skipped: 'token yo‘q' };
     const { erpSync } = await import('./import/erp-sync.mjs');
-    const { res, verify } = await erpSync(app, { token, base: cfg.base_url || 'https://api.utaxerp.uz' });
+    let out;
+    try { out = await erpSync(app, { token, base: cfg.base_url || 'https://api.utaxerp.uz' }); }
+    catch (e) {
+      // Xato bazaga yoziladi — dashboard "ERP tokeni eskirgan" bannerini shundan ko'rsatadi; oxirgi muvaffaqiyatli ma'lumot joyida qoladi.
+      // 401 (token eskirgan) — har daqiqada qayta urinilmaydi: last_run yoziladi, keyingi urinish odatiy oraliqda (token yangilansa darhol).
+      app.db.run("INSERT INTO settings (key,value,updated_at) VALUES ('scheduler.erp_last_error',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at", JSON.stringify({ at: nowIso(), message: e.message }), nowIso());
+      if (/HTTP 401/.test(e.message)) return { error: e.message };
+      throw e;
+    }
+    const { res, verify } = out;
+    app.db.run("DELETE FROM settings WHERE key='scheduler.erp_last_error'");
     app.db.run('UPDATE integrations SET last_sync_at=?, last_status=? WHERE id=?', nowIso(), `+${res.income} kirim · ${res.contracts} yangi shartnoma${verify.ok ? '' : ' · SOLISHTIRUV FARQ'}`, integ.id);
     return { ...res, verify_ok: verify.ok };
   } });
@@ -262,9 +274,12 @@ export function ensureErpIntegration(app) {
     field_map: { date: 'date', amount: 'value', direction: 'inOrOut', purpose: 'comment', id: 'id' }, page_size: 200, days_back: 900, bank_account_id: 1, full_mirror: true };
   const secret = encryptSecret(JSON.stringify({ api_key: token }));
   if (cur) {
-    let same = false;
-    try { same = parseJson(decryptSecret(cur.secret_config), {}).api_key === token && parseJson(cur.config, {}).base_url === base && cur.is_active; } catch {}
+    let same = false, dbToken = null;
+    try { dbToken = parseJson(decryptSecret(cur.secret_config), {}).api_key; same = dbToken === token && parseJson(cur.config, {}).base_url === base && cur.is_active; } catch {}
     if (same) return cur.id;
+    // UI orqali ("Tokenni yangilash") kiritilgan token .env dagidan yangiroq bo'lsa — eskisi bilan almashtirilmaydi
+    const envExp = jwtExpiry(token), dbExp = jwtExpiry(dbToken);
+    if (dbExp && (!envExp || dbExp > envExp)) return cur.id;
     app.db.run('UPDATE integrations SET config=?, secret_config=?, is_active=1 WHERE id=?', JSON.stringify(cfg), secret, cur.id);
     console.log(`[erp] UTAXERP integratsiyasi yangilandi (.env dagi ERP_TOKEN) — sync har ${Math.round(config.erp.syncMs / 60000)} daq, to‘liq ${config.erp.fullAt}`);
     return cur.id;

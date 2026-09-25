@@ -1,14 +1,18 @@
 import { get } from '../api.js';
-import { dateRange, rangeLabel, h, kpiCard, statTile, card, fmt, short, money, badge, date, monthLabel, monthsSelect, emptyState, icon } from '../ui.js';
+import { dateRange, rangeLabel, h, kpiCard, statTile, card, fmt, short, money, badge, date, monthLabel, monthsSelect, emptyState, icon, alert } from '../ui.js';
 import { lineChart, barChart, donutChart, hBarChart, planFact } from '../charts.js';
+import { erpBanner, bankBlock } from '../bank-ledger.js';
 
-export default async function render(outerRoot, { setTitle, navigate }) {
+export default async function render(outerRoot, { setTitle, navigate, can, query }) {
   // Sana tanlanmasa — joriy oy va o'tgan oy bilan taqqoslash (avvalgidek); tanlansa — shu davr bo'yicha
-  const rng = dateRange({ allowEmpty: true, onChange: () => load() });
-  const box = h('div', {});
-  outerRoot.append(box);
+  const rng = dateRange({ allowEmpty: true, onChange: () => safeLoad() });
+  // Bloklar mustaqil yuklanadi: ERP banneri, bank hisoblari (fayl importi) va asosiy (ERP) ko'rsatkichlar — biri yiqilsa, qolgani ishlaydi
+  const erpBox = h('div', {}), bankBox = h('div', { class: 'mb16' }), box = h('div', {});
+  outerRoot.append(erpBox, can('treasury') ? bankBox : '', box);
+  setTitle('Moliya dashboardi', 'Asosiy ko‘rsatkichlar va moliyaviy holat', [rng.el]);
   let autoMonth = false; // joriy oy bo'sh bo'lsa — ma'lumot bor oxirgi oyga bir marta avtomatik o'tiladi
   let autoAsk = true;    // birinchi so'rovda serverdan shu tanlovni so'raymiz (ikkinchi so'rov kerak bo'lmaydi)
+  const safeLoad = () => load().catch((e) => box.replaceChildren(alert('crit', 'ERP ko‘rsatkichlari yuklanmadi: ' + e.message)));
   async function load() {
   const { from, to } = rng.value;
   // auto=1 — joriy oyda yozuv bo'lmasa server oxirgi ma'lumotli oyni o'zi tanlaydi va `auto_period` qaytaradi.
@@ -35,12 +39,13 @@ export default async function render(outerRoot, { setTitle, navigate }) {
   if (lastM) {
     const alertRow = (text, btn) => root.append(h('div', { class: 'alert info mb16', style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } }, icon('info', 16), h('div', { class: 'grow' }, text), btn));
     if (R && autoMonth) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuv yo‘q — oxirgi ma’lumotli davr ko‘rsatilmoqda. Manbadagi so‘nggi yozuv: ${date(span.last)}.`,
-      h('button', { class: 'btn sm', onClick: () => { autoAsk = false; rng.set('', ''); load(); } }, 'Joriy oyni ko‘rsatish'));
+      h('button', { class: 'btn sm', onClick: () => { autoAsk = false; rng.set('', ''); safeLoad(); } }, 'Joriy oyni ko‘rsatish'));
     else if (!R) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuvlar yo‘q — “joriy oy” ko‘rsatkichlari 0. Oxirgi ma’lumot: ${monthLabel(lastM)} (${date(span.last)} gacha).`,
       h('button', { class: 'btn sm pri', onClick: () => showMonth(lastM) }, `${monthLabel(lastM)} ni ko‘rsatish`));
   }
   const mL = (l) => l.map((x) => monthLabel(x.period));
 
+  root.append(h('div', { class: 'flex between wrap gap8 mb8' }, h('div', { class: 'sec-title' }, 'UTAX · asosiy ko‘rsatkichlar'), badge('SRC_ERP')));
   root.append(h('div', { class: 'kpis mb16' },
     kpiCard({ icon: 'bank', tone: 'green', href: '#/treasury', label: 'Bank qoldig‘i', value: k.bank_balance, delta: dl.bank_balance, deltaLabel: balLbl, spark: sp.bank }),
     kpiCard({ icon: 'cash', tone: 'blue', href: '#/treasury', label: 'Kassa qoldig‘i', value: k.cash_balance, delta: dl.cash_balance, deltaLabel: balLbl, spark: sp.cash }),
@@ -96,5 +101,9 @@ export default async function render(outerRoot, { setTitle, navigate }) {
     card('Debitorlik yoshi (aging)', hBarChart({ items: d.charts.aging.map((b) => ({ label: b.label, value: b.amount, sub: b.count + ' ta', color: b.bucket === 'CURRENT' ? 'var(--s1)' : b.bucket === 'NO_DUE' ? 'var(--muted-2)' : b.bucket === '0-7' ? 'var(--warn)' : b.bucket === '8-15' ? 'var(--orange)' : 'var(--crit)' })) }), [h('a', { class: 'btn xs ghost', href: '#/receivables' }, 'Batafsil', icon('arrowRight', 13))])));
   box.replaceChildren(root);
   }
-  await load();
+  await Promise.all([
+    erpBanner(erpBox, { can }),
+    can('treasury') ? bankBlock(bankBox, { can, query }).catch((e) => bankBox.replaceChildren(alert('crit', 'Bank bloki yuklanmadi: ' + e.message))) : null,
+    safeLoad(),
+  ]);
 }
