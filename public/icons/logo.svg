@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="UTAX Finance logo">
+  <!-- Logo (oq fon uchun): favicon.svg dagi X, fonsiz, qora -->
+  <g fill="#050708" shape-rendering="geometricPrecision">
+    <polygon points="46,132 164,243 226,192 163,130"/>
+    <polygon points="447,132 329,132 46,382 164,382"/>
+    <polygon points="274,317 343,382 466,382 339,262"/>
+  </g>
+</svg>

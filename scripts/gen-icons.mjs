@@ -1,3 +1,5 @@
+// ⚠️ ESKIRGAN (2026-09-26): brend belgisi endi public/icons/favicon.svg (qora fon + X). PNG ikonlar shu SVG'dan
+// Chrome orqali chizilgan. Bu skript ESKI yashil ikonlarni yaratadi — ishga tushirilsa yangi ikonlar bosib ketiladi.
 // PWA ikonlarini yaratadi (paketsiz): zumrad fon + oq "X" belgisi — favicon bilan bir xil brend belgisi.
 // Ishga tushirish: node scripts/gen-icons.mjs   → public/icons/*.png
 import fs from 'node:fs';

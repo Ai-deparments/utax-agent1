@@ -4,9 +4,9 @@
  *  - /v/<build>/... aktivlari o'zgarmas (immutable) → cache-first; yangi build kelganda eskilari o'chiriladi.
  *  - Sahifa (navigate) → network-first; internet yo'q bo'lsa keshdagi ilova qobig'i yoki oflayn sahifa.
  */
-const SHELL = 'utax-shell-v1';
+const SHELL = 'utax-shell-v2'; // v2: yangi X logo/favicon (icons/favicon.svg)
 const ASSETS = 'utax-assets-v1';
-const PRECACHE = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/maskable-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-32.png'];
+const PRECACHE = ['/', '/manifest.webmanifest', '/icons/favicon.svg', '/icons/logo.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/maskable-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-32.png'];
 
 const OFFLINE_HTML = `<!doctype html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#059669"><title>UTAX Finance — oflayn</title>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f6f9;color:#0f1b2d;font:13.5px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif}

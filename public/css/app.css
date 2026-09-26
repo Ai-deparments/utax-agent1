@@ -38,7 +38,7 @@ svg.ic { width: 18px; height: 18px; flex: none; }
 .sidebar { grid-row: 1 / span 2; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; height: 100dvh; overflow: hidden; }
 .brand { height: var(--top-h); display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--border); text-decoration: none !important; color: var(--text); }
 .brand .mark { width: 32px; height: 32px; border-radius: 9px; background: var(--primary-bg-2); display: grid; place-items: center; color: var(--primary-dark); }
-.brand .mark svg { width: 20px; height: 20px; } .brand .nm { font-weight: 750; font-size: 15px; letter-spacing: .01em; line-height: 1.1; } .brand small { display: block; font-weight: 500; color: var(--muted); font-size: 10.5px; letter-spacing: 0; margin-top: 2px; }
+.brand .mark svg { width: 20px; height: 20px; } .brand img.mark { display: block; flex: none; background: none; border-radius: 0; object-fit: contain; } .brand .nm { font-weight: 750; font-size: 15px; letter-spacing: .01em; line-height: 1.1; } .brand small { display: block; font-weight: 500; color: var(--muted); font-size: 10.5px; letter-spacing: 0; margin-top: 2px; }
 .nav { padding: 10px 10px; display: flex; flex-direction: column; gap: 1px; flex: 1; }
 .nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--text-2); font-weight: 500; font-size: 13px; position: relative; }
 .nav a svg { color: var(--muted); } .nav a:hover { background: var(--surface-2); text-decoration: none; color: var(--text); }
