@@ -18,8 +18,11 @@ const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] :
 const base = opt('--base', config.erp.base);
 const dbFile = path.resolve(ROOT, opt('--db', process.env.DB_PATH || 'data/finance-erp.db'));
 const tokenFile = path.join(ROOT, '.erp-token');
-const token = (process.env.ERP_TOKEN || config.erp.token || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : ''));
+// `config.erp.token` — muddati o'tmaganini tanlaydi (.env yoki seyf). Bu yerda `process.env.ERP_TOKEN`
+// ni oldinga qo'yib bo'lmaydi: u `.env` dagi eski nusxa bo'lib, seyfdagi yangi tokenni bosib ketardi.
+const token = (config.erp.token || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : ''));
 if (!token) { console.error('ERP_TOKEN yo‘q (.erp-token yoki env)'); process.exit(2); }
+if (config.erp.tokenSource) console.log(`token: ${config.erp.tokenSource === 'vault' ? 'seyf' : '.env'}${config.erp.tokenExpiresAt ? ` · muddati ${config.erp.tokenExpiresAt.slice(0, 10)}` : ''}`);
 process.env.BOT_MODE = 'off';
 process.env.DB_PATH = dbFile;
 
