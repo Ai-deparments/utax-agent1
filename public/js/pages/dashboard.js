@@ -10,38 +10,31 @@ export default async function render(outerRoot, { setTitle, navigate, can, query
   const erpBox = h('div', {}), bankBox = h('div', { class: 'mb16' }), box = h('div', {});
   outerRoot.append(erpBox, can('treasury') ? bankBox : '', box);
   setTitle('Moliya dashboardi', 'Asosiy ko‘rsatkichlar va moliyaviy holat', [rng.el]);
-  let autoMonth = false; // joriy oy bo'sh bo'lsa — ma'lumot bor oxirgi oyga bir marta avtomatik o'tiladi
-  let autoAsk = true;    // birinchi so'rovda serverdan shu tanlovni so'raymiz (ikkinchi so'rov kerak bo'lmaydi)
+  let autoAsk = true;     // birinchi so'rovda serverdan shu oraliqni so'raymiz (ikkinchi so'rov kerak bo'lmaydi)
   const safeLoad = () => load().catch((e) => box.replaceChildren(alert('crit', 'ERP ko‘rsatkichlari yuklanmadi: ' + e.message)));
   async function load() {
   const { from, to } = rng.value;
-  // auto=1 — joriy oyda yozuv bo'lmasa server oxirgi ma'lumotli oyni o'zi tanlaydi va `auto_period` qaytaradi.
-  // Avval web buning uchun dashboard'ni ikki marta yuklardi (Vercel'da bu ikki barobar kutish edi).
+  // auto=1 — server standart oraliqni (mavjud ma'lumotning birinchi → oxirgi sanasi) o'zi tanlaydi va `auto_range` qaytaradi.
   const d = await get('/api/dashboard' + (rng.active ? `?from=${from}&to=${to}` : autoAsk ? '?auto=1' : ''));
-  if (!rng.active && d.auto_period) { autoMonth = true; const [yy, mm] = d.auto_period.split('-').map(Number); rng.set(`${d.auto_period}-01`, new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10)); }
+  if (!rng.active && d.auto_range) rng.set(d.auto_range.from, d.auto_range.to);
   autoAsk = false;
+  // Mavjud ma'lumot oralig'idan tashqaridagi sanalar tanlagichda o'chiq
+  if (d.data_span?.first && d.data_span?.last) rng.limit(d.data_span.first, d.data_span.last);
   const R = !!d.range;
   const root = h('div', {});
   const P = R ? '(davr)' : '(joriy oy)';
   const flowLbl = R ? 'Oldingi davrga nisbatan' : 'O‘tgan oyga nisbatan', balLbl = R ? 'Davr boshiga nisbatan' : 'O‘tgan oyga nisbatan';
   setTitle('Moliya dashboardi', R ? `Asosiy ko‘rsatkichlar va moliyaviy holat · ${rangeLabel(d.range)}` : `Asosiy ko‘rsatkichlar va moliyaviy holat · ${date(d.as_of)}`, [rng.el]);
   const k = d.kpi, dl = d.deltas, sp = d.sparklines;
-  // Joriy oyda yozuv bo'lmasa — dashboard bo'sh ko'rinmasligi uchun ma'lumot bor oxirgi oy avtomatik ochiladi
-  // (bir marta; foydalanuvchi joriy oyga qaytsa, qayta o'tilmaydi). Raqamlarning o'zi o'zgartirilmaydi.
+  // Standart holat — butun mavjud davr. Foydalanuvchi joriy oyga o'tsa va unda yozuv bo'lmasa, butun davrga qaytish tugmasi.
   const span = d.data_span;
-  const lastM = span?.last && span.last.slice(0, 7) < d.as_of.slice(0, 7) ? span.last.slice(0, 7) : null;
-  const showMonth = (lm) => {
-    const [yy, mm] = lm.split('-').map(Number);
-    rng.set(`${lm}-01`, new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10));
-    return load();
-  };
-  if (lastM && !R && !autoMonth) { autoMonth = true; return showMonth(lastM); } // zaxira yo'l (eski server javobi)
-  if (lastM) {
-    const alertRow = (text, btn) => root.append(h('div', { class: 'alert info mb16', style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } }, icon('info', 16), h('div', { class: 'grow' }, text), btn));
-    if (R && autoMonth) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuv yo‘q — oxirgi ma’lumotli davr ko‘rsatilmoqda. Manbadagi so‘nggi yozuv: ${date(span.last)}.`,
+  const alertRow = (text, btn) => root.append(h('div', { class: 'alert info mb16', style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } }, icon('info', 16), h('div', { class: 'grow' }, text), btn));
+  const showSpan = () => { rng.set(span.first, span.last); safeLoad(); };
+  if (span?.first && span?.last) {
+    if (R && d.range.from === span.first && d.range.to === span.last) alertRow(`Mavjud ma’lumotning butun davri ko‘rsatilmoqda: ${date(span.first)} — ${date(span.last)}.`,
       h('button', { class: 'btn sm', onClick: () => { autoAsk = false; rng.set('', ''); safeLoad(); } }, 'Joriy oyni ko‘rsatish'));
-    else if (!R) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuvlar yo‘q — “joriy oy” ko‘rsatkichlari 0. Oxirgi ma’lumot: ${monthLabel(lastM)} (${date(span.last)} gacha).`,
-      h('button', { class: 'btn sm pri', onClick: () => showMonth(lastM) }, `${monthLabel(lastM)} ni ko‘rsatish`));
+    else if (!R && span.last.slice(0, 7) < d.as_of.slice(0, 7)) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuvlar yo‘q — “joriy oy” ko‘rsatkichlari 0. Ma’lumot ${date(span.first)} — ${date(span.last)} oralig‘ida.`,
+      h('button', { class: 'btn sm pri', onClick: showSpan }, 'Butun davrni ko‘rsatish'));
   }
   const mL = (l) => l.map((x) => monthLabel(x.period));
 

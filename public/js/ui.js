@@ -202,6 +202,7 @@ export const rangeLabel = (r) => (r && r.from && r.to ? `${date(r.from)} — ${d
 /** dateRange({ from, to, onChange, allowEmpty }) — ikkala sana tanlangach onChange({from,to}); allowEmpty bo'lsa × tugmasi "barcha davr"ga qaytaradi */
 export function dateRange({ from = '', to = '', onChange, allowEmpty = false }) {
   let cur = { from, to };
+  let lim = { min: '', max: '' }; // limit(min, max) — mavjud ma'lumot oralig'i; tashqaridagi sanalar tanlagichda o'chiq
   const fromInp = h('input', { class: 'input sm', type: 'date', value: from, title: 'Boshlanish sanasi' });
   const toInp = h('input', { class: 'input sm', type: 'date', value: to, title: 'Tugash sanasi' });
   const fire = () => {
@@ -209,13 +210,16 @@ export function dateRange({ from = '', to = '', onChange, allowEmpty = false }) 
     if (!f && !t) { if (allowEmpty && (cur.from || cur.to)) { cur = { from: '', to: '' }; onChange(cur); } return; }
     if (!f || !t) return;
     if (f > t) return toast('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas', 'err');
+    if ((lim.min && f < lim.min) || (lim.max && t > lim.max)) { fromInp.value = cur.from; toInp.value = cur.to; return toast(`Ma’lumot faqat ${date(lim.min)} — ${date(lim.max)} oralig‘ida bor`, 'err'); }
     if (f === cur.from && t === cur.to) return;
     cur = { from: f, to: t }; onChange(cur);
   };
   fromInp.addEventListener('change', fire); toInp.addEventListener('change', fire);
   const clr = allowEmpty ? h('button', { class: 'btn xs ghost', title: 'Barcha davr (tozalash)', onClick: () => { fromInp.value = ''; toInp.value = ''; fire(); } }, icon('x', 13)) : null;
   const el = h('span', { class: 'date-range small muted' }, h('span', { class: 'dr-part' }, 'Sanadan:', fromInp), h('span', { class: 'dr-part' }, 'Sanagacha:', toInp), clr);
-  return { el, get value() { return cur; }, get active() { return !!(cur.from && cur.to); }, set(f, t) { fromInp.value = f || ''; toInp.value = t || ''; cur = { from: f || '', to: t || '' }; } };
+  return { el, get value() { return cur; }, get active() { return !!(cur.from && cur.to); }, set(f, t) { fromInp.value = f || ''; toInp.value = t || ''; cur = { from: f || '', to: t || '' }; },
+    /** Tanlash mumkin bo'lgan oraliq (input min/max): undan tashqaridagi kunlar kalendarda o'chiq ko'rinadi */
+    limit(min, max) { lim = { min: min || '', max: max || '' }; for (const inp of [fromInp, toInp]) { inp.min = lim.min; inp.max = lim.max; } } };
 }
 
 // ---------- Fayl tanlash maydoni (brauzerning standart "Choose File" tugmasi o'rniga) ----------
