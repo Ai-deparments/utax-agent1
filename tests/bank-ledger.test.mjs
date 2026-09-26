@@ -153,6 +153,23 @@ function seedRegistry(L) {
   L.upsertAccount({ company_code: 'BBB', account_number: B1, kind: 'BANK', label: 'Alfa bank' }, ctx);
 }
 
+test('summary: ma’lumot yo‘q bazada ham javob to‘liq shaklda (sources: [], raqamlar null) — PR #16 dagi xato qaytmasin', () => withApp((app) => {
+  const L = app.services.bankLedger;
+  const shape = ['month', 'months', 'level', 'registry', 'has_data', 'missing', 'opening', 'inflow', 'outflow', 'closing', 'inflow_gross', 'outflow_gross', 'internal_in', 'internal_out', 'internal_excluded', 'check_ok', 'sources', 'accounts'];
+  // 1) reyestr ham bo'sh; 2) reyestr bor, lekin ko'chirma yuklanmagan
+  for (const step of [() => {}, () => seedRegistry(L)]) {
+    step();
+    const s = L.summary({});
+    for (const k of shape) assert.ok(k in s, `javobda "${k}" bo‘lishi kerak`);
+    assert.deepEqual(s.sources, []);
+    assert.deepEqual(s.accounts, []);
+    assert.equal(s.has_data, false);
+    assert.equal(s.opening, null, 'qoldiq noma’lum — 0 emas');
+    assert.equal(s.month, null);
+  }
+  assert.deepEqual(L.summary({ company: 'AAA' }).missing.sort(), ['Alfa bank', 'Beta bank', 'Kassa (naqd)']);
+}));
+
 test('import: reyestrda yo‘q hisob / INN mos emas — rad etiladi, bazaga hech narsa yozilmaydi', () => withApp((app) => {
   const L = app.services.bankLedger;
   assert.throws(() => L.importStatement(fileA1, {}, ctx), /reyestrda yo‘q/);

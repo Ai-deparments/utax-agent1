@@ -213,7 +213,11 @@ export function register(app) {
       const month = MONTH.test(q.month || '') ? q.month : months[0] || null;
       const sc = svc.scope(q);
       const base = { month, months, level: sc.level, company: sc.company ? { code: sc.company.code, name: sc.company.name, inn: sc.company.inn } : null, registry: svc.registry() };
-      if (!month) return { ...base, has_data: false, accounts: [], missing: sc.accounts.map((a) => a.label) };
+      // Hali birorta oy yuklanmagan — javob shakli ma'lumotli holat bilan BIR XIL (web, bot, AI bir xil o'qisin): raqamlar null ('--'), ro'yxatlar bo'sh
+      if (!month) return {
+        ...base, has_data: false, missing: sc.accounts.map((a) => a.label), opening: null, inflow: null, outflow: null, closing: null,
+        inflow_gross: null, outflow_gross: null, internal_in: null, internal_out: null, internal_excluded: sc.internalSet.size > 0, check_ok: false, sources: [], accounts: [],
+      };
       const rows = sc.accounts.map((a) => svc.accountMonth(a, month, sc.internalSet));
       const withData = rows.filter((x) => x.has_data);
       const missing = rows.filter((x) => !x.has_data).map((x) => x.label);
