@@ -11,7 +11,7 @@ import { createSettings } from './core/settings.mjs';
 import { createAudit } from './core/audit.mjs';
 import { createScheduler } from './core/scheduler.mjs';
 import { buildOpenApi as _buildOpenApi } from './core/openapi.mjs';
-import { HttpError, parseUrl, readBody, sendJson, clientIp, rateLimiter, sendBuffer, setGzip } from './core/http.mjs';
+import { HttpError, parseUrl, readBody, sendJson, clientIp, rateLimiter, sendBuffer, setGzip, responseCache } from './core/http.mjs';
 import { today, parseJson, nowIso } from './core/util.mjs';
 import { decryptSecret, encryptSecret } from './core/auth.mjs';
 import * as auth from './modules/auth.mjs';
@@ -170,6 +170,8 @@ export function createServer(app) {
 /** HTTP so'rov ishlovchisi — oddiy server (createServer) va Vercel funksiyasi (api/index.mjs) uchun umumiy */
 export function createHandler(app) {
   const apiLimit = rateLimiter({ windowMs: 60_000, max: 900 });
+  const rcache = responseCache(config.responseCacheMs);
+  app.responseCache = rcache; // import/seed kabi to'g'ridan-to'g'ri yozuvlar ham tozalay olsin
   let openapiCache = null;
   return async (req, res) => {
     // Javobni siqish (sendJson/serveStatic shuni tekshiradi) — Vercel funksiya javobini o'zi siqmaydi
@@ -185,6 +187,8 @@ export function createHandler(app) {
         return await app.bots.handleWebhook(p.slice('/telegram/'.length).replace(/\/$/, ''), req, res);
       }
       if (!p.startsWith('/api/')) return serveStatic(p === '/' ? '/index.html' : p, res);
+      // Shu so'rov davomida bir xil o'qishni takrorlamaslik uchun bo'sh kesh (yozuv bo'lsa o'zi tozalanadi)
+      app.db.cacheScope(true);
       if (p === '/api/health') return sendJson(res, 200, { ok: true, time: new Date().toISOString(), version: '1.0.0', build: frontendBuild() });
       // Vercel Cron (yoki tashqi cron): vaqti kelgan fon vazifalarini bajaradi. Holat bazada saqlanadi — takroran ishga tushmaydi
       if (p === '/api/cron/tick') {
@@ -210,8 +214,18 @@ export function createHandler(app) {
         if (route.opts.perm) app.rbac.require(ctx.user, route.opts.perm[0], route.opts.perm[1]);
       }
       if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) ctx.body = await readBody(req);
+      // Javob keshi: faqat GET va faqat `cache: true` belgilangan og'ir hisobotlar uchun.
+      // Huquq tekshiruvidan KEYIN — kalitga foydalanuvchi id'si kiradi (ko'lam aralashmaydi).
+      const ck = rcache.enabled && req.method === 'GET' && route.opts.cache ? rcache.key(p, query, ctx.user?.id) : null;
+      if (ck) {
+        const hit = rcache.get(ck);
+        if (hit !== null) { res.setHeader('X-Cache', 'HIT'); return sendJson(res, 200, hit); }
+      }
       const result = await route.handler(ctx);
       if (res.writableEnded) return;
+      // Yozuv bo'lsa kesh eskiradi — butunlay tozalanadi (oddiy va xavfsiz)
+      if (req.method !== 'GET' && rcache.enabled) rcache.clear();
+      if (ck) { rcache.set(ck, result === undefined ? { ok: true } : result); res.setHeader('X-Cache', 'MISS'); }
       sendJson(res, 200, result === undefined ? { ok: true } : result);
     } catch (e) {
       if (res.writableEnded) return;
@@ -220,6 +234,7 @@ export function createHandler(app) {
       console.error(`[http] ${req.method} ${p} →`, e);
       sendJson(res, 500, { error: 'INTERNAL', message: config.nodeEnv === 'production' ? 'Ichki xato' : e.message });
     } finally {
+      app.db.cacheScope(false); // so'rov tugadi — kesh saqlanmaydi (fon vazifalari doim yangi o'qiydi)
       if (p.startsWith('/api/') && config.nodeEnv !== 'test') { const ms = Date.now() - started; if (ms > 800) console.log(`[http] slow ${req.method} ${p} ${ms}ms`); }
     }
   };

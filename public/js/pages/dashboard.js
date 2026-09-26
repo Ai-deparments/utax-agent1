@@ -11,10 +11,15 @@ export default async function render(outerRoot, { setTitle, navigate, can, query
   outerRoot.append(erpBox, can('treasury') ? bankBox : '', box);
   setTitle('Moliya dashboardi', 'Asosiy ko‘rsatkichlar va moliyaviy holat', [rng.el]);
   let autoMonth = false; // joriy oy bo'sh bo'lsa — ma'lumot bor oxirgi oyga bir marta avtomatik o'tiladi
+  let autoAsk = true;    // birinchi so'rovda serverdan shu tanlovni so'raymiz (ikkinchi so'rov kerak bo'lmaydi)
   const safeLoad = () => load().catch((e) => box.replaceChildren(alert('crit', 'ERP ko‘rsatkichlari yuklanmadi: ' + e.message)));
   async function load() {
   const { from, to } = rng.value;
-  const d = await get('/api/dashboard' + (rng.active ? `?from=${from}&to=${to}` : ''));
+  // auto=1 — joriy oyda yozuv bo'lmasa server oxirgi ma'lumotli oyni o'zi tanlaydi va `auto_period` qaytaradi.
+  // Avval web buning uchun dashboard'ni ikki marta yuklardi (Vercel'da bu ikki barobar kutish edi).
+  const d = await get('/api/dashboard' + (rng.active ? `?from=${from}&to=${to}` : autoAsk ? '?auto=1' : ''));
+  if (!rng.active && d.auto_period) { autoMonth = true; const [yy, mm] = d.auto_period.split('-').map(Number); rng.set(`${d.auto_period}-01`, new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10)); }
+  autoAsk = false;
   const R = !!d.range;
   const root = h('div', {});
   const P = R ? '(davr)' : '(joriy oy)';
@@ -30,11 +35,11 @@ export default async function render(outerRoot, { setTitle, navigate, can, query
     rng.set(`${lm}-01`, new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10));
     return load();
   };
-  if (lastM && !R && !autoMonth) { autoMonth = true; return showMonth(lastM); }
+  if (lastM && !R && !autoMonth) { autoMonth = true; return showMonth(lastM); } // zaxira yo'l (eski server javobi)
   if (lastM) {
     const alertRow = (text, btn) => root.append(h('div', { class: 'alert info mb16', style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } }, icon('info', 16), h('div', { class: 'grow' }, text), btn));
     if (R && autoMonth) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuv yo‘q — oxirgi ma’lumotli davr ko‘rsatilmoqda. Manbadagi so‘nggi yozuv: ${date(span.last)}.`,
-      h('button', { class: 'btn sm', onClick: () => { rng.set('', ''); load(); } }, 'Joriy oyni ko‘rsatish'));
+      h('button', { class: 'btn sm', onClick: () => { autoAsk = false; rng.set('', ''); safeLoad(); } }, 'Joriy oyni ko‘rsatish'));
     else if (!R) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuvlar yo‘q — “joriy oy” ko‘rsatkichlari 0. Oxirgi ma’lumot: ${monthLabel(lastM)} (${date(span.last)} gacha).`,
       h('button', { class: 'btn sm pri', onClick: () => showMonth(lastM) }, `${monthLabel(lastM)} ni ko‘rsatish`));
   }

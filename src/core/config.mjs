@@ -36,6 +36,10 @@ export const config = {
   accessTtl: Number(env('ACCESS_TOKEN_TTL', 900)),
   refreshTtl: Number(env('REFRESH_TOKEN_TTL', 604800)),
   secretsKey: env('SECRETS_KEY', 'dev-secrets-key-change-me'),
+  // Javob keshi (ms). Faqat og'ir GET hisobotlari uchun; har qanday yozuv keshni tozalaydi.
+  // Vercel'da har SQL alohida tarmoq so'rovi (~27 ms) — shuning uchun u yerda standart holda yoqiq.
+  // 0 — o'chiq. Lokalda kerak emas (baza shu yerda), shuning uchun standart 0.
+  responseCacheMs: Number(env('RESPONSE_CACHE_MS', ON_VERCEL ? 30000 : 0)),
   // AI (erkin matn): Gemini asosiy, xato/limit bo'lsa Groq; ikkalasi ham bo'lmasa — qoidalar dvigateli (src/modules/ai.mjs)
   ai: {
     geminiKey: env('GEMINI_API_KEY', ''),

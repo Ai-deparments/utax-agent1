@@ -1,5 +1,5 @@
 import { badRequest, notFound } from '../core/http.mjs';
-import { nowIso, today, round2, sha256, monthOf, addMonths, monthRange } from '../core/util.mjs';
+import { nowIso, today, round2, sha256, monthOf, addMonths, monthRange, sumByPeriods } from '../core/util.mjs';
 import { parseCsv, parseXlsx, excelDate, parseAmount } from '../core/export.mjs';
 
 export function register(app) {
@@ -36,17 +36,49 @@ export function register(app) {
         FROM cash_accounts ca WHERE ca.is_active=1`, asOf);
       return balances(rows);
     },
+    /**
+     * Bir nechta sanadagi qoldiq — HAR BIR sana uchun alohida so'rov o'rniga BITTA so'rov.
+     * Dashboard sparkline'i 12 nuqta chizadi: avval bu 12 ta `bankBalance()` + 12 ta `cashBalance()` edi.
+     * Har sana uchun xuddi o'sha `tx_date<=sana` sharti CASE ichida qo'llanadi — natija aynan bir xil.
+     */
+    balanceSeries(kind, dates) {
+      const bank = kind === 'BANK';
+      if (!dates.length) return [];
+      const mv = dates.map(() => `COALESCE(SUM(CASE WHEN t.tx_date<=? THEN CASE WHEN t.direction='INCOME' THEN t.amount ELSE -t.amount END END),0)`);
+      const cols = bank
+        ? 'ba.id, ba.bank_name, ba.account_number, ba.currency, ba.opening_balance, ba.opening_date'
+        : 'ca.id, ca.name, ca.currency, ca.opening_balance, ca.opening_date';
+      const a = bank ? 'ba' : 'ca';
+      const rows = db.all(`SELECT ${cols},
+          COALESCE((SELECT SUM(amount) FROM balance_adjustments j WHERE j.account_type='${bank ? 'BANK' : 'CASH'}' AND j.account_id=${a}.id AND j.reversed_at IS NULL),0) AS adjustment,
+          ${mv.map((x, i) => `${x} AS m${i}`).join(', ')}
+        FROM ${bank ? 'bank_accounts' : 'cash_accounts'} ${a}
+        LEFT JOIN ${bank ? 'bank_transactions' : 'cash_transactions'} t ON t.${bank ? 'bank_account_id' : 'cash_account_id'}=${a}.id AND t.reversed_at IS NULL
+        WHERE ${a}.is_active=1 GROUP BY ${cols}`, ...dates);
+      // Ustun tartibi bankBalance()/cashBalance() bilan bir xil bo'lishi shart — API javobi o'zgarmasligi uchun
+      return dates.map((_, i) => balances(rows.map((r) => (bank
+        ? { id: r.id, bank_name: r.bank_name, account_number: r.account_number, currency: r.currency, opening_balance: r.opening_balance, opening_date: r.opening_date, movement: r[`m${i}`], adjustment: r.adjustment }
+        : { id: r.id, name: r.name, currency: r.currency, opening_balance: r.opening_balance, opening_date: r.opening_date, movement: r[`m${i}`], adjustment: r.adjustment }))));
+    },
     /** Davr bo'yicha pul harakati (bank+kassa) */
     flows(from, to) {
       const b = db.get(`SELECT COALESCE(SUM(CASE WHEN direction='INCOME' THEN amount END),0) inc, COALESCE(SUM(CASE WHEN direction='EXPENSE' THEN amount END),0) exp FROM bank_transactions WHERE reversed_at IS NULL AND COALESCE(cf_class,'OPERATING')<>'TRANSFER' AND tx_date BETWEEN ? AND ?`, from, to);
       const c = db.get(`SELECT COALESCE(SUM(CASE WHEN direction='INCOME' THEN amount END),0) inc, COALESCE(SUM(CASE WHEN direction='EXPENSE' THEN amount END),0) exp FROM cash_transactions WHERE reversed_at IS NULL AND COALESCE(cf_class,'OPERATING')<>'TRANSFER' AND tx_date BETWEEN ? AND ?`, from, to);
       return { income: round2(b.inc + c.inc), expense: round2(b.exp + c.exp), net: round2(b.inc + c.inc - b.exp - c.exp) };
     },
+    /** Bir nechta davr uchun pul harakati — 2 ta so'rov (bank + kassa), `flows()` ni sikl ichida chaqirish o'rniga */
+    flowsSeries(periods) {
+      const opt = { where: "reversed_at IS NULL AND COALESCE(cf_class,'OPERATING')<>'TRANSFER'", dateCol: 'tx_date', exprs: { inc: "CASE WHEN direction='INCOME' THEN amount END", exp: "CASE WHEN direction='EXPENSE' THEN amount END" }, periods };
+      const b = sumByPeriods(db, { ...opt, from: 'bank_transactions' });
+      const c = sumByPeriods(db, { ...opt, from: 'cash_transactions' });
+      return periods.map((_, i) => ({ income: round2(b[i].inc + c[i].inc), expense: round2(b[i].exp + c[i].exp), net: round2(b[i].inc + c[i].inc - b[i].exp - c[i].exp) }));
+    },
     monthlyFlows(months = 6, asOf = today()) {
-      const out = [];
+      const periods = [];
       let p = addMonths(monthOf(asOf), -(months - 1));
-      for (let i = 0; i < months; i++) { const { from, to } = monthRange(p); out.push({ period: p, ...svc.flows(from, to) }); p = addMonths(p, 1); }
-      return out;
+      for (let i = 0; i < months; i++) { periods.push({ period: p, ...monthRange(p) }); p = addMonths(p, 1); }
+      const f = svc.flowsSeries(periods);
+      return periods.map((r, i) => ({ period: r.period, ...f[i] }));
     },
     createTransaction(b, ctx, opts = {}) {
       if (!b.bank_account_id || !b.tx_date || !b.amount || !b.direction) throw badRequest('bank_account_id, tx_date, amount, direction majburiy');

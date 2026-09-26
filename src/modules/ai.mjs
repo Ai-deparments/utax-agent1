@@ -855,7 +855,11 @@ export function register(app) {
     },
     seedAgents() { for (const a of AGENTS) { db.run('INSERT OR IGNORE INTO ai_agents (code,name,description,schedule,permissions) VALUES (?,?,?,?,?)', a.code, a.name, a.description, a.schedule, JSON.stringify(['VIEW', 'PROPOSE'])); db.run('UPDATE ai_agents SET name=?, description=? WHERE code=?', a.name, a.description, a.code); } },
     agentCtx,
-    listAgents() { return db.all('SELECT * FROM ai_agents ORDER BY id').map((a) => ({ ...a, api_key_hash: undefined, has_api_key: !!a.api_key_hash, permissions: parseJson(a.permissions, []), last_result: parseJson(a.last_result, null), proposed: db.get("SELECT COUNT(*) n FROM ai_actions WHERE agent_code=? AND status='PROPOSED'", a.code).n })); },
+    listAgents() {
+      // Har agent uchun alohida COUNT (14 ta so'rov) o'rniga bitta guruhlangan so'rov
+      const proposed = new Map(db.all("SELECT agent_code, COUNT(*) n FROM ai_actions WHERE status='PROPOSED' GROUP BY agent_code").map((r) => [r.agent_code, r.n]));
+      return db.all('SELECT * FROM ai_agents ORDER BY id').map((a) => ({ ...a, api_key_hash: undefined, has_api_key: !!a.api_key_hash, permissions: parseJson(a.permissions, []), last_result: parseJson(a.last_result, null), proposed: proposed.get(a.code) || 0 }));
+    },
     listActions(status) {
       return db.all(`SELECT a.*, u.name AS decided_by_name FROM ai_actions a LEFT JOIN users u ON u.id=a.decided_by ${status ? 'WHERE a.status=?' : ''} ORDER BY a.id DESC LIMIT 300`, ...(status ? [status] : [])).map((a) => { const p = parseJson(a.payload, {}); delete p.__k; return { ...a, payload: p }; });
     },

@@ -94,3 +94,36 @@ export function rateLimiter({ windowMs, max }) {
     return h.n <= max;
   };
 }
+
+/**
+ * Javob keshi — og'ir GET hisobotlari uchun (dashboard, treasury, reports).
+ *
+ * Nega: Turso'da bitta dashboard ~82 ta tarmoq so'rovi. Bir xil sahifani qayta ochganda
+ * hammasini qaytadan so'ramaslik uchun tayyor javob qisqa muddatga saqlanadi.
+ *
+ * Xavfsizlik qoidalari:
+ *  - kalitga foydalanuvchi id'si kiradi — SALES o'z ko'lamidagi ma'lumotni ko'radi, boshqasinikini emas;
+ *  - kesh faqat huquq tekshiruvidan KEYIN o'qiladi — ruxsatsiz foydalanuvchi keshga umuman yetmaydi;
+ *  - har qanday yozuv (POST/PUT/PATCH/DELETE) keshni butunlay tozalaydi;
+ *  - TTL qisqa (standart 30 s), shuning uchun boshqa instansiya yozgan o'zgarish ko'pi bilan shuncha kechikadi.
+ */
+export function responseCache(ttlMs) {
+  const m = new Map();
+  return {
+    ttlMs,
+    enabled: ttlMs > 0,
+    key: (path, query, userId) => `${path}?${JSON.stringify(query)}|${userId || 0}`,
+    get(k) {
+      const e = m.get(k);
+      if (!e) return null;
+      if (Date.now() > e.exp) { m.delete(k); return null; }
+      return e.v;
+    },
+    set(k, v) {
+      if (m.size > 300) m.clear(); // xotira chegarasi (serverless instansiyasi kichik)
+      m.set(k, { v, exp: Date.now() + ttlMs });
+    },
+    clear() { m.clear(); },
+    get size() { return m.size; },
+  };
+}
