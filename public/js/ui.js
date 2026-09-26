@@ -104,7 +104,7 @@ export function formModal({ title, fields, values, submit, submitLabel = 'Saqlas
 
 // ---------- DataTable ----------
 /** columns: [{key,label,money,date,datetime,badge,pct,progress,render,right,width}] */
-export function dataTable({ columns, rows = [], search = true, pageSize = 25, onRow, filters = [], exportName, emptyText = 'Ma’lumot yo‘q', dateKey, footer, toolbarExtra, hideToolbar, onFilter }) {
+export function dataTable({ columns, rows = [], search = true, pageSize = 25, onRow, filters = [], exportName, emptyText = 'Ma’lumot yo‘q', dateKey, footer, toolbarExtra, hideToolbar, onFilter, onDateChange }) {
   let all = rows, q = '', sortKey = null, sortDir = 1, page = 0, from = '', to = '';
   const visible = new Set(columns.map((c) => c.key));
   const filterVals = {};
@@ -127,8 +127,9 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
     let r = all;
     if (q) { const s = q.toLowerCase(); r = r.filter((x) => columns.some((c) => String(x[c.key] ?? '').toLowerCase().includes(s))); }
     for (const [k, v] of Object.entries(filterVals)) if (v !== '' && v !== undefined) r = r.filter((x) => String(x[k] ?? '') === String(v));
-    if (dateKey && from) r = r.filter((x) => String(x[dateKey] || '') >= from);
-    if (dateKey && to) r = r.filter((x) => String(x[dateKey] || '').slice(0, 10) <= to);
+    // `onDateChange` berilgan bo'lsa davrni sahifa serverdan so'raydi — bu yerda ikkinchi marta filtrlanmaydi
+    if (dateKey && !onDateChange && from) r = r.filter((x) => String(x[dateKey] || '') >= from);
+    if (dateKey && !onDateChange && to) r = r.filter((x) => String(x[dateKey] || '').slice(0, 10) <= to);
     if (sortKey) r = [...r].sort((a, b) => { const va = a[sortKey], vb = b[sortKey]; if (va === vb) return 0; if (va === null || va === undefined) return 1; if (vb === null || vb === undefined) return -1; return (typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))) * sortDir; });
     return r;
   }
@@ -149,10 +150,13 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
   if (search) tb.append(h('input', { class: 'input sm', placeholder: 'Qidirish…', onInput: (e) => { q = e.target.value; page = 0; render(); } }));
   for (const f of filters) tb.append(h('select', { class: 'select sm', onChange: (e) => { filterVals[f.key] = e.target.value; page = 0; render(); } }, h('option', { value: '' }, f.label), ...f.options.map((o) => { const [v, l] = Array.isArray(o) ? o : [o, statusLabel(o)]; return h('option', { value: v }, l); })));
   if (dateKey) {
-    const fromInp = h('input', { class: 'input sm', type: 'date', title: 'Boshlanish sanasi', onChange: (e) => { from = e.target.value; page = 0; render(); } });
-    const toInp = h('input', { class: 'input sm', type: 'date', title: 'Tugash sanasi', onChange: (e) => { to = e.target.value; page = 0; render(); } });
+    // Davr o'zgarganda: `onDateChange` bo'lsa sahifa serverdan qayta so'raydi (KPI va grafiklar ham yangilanadi),
+    // aks holda shu yerda lokal filtrlanadi. Ikkala holatda ham toolbar bir xil ko'rinadi.
+    const changed = () => { page = 0; if (onDateChange) onDateChange(from, to); else render(); };
+    const fromInp = h('input', { class: 'input sm', type: 'date', title: 'Boshlanish sanasi', onChange: (e) => { from = e.target.value; changed(); } });
+    const toInp = h('input', { class: 'input sm', type: 'date', title: 'Tugash sanasi', onChange: (e) => { to = e.target.value; changed(); } });
     // Sanani standart holatga qaytarish — `dateRange()` dagi bilan bir xil tugma (8-bo'lim, kanonik variant)
-    const clr = h('button', { class: 'btn xs ghost', title: 'Barcha davr (sanani tozalash)', onClick: () => { fromInp.value = ''; toInp.value = ''; from = ''; to = ''; page = 0; render(); } }, icon('x', 13));
+    const clr = h('button', { class: 'btn xs ghost', title: 'Barcha davr (sanani tozalash)', onClick: () => { fromInp.value = ''; toInp.value = ''; from = ''; to = ''; changed(); } }, icon('x', 13));
     tb.append(fromInp, toInp, clr);
   }
   if (toolbarExtra) tb.append(...[toolbarExtra].flat());

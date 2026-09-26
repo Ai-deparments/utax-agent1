@@ -292,12 +292,18 @@ const t = dataTable({
   rows, onRow, search = true, pageSize = 25,
   filters: [{ key, label, options }],      // toolbar select'lari (client-side)
   exportName, emptyText = "Ma'lumot yo'q", footer(rows, cols), toolbarExtra, hideToolbar,
-  dateKey,                                 // ⚠ ko'pincha kerak emas, 8-bo'limga qarang
+  dateKey,                                 // toolbar'ga sana oralig'i + ✕ tozalash tugmasini qo'shadi
+  onFilter(rows),                          // har filtrlashdan keyin KO'RINAYOTGAN qatorlar
+  onDateChange(from, to),                  // berilsa: lokal filtrlamaydi, sahifa serverdan qayta so'raydi
 });
 root.append(card('Sarlavha', t.el, null, { tight: true })); t.setRows(rows);
 ```
 
-- **Toolbar:** qidiruv ("Qidirish…"), filtr select'lari, [sana], bo'sh joy, "Ustunlar", "Excel", "PDF". Excel faqat ko'rinayotgan ustun va filtrlangan qatorlarni o'zbekcha sarlavhalar bilan eksport qiladi.
+- **Toolbar:** qidiruv ("Qidirish…"), filtr select'lari, [sana + ✕], bo'sh joy, "Ustunlar", "Excel", "PDF".
+- **Jadval ustidagi KPI'lar filtrga ergashishi shart.** Aks holda foydalanuvchi sana tanlaydi, ro'yxat o'zgaradi, kartalar esa eski raqamda qoladi — bu xato deb qabul qilinadi.
+  - KPI'lar qatorlardan hisoblansa → `onFilter` (masalan shartnomalar).
+  - KPI'lar serverdan kelsa → `onDateChange` bilan sahifa `load()` ni qayta chaqiradi (masalan tushumlar, xarajatlar).
+- Excel faqat ko'rinayotgan ustun va filtrlangan qatorlarni o'zbekcha sarlavhalar bilan eksport qiladi.
 - **Sarlavhalar:** bosilganda ▲/▼ bilan tartiblanadi. `th` sticky.
 - **Qatorlar:** `tr.row` hover'da `surface-2` bo'ladi. `onRow` berilsa, `tr.click` (pointer) qo'shiladi.
 - **Pager:** "N ta yozuv · ‹ p / n ›", sahifada 25 tadan.
@@ -552,7 +558,7 @@ Har bir sahifa `public/js/pages/<route>.js` faylida. **Umumiy xulq:**
 
 ### 7.3 Shartnomalar: `#/contracts`, `#/contracts/:id`, `?company=`
 
-- **Header:** "Kontragent" (`btn`), "Yangi shartnoma" (`btn pri`). Sana filtri faqat jadval toolbar'ida.
+- **Header:** "Kontragent" (`btn`), "Yangi shartnoma" (`btn pri`). Sana filtri faqat jadval toolbar'ida; KPI'lar `onFilter` orqali shu filtrga ergashadi.
 - **Tuzilma:** `.kpis` 5 ta `sm` (faol soni, summa, to'langan, qoldiq, muddati o'tgan), keyin katta `dataTable`. Jadval ustunlari:
   - raqam
   - kompaniya va INN
@@ -576,7 +582,7 @@ Har bir sahifa `public/js/pages/<route>.js` faylida. **Umumiy xulq:**
 
 ### 7.4 Tushumlar (bank tranzaksiyalari): `#/transactions`, `#/transactions/unmatched`
 
-- **Header:** `dateRange`, "Bog'lashni ishga tushirish" (`btn` + zap), "Qo'lda kiritish" (`btn`), "Ko'chirmani import qilish" (`btn pri`).
+- **Header:** "Bog'lashni ishga tushirish" (`btn` + zap), "Qo'lda kiritish" (`btn`), "Ko'chirmani import qilish" (`btn pri`). Sana filtri faqat jadval toolbar'ida (`onDateChange` → serverdan qayta so'rov, KPI'lar ham yangilanadi).
 - **Tuzilma:**
   - `.kpis` 5 ta: bog'lanmagan, taklif, bog'langan, e'tiborsiz, bog'lanmagan kirim summasi
   - `.chips`: Barchasi / Bog'lanmagan / Taklif / Bog'langan / E'tiborsiz
@@ -776,7 +782,7 @@ Quyida bir xil ish turlicha qilingan joylar va **qaysi variant to'g'ri** ekani b
 
 | # | Nomuvofiqlik (qayerda) | Kanonik naqsh |
 |---|---|---|
-| 1 | **Sana oralig'i 4 xil.** `dateRange()` ko'p joyda; treasury o'z input'larini qo'lda quradi; audit belgisiz ikki `input[type=date]` ishlatadi; pnl va cashflow'da `dateRange` + `periodPicker` ikkalasi bor; `dataTable({dateKey})` sahifa oralig'i yonida ikkinchi sana filtrini qo'shadi | **`dateRange()` header'da, `.acts` ning birinchi elementi.** Sahifa filtri bo'lsa, `dataTable` ga `dateKey` bermang. `periodPicker` yangi kodda ishlatilmaydi; presetlar kerak bo'lsa `segmented` + `rng.set()` |
+| 1 | **Sana oralig'i 4 xil.** `dateRange()` ko'p joyda; treasury o'z input'larini qo'lda quradi; audit belgisiz ikki `input[type=date]` ishlatadi; pnl va cashflow'da `dateRange` + `periodPicker` ikkalasi bor | **Bitta sahifada BITTA sana filtri.** Sahifaning asosiy mazmuni jadval bo'lsa (shartnomalar, tushumlar, xarajatlar) — filtr jadval toolbar'ida (`dateKey`), KPI'lar esa `onFilter` yoki `onDateChange` orqali unga ergashadi; header'da `dateRange` bo'lmaydi. Jadvalsiz hisobot sahifalarida (pnl, balans, prognoz…) — `dateRange()` header'da, `.acts` ning birinchi elementi. `periodPicker` yangi kodda ishlatilmaydi; presetlar kerak bo'lsa `segmented` + `rng.set()`.<br>**Ochiq:** treasury'da header filtri va "Kassa operatsiyalari" jadvalidagi filtr yonma-yon turibdi — ikkinchisi faqat o'sha kartaga tegishli, lekin ko'rinishda chalkashtiradi |
 | 2 | **Tablar 3 xil qo'lda qurilgan** (approvals/settings/payroll → `drawTabs()`, notifications → `classList` toggle, pnl/contracts → alohida). URL yangilanmaydi | `.tabs.mb16` + `drawTabs()` qayta chizish naqshi. Tab kaliti `params[0]` dan o'qiladi va `navigate('<route>/<tab>')` bilan yoziladi |
 | 3 | **Asosiy jadval konteyneri:** ba'zan `card(title, t.el, null, {tight})`, ba'zan sarlavhasiz `h('div',{class:'card'}, t.el)` | Sarlavhali: `card('Nomi', t.el, actions, {tight:true, sub})`. Sarlavhasiz variant faqat sahifada bitta asosiy ro'yxat bo'lsa (contracts, expenses) |
 | 4 | **Rol nomlari 4 joyda:** `ROLE_LABEL` (ui.js), `roleLabel` (app.js, EXECUTIVE_DIRECTOR yo'q), approvals va payroll'dagi lokal `ROLE` ("Buxgalteriya" va "Buxgalter") | Faqat `ROLE_LABEL` yoki `ctx.roleLabel`. Lokal rol xaritasi yozilmaydi |

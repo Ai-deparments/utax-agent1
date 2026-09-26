@@ -1,28 +1,30 @@
 import { get, post, qs } from '../api.js';
-import { IGNORE_LABEL, SOURCE_LABEL, fileDrop, dateRange, rangeLabel, h, kpiCard, card, fmt, money, short, date, badge, confBar, dataTable, kv, formModal, modal, drawer, toast, err, today, confirmDlg, promptDlg, icon, alert, emptyState } from '../ui.js';
+import { IGNORE_LABEL, SOURCE_LABEL, fileDrop, rangeLabel, h, kpiCard, card, fmt, money, short, date, badge, confBar, dataTable, kv, formModal, modal, drawer, toast, err, today, confirmDlg, promptDlg, icon, alert, emptyState } from '../ui.js';
 
 export default async function render(root, { setTitle, can, params }) {
   const accounts = (await get('/api/banking/accounts')).bank.accounts;
   let status = params[0] === 'unmatched' ? 'UNMATCHED' : '';
   const stats = h('div', { class: 'kpis mb16' });
-  const rng = dateRange({ allowEmpty: true, onChange: () => load() });
+  // Sana filtri faqat jadval toolbar'ida (ilgari header'da ham bor edi — ikkita bir xil filtr chalkashtirardi).
+  // U serverga so'rov yuboradi, shuning uchun KPI kartalar ham davr bo'yicha yangilanadi.
+  let dr = { from: '', to: '' };
   const cols = [
     { key: 'tx_date', label: 'Sana', date: true }, { key: 'direction', label: 'Yo‘nalish', badge: true }, { key: 'amount', label: 'Summa', money: true }, { key: 'counterparty_name', label: 'Kontragent', render: (r) => h('div', {}, r.counterparty_name || '--', h('div', { class: 'xs muted' }, r.counterparty_inn ? 'INN ' + r.counterparty_inn : '')) },
     { key: 'purpose', label: 'To‘lov maqsadi', render: (r) => h('div', { class: 'small', style: { maxWidth: '300px' } }, r.purpose || '--') }, { key: 'bank_name', label: 'Bank' }, { key: 'matching_status', label: 'Bog‘lanish', badge: true },
     { key: 'confidence', label: 'Ishonchlilik', render: (r) => (r.matching_status === 'MATCHED' || r.matching_status === 'SUGGESTED' ? confBar(r.confidence) : '--') }, { key: 'matched_contract_number', label: 'Bog‘langan obyekt', render: (r) => r.matched_contract_number ? h('span', {}, h('b', {}, r.matched_contract_number), h('div', { class: 'xs muted' }, r.matched_company)) : r.matched_expense_code ? h('span', {}, 'Xarajat ', h('b', {}, r.matched_expense_code)) : r.suggested_contract_number ? h('span', { class: 'muted' }, 'Taklif: ' + r.suggested_contract_number) : r.ignore_reason ? h('span', { class: 'muted' }, IGNORE_LABEL[r.ignore_reason] || r.ignore_reason) : '--' },
   ];
-  const table = dataTable({ columns: cols, rows: [], onRow: (r) => openTx(r), dateKey: 'tx_date', exportName: 'bank-tranzaksiyalari', filters: [{ key: 'direction', label: 'Yo‘nalish', options: ['INCOME', 'EXPENSE'] }, { key: 'bank_name', label: 'Bank', options: accounts.map((a) => [a.bank_name, a.bank_name]) }] });
+  const table = dataTable({ columns: cols, rows: [], onRow: (r) => openTx(r), dateKey: 'tx_date', onDateChange: (from, to) => { dr = { from, to }; load(); }, exportName: 'bank-tranzaksiyalari', filters: [{ key: 'direction', label: 'Yo‘nalish', options: ['INCOME', 'EXPENSE'] }, { key: 'bank_name', label: 'Bank', options: accounts.map((a) => [a.bank_name, a.bank_name]) }] });
   const chips = h('div', { class: 'chips' });
   const drawChips = () => chips.replaceChildren(...[['', 'Barchasi'], ['UNMATCHED', 'Bog‘lanmagan'], ['SUGGESTED', 'Taklif (tasdiq kerak)'], ['MATCHED', 'Bog‘langan'], ['IGNORED', 'E’tiborsiz']].map(([v, l]) => h('button', { class: 'chip ' + (status === v ? 'active' : ''), onClick: () => { status = v; drawChips(); load(); } }, l)));
   async function load() {
-    const { from, to } = rng.value;
+    const { from, to } = dr;
     const [rows, st] = await Promise.all([get('/api/transactions' + qs({ status, from, to })), get('/api/reconciliation/stats' + qs({ from, to }))]);
-    setTitle('Tushumlar va bank tranzaksiyalari', `Avtomatik bog‘lash: tranzaksiya ↔ shartnoma / xarajat${rng.active ? ' · ' + rangeLabel(rng.value) : ''}`);
+    setTitle('Tushumlar va bank tranzaksiyalari', `Avtomatik bog‘lash: tranzaksiya ↔ shartnoma / xarajat${from && to ? ' · ' + rangeLabel(dr) : ''}`);
     table.setRows(rows);
     stats.replaceChildren(kpiCard({ size: 'sm', icon: 'alert', tone: st.unmatched ? 'red' : 'green', label: 'Bog‘lanmagan', value: String(st.unmatched || 0), sub: 'inson qarori kerak' }), kpiCard({ size: 'sm', icon: 'sparkles', tone: st.suggested ? 'amber' : 'green', label: 'Taklif qilingan', value: String(st.suggested || 0), sub: 'AI taklifi — tasdiqlang' }), kpiCard({ size: 'sm', icon: 'check', tone: 'green', label: 'Bog‘langan', value: String(st.matched || 0), sub: 'to‘lov yozilgan' }), kpiCard({ size: 'sm', icon: 'minus', tone: 'gray', label: 'E’tiborsiz', value: String(st.ignored || 0), sub: 'shartnomaga tegishli emas' }), kpiCard({ size: 'sm', icon: 'inflow', tone: 'orange', label: 'Bog‘lanmagan kirim', value: st.unmatched_income_amount || 0 }));
   }
   drawChips();
-  setTitle('Tushumlar va bank tranzaksiyalari', 'Avtomatik bog‘lash: tranzaksiya ↔ shartnoma / xarajat', [rng.el, can('reconciliation', 'CREATE') ? h('button', { class: 'btn', onClick: async () => { try { const r = await post('/api/reconciliation/run'); toast(`Tekshirildi: ${r.checked}, avtomatik: ${r.matched}, taklif: ${r.suggested}`, 'ok'); load(); } catch (e) { err(e); } } }, icon('zap', 15), 'Bog‘lashni ishga tushirish') : null, can('transactions', 'CREATE') ? h('button', { class: 'btn', onClick: () => manualForm() }, icon('plus', 15), 'Qo‘lda kiritish') : null, can('transactions', 'CREATE') ? h('button', { class: 'btn pri', onClick: () => importDlg() }, icon('upload', 15), 'Ko‘chirmani import qilish') : null]);
+  setTitle('Tushumlar va bank tranzaksiyalari', 'Avtomatik bog‘lash: tranzaksiya ↔ shartnoma / xarajat', [can('reconciliation', 'CREATE') ? h('button', { class: 'btn', onClick: async () => { try { const r = await post('/api/reconciliation/run'); toast(`Tekshirildi: ${r.checked}, avtomatik: ${r.matched}, taklif: ${r.suggested}`, 'ok'); load(); } catch (e) { err(e); } } }, icon('zap', 15), 'Bog‘lashni ishga tushirish') : null, can('transactions', 'CREATE') ? h('button', { class: 'btn', onClick: () => manualForm() }, icon('plus', 15), 'Qo‘lda kiritish') : null, can('transactions', 'CREATE') ? h('button', { class: 'btn pri', onClick: () => importDlg() }, icon('upload', 15), 'Ko‘chirmani import qilish') : null]);
   root.append(stats, h('div', { class: 'mb12' }, chips), h('div', { class: 'card' }, table.el));
   await load();
 
