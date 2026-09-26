@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readSealedErpToken } from './sealed.mjs';
+import { readSealedErpToken, jwtInfo } from './sealed.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(here, '..', '..');
@@ -28,10 +28,25 @@ export const ON_VERCEL = !!process.env.VERCEL;
 const VERCEL_URL = process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '';
 const TMP = (p) => path.join('/tmp', 'utax', p);
 
-// UTAXERP tokeni: .env → bo'lmasa data/vault/erp-token.enc (DATA_VAULT_KEY bilan ochiladi).
+// UTAXERP tokeni: .env → bo'lmasa (yoki muddati o'tgan bo'lsa) data/vault/erp-token.enc.
 // Ochilmasa server baribir ishga tushadi — faqat ERP sinxronizatsiyasi o'chiq qoladi.
+//
+// Nega muddat tekshiriladi: token har oy yangilanadi va seyfga yangisi qo'yiladi, lekin
+// mashinadagi `.env` da eski nusxa qolib ketadi. Avval `.env` so'zsiz ustun edi, shuning uchun
+// yangi token seyfda turganda ham ERP jim 401 berardi va sabab ko'rinmasdi.
 const ENV_ERP_TOKEN = env('ERP_TOKEN', '');
-const SEALED_ERP = ENV_ERP_TOKEN ? null : readSealedErpToken(ROOT, { warn: (m) => { if (!TEST_MODE) console.warn(m); } });
+const ERP_WARN = (m) => { if (!TEST_MODE) console.warn(m); };
+const ENV_ERP_INFO = ENV_ERP_TOKEN ? jwtInfo(ENV_ERP_TOKEN) : null;
+// JWT bo'lmasa muddatini bilib bo'lmaydi — avvalgidek ishonamiz (o'z-o'zidan eskirgan deb hisoblanmaydi)
+const ENV_ERP_EXPIRED = !!(ENV_ERP_INFO?.expires_at && new Date(ENV_ERP_INFO.expires_at) <= new Date());
+const SEALED_ERP = ENV_ERP_TOKEN && !ENV_ERP_EXPIRED ? null : readSealedErpToken(ROOT, { warn: ERP_WARN });
+// Seyfdagisi ham eskirgan bo'lsa `.env` dagiga qaytamiz — xato xabari aniqroq chiqsin
+const ERP_USE_ENV = !!ENV_ERP_TOKEN && (!ENV_ERP_EXPIRED || !SEALED_ERP || SEALED_ERP.expired);
+if (ENV_ERP_TOKEN && ENV_ERP_EXPIRED) {
+  ERP_WARN(SEALED_ERP && !SEALED_ERP.expired
+    ? `[erp] .env dagi ERP_TOKEN muddati o‘tgan (${ENV_ERP_INFO.expires_at.slice(0, 10)}) — seyfdagi yangi token ishlatilmoqda`
+    : `[erp] .env dagi ERP_TOKEN muddati o‘tgan (${ENV_ERP_INFO.expires_at.slice(0, 10)}) — yangi token kerak`);
+}
 
 export const config = {
   port: Number(env('PORT', 8100)),
@@ -69,9 +84,9 @@ export const config = {
   // repoga va tashkilotga ruxsati bor xodimgagina shaxsiy kanal orqali beriladi.
   erp: {
     // .env dagi ERP_TOKEN birinchi o'rinda; bo'lmasa — repodagi shifrlangan seyfdan (jamoa a'zosi faqat pull qiladi)
-    token: ENV_ERP_TOKEN || SEALED_ERP?.token || '',
-    tokenSource: ENV_ERP_TOKEN ? 'env' : SEALED_ERP ? 'vault' : '',
-    tokenExpiresAt: ENV_ERP_TOKEN ? null : SEALED_ERP?.expires_at || null,
+    token: (ERP_USE_ENV ? ENV_ERP_TOKEN : SEALED_ERP?.token) || '',
+    tokenSource: ERP_USE_ENV ? 'env' : SEALED_ERP ? 'vault' : '',
+    tokenExpiresAt: (ERP_USE_ENV ? ENV_ERP_INFO?.expires_at : SEALED_ERP?.expires_at) || null,
     base: env('ERP_BASE', 'https://api.utaxerp.uz'),
     syncMs: intEnv('ERP_SYNC_MS', 3600000, 60000),
     fullAt: env('ERP_FULL_AT', '04:00'),
