@@ -104,7 +104,7 @@ export function formModal({ title, fields, values, submit, submitLabel = 'Saqlas
 
 // ---------- DataTable ----------
 /** columns: [{key,label,money,date,datetime,badge,pct,progress,render,right,width}] */
-export function dataTable({ columns, rows = [], search = true, pageSize = 25, onRow, filters = [], exportName, emptyText = 'Ma’lumot yo‘q', dateKey, footer, toolbarExtra, hideToolbar }) {
+export function dataTable({ columns, rows = [], search = true, pageSize = 25, onRow, filters = [], exportName, emptyText = 'Ma’lumot yo‘q', dateKey, footer, toolbarExtra, hideToolbar, onFilter }) {
   let all = rows, q = '', sortKey = null, sortDir = 1, page = 0, from = '', to = '';
   const visible = new Set(columns.map((c) => c.key));
   const filterVals = {};
@@ -134,6 +134,9 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
   }
   function render() {
     const r = filtered();
+    // Jadval ustidagi ko'rsatkichlar filtrga ergashishi uchun (sana oralig'i, qidiruv, select'lar).
+    // Chaqiruvchi faqat o'z blokini chizadi — jadvalga tegmaydi, aks holda cheksiz aylanish bo'ladi.
+    onFilter?.(r);
     const pages = Math.max(1, Math.ceil(r.length / pageSize)); if (page >= pages) page = pages - 1;
     const slice = r.slice(page * pageSize, (page + 1) * pageSize);
     const cols = columns.filter((c) => visible.has(c.key));
@@ -145,7 +148,13 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
   }
   if (search) tb.append(h('input', { class: 'input sm', placeholder: 'Qidirish…', onInput: (e) => { q = e.target.value; page = 0; render(); } }));
   for (const f of filters) tb.append(h('select', { class: 'select sm', onChange: (e) => { filterVals[f.key] = e.target.value; page = 0; render(); } }, h('option', { value: '' }, f.label), ...f.options.map((o) => { const [v, l] = Array.isArray(o) ? o : [o, statusLabel(o)]; return h('option', { value: v }, l); })));
-  if (dateKey) tb.append(h('input', { class: 'input sm', type: 'date', title: 'Boshlanish sanasi', onChange: (e) => { from = e.target.value; render(); } }), h('input', { class: 'input sm', type: 'date', title: 'Tugash sanasi', onChange: (e) => { to = e.target.value; render(); } }));
+  if (dateKey) {
+    const fromInp = h('input', { class: 'input sm', type: 'date', title: 'Boshlanish sanasi', onChange: (e) => { from = e.target.value; page = 0; render(); } });
+    const toInp = h('input', { class: 'input sm', type: 'date', title: 'Tugash sanasi', onChange: (e) => { to = e.target.value; page = 0; render(); } });
+    // Sanani standart holatga qaytarish — `dateRange()` dagi bilan bir xil tugma (8-bo'lim, kanonik variant)
+    const clr = h('button', { class: 'btn xs ghost', title: 'Barcha davr (sanani tozalash)', onClick: () => { fromInp.value = ''; toInp.value = ''; from = ''; to = ''; page = 0; render(); } }, icon('x', 13));
+    tb.append(fromInp, toInp, clr);
+  }
   if (toolbarExtra) tb.append(...[toolbarExtra].flat());
   tb.append(h('span', { class: 'grow' }));
   const colBtn = h('button', { class: 'btn sm ghost', title: 'Ustunlar' }, icon('columns', 15), 'Ustunlar');
