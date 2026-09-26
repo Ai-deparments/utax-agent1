@@ -17,7 +17,8 @@ export const App = {
 };
 window.App = App;
 const root = document.getElementById('root');
-const logoMark = () => h('div', { class: 'mark' }, icon('x_mark', 20));
+// Brend belgisi — oq fon uchun fonsiz qora X (public/icons/logo.svg); favicon esa qora fonli favicon.svg
+const logoMark = () => h('img', { class: 'mark', src: '/icons/logo.svg', alt: 'UTAX Finance', width: 32, height: 32 });
 
 // ---------- LOGIN ----------
 /**

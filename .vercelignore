@@ -8,3 +8,12 @@ tests/
 node_modules/
 *.db
 *.db-*
+# ERP token (rasm va fayl) — hech qachon yuklanmaydi
+ERP/
+.erp-token
+# Haqiqiy moliyaviy fayllar va hisobotlar
+*.xls
+*.xlsx
+*.xlsm
+UTAX-LOYIHA-HISOBOT.md
+.claude/

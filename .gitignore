@@ -23,3 +23,5 @@ ERP/
 
 # Ko‘p kompaniyali bank reyestri (hisob raqamlari, kassa yig‘indilari) — foydalanuvchi ma’lumoti
 data/bank-registry.json
+# Vercel CLI (vercel link) — OIDC token
+.env.local
