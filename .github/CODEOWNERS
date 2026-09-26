@@ -1,0 +1,9 @@
+# Har PR'ga avtomatik ko'rib chiquvchi so'raladi
+*                       @SARDORALOYEV @zone24uzz
+# Xavfsizlik va infratuzilma — ikkalasi ham ko'rsin
+/.github/               @SARDORALOYEV @zone24uzz
+/src/core/auth.mjs      @SARDORALOYEV @zone24uzz
+/src/core/sealed.mjs    @SARDORALOYEV @zone24uzz
+/scripts/secret-scan.mjs @SARDORALOYEV @zone24uzz
+/vercel.json            @SARDORALOYEV @zone24uzz
+/.vercelignore          @SARDORALOYEV @zone24uzz

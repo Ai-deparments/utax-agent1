@@ -86,5 +86,6 @@ Har qanday sahifa, komponent yoki stilni yaratishdan yoki o'zgartirishdan **oldi
 ## Texnik eslatmalar
 
 - Node 22.5+, paketsiz, `node:sqlite`. Ishga tushirish: `npm start` (port 8100). Testlar: `npm test`.
+- CI (`.github/workflows/ci.yml`): `npm run secrets` (sir skaneri) → `npm run check` → `npm test`. Pre-push hook ham shu uchtasini yurgizadi. Xavfsizlik qoidalari: [SECURITY.md](SECURITY.md).
 - Bo'sh tizim yaratish: `node src/seed/seed.mjs --reset` (bazani o'chiradi — avval `data/backups/` ga nusxa oling).
 - Backend o'zgarsa serverni qayta ishga tushiring (watch yo'q).
