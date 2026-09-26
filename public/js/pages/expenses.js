@@ -1,5 +1,5 @@
 import { get, post, patch, qs } from '../api.js';
-import { SOURCE_LABEL, actionLabel, dateRange, rangeLabel, h, kpiCard, card, fmt, money, short, date, dt, badge, dataTable, kv, formModal, drawer, toast, err, today, promptDlg, statusLabel, icon, emptyState, monthLabel } from '../ui.js';
+import { SOURCE_LABEL, actionLabel, rangeLabel, h, kpiCard, card, fmt, money, short, date, dt, badge, dataTable, kv, formModal, drawer, toast, err, today, promptDlg, statusLabel, icon, emptyState, monthLabel } from '../ui.js';
 import { donutChart, barChart } from '../charts.js';
 
 export default async function render(root, { setTitle, can, params, me, roleLabel }) {
@@ -10,18 +10,20 @@ export default async function render(root, { setTitle, can, params, me, roleLabe
     { key: 'code', label: 'Kod', render: (r) => h('b', {}, r.code) }, { key: 'expense_date', label: 'Sana', date: true }, { key: 'department_name', label: 'Bo‘lim' }, { key: 'category_name', label: 'Kategoriya', render: (r) => h('span', {}, r.category_name || h('span', { class: 'neg' }, 'aniqlanmagan'), r.category_source === 'AI_RULE_UNCONFIRMED' ? h('span', { class: 'badge warn', style: { marginLeft: '4px' } }, 'AI taklifi ' + Math.round((r.category_confidence || 0) * 100) + '%') : null) },
     { key: 'purpose', label: 'Maqsad', render: (r) => h('div', { style: { maxWidth: '300px' } }, r.purpose, r.contract_number ? h('div', { class: 'xs muted' }, r.contract_number) : null) }, { key: 'amount', label: 'Summa', money: true }, { key: 'requested_by_name', label: 'So‘ragan' }, { key: 'required_date', label: 'Kerak sana', date: true }, { key: 'status', label: 'Holat', badge: true }, { key: 'paid_at', label: 'To‘langan', date: true },
   ];
-  const table = dataTable({ columns: cols, rows: [], onRow: (r) => openDetail(r.id), dateKey: 'expense_date', exportName: 'xarajatlar', filters: [{ key: 'status', label: 'Holat', options: ['PENDING', 'APPROVED', 'PAID', 'REJECTED', 'POSTPONED'] }, { key: 'department_name', label: 'Bo‘lim', options: depts.map((d) => [d.name, d.name]) }, { key: 'category_name', label: 'Kategoriya', options: cats.map((c) => [c.name, c.name]) }] });
-  const rng = dateRange({ allowEmpty: true, onChange: () => load() });
+  const table = dataTable({ columns: cols, rows: [], onRow: (r) => openDetail(r.id), dateKey: 'expense_date', onDateChange: (from, to) => { dr = { from, to }; load(); }, exportName: 'xarajatlar', filters: [{ key: 'status', label: 'Holat', options: ['PENDING', 'APPROVED', 'PAID', 'REJECTED', 'POSTPONED'] }, { key: 'department_name', label: 'Bo‘lim', options: depts.map((d) => [d.name, d.name]) }, { key: 'category_name', label: 'Kategoriya', options: cats.map((c) => [c.name, c.name]) }] });
+  // Sana filtri faqat jadval toolbar'ida (ilgari header'da ham bor edi — ikkita bir xil filtr chalkashtirardi).
+  // U serverga so'rov yuboradi, shuning uchun KPI kartalar va grafiklar ham davr bo'yicha yangilanadi.
+  let dr = { from: '', to: '' };
   async function load() {
-    const { from, to } = rng.value, R = rng.active;
+    const { from, to } = dr, R = !!(from && to);
     const [rows, s] = await Promise.all([get('/api/expenses' + qs({ status, from, to })), get('/api/expenses/summary' + qs(R ? { from, to } : {}))]);
     table.setRows(rows);
-    const RL = R ? rangeLabel(rng.value) : '';
+    const RL = R ? rangeLabel(dr) : '';
     setTitle('Xarajatlar', 'So‘rov → tasdiqlash zanjiri → to‘lov' + (R ? ' · ' + RL : ''));
     stats.replaceChildren(kpiCard({ size: 'sm', icon: 'receipt', tone: 'red', label: R ? 'Davrdagi xarajatlar' : 'Joriy oy xarajatlari', value: s.total, sub: 'tasdiqlangan va to‘langan' }), kpiCard({ size: 'sm', icon: 'clock', tone: s.pending.n ? 'amber' : 'green', label: 'Tasdiq kutmoqda', value: s.pending.s, sub: `${s.pending.n} ta so‘rov${R ? ' (davrda)' : ''}` }), kpiCard({ size: 'sm', icon: 'layers', tone: 'blue', label: 'Tasdiqlangan, to‘lanmagan', value: s.approved_unpaid.s, sub: R ? `${s.approved_unpaid.n} ta (davrda)` : `${s.approved_unpaid.n} ta (rezervga kiradi)` }), kpiCard({ size: 'sm', icon: 'pie', tone: 'violet', label: 'Eng katta kategoriya', value: s.by_category[0]?.name || '--', sub: short(s.by_category[0]?.amount || 0) }), kpiCard({ size: 'sm', icon: 'briefcase', tone: 'teal', label: 'Xarajat qilgan bo‘limlar', value: String(s.by_department.filter((d) => d.amount > 0).length) }));
     charts.replaceChildren(card('Kategoriyalar bo‘yicha', s.by_category.filter((c) => c.amount > 0).length ? donutChart({ items: s.by_category.filter((c) => c.amount > 0).slice(0, 8).map((c) => ({ name: c.name, value: c.amount })), size: 140 }) : emptyState('Xarajat yo‘q', R ? 'Tanlangan davrda yozuvlar mavjud emas' : 'Joriy oyda yozuvlar mavjud emas', 'pie'), null, { sub: R ? RL : 'joriy oy' }), card('Oylik xarajatlar', barChart({ labels: s.monthly.map((x) => monthLabel(x.period)), series: [{ name: 'Xarajat', values: s.monthly.map((x) => x.amount), color: 'var(--s2)' }], height: 190 }), null, { sub: R ? 'davr oylari' : 'oxirgi 6 oy' }));
   }
-  setTitle('Xarajatlar', 'So‘rov → tasdiqlash zanjiri → to‘lov', [rng.el, can('expenses', 'EDIT') ? h('button', { class: 'btn', onClick: () => directForm() }, icon('plus', 15), 'To‘g‘ridan-to‘g‘ri kiritish') : null, can('expenses', 'CREATE') ? h('button', { class: 'btn pri', onClick: () => requestForm() }, icon('plus', 15), 'Xarajat so‘rovi') : null]);
+  setTitle('Xarajatlar', 'So‘rov → tasdiqlash zanjiri → to‘lov', [can('expenses', 'EDIT') ? h('button', { class: 'btn', onClick: () => directForm() }, icon('plus', 15), 'To‘g‘ridan-to‘g‘ri kiritish') : null, can('expenses', 'CREATE') ? h('button', { class: 'btn pri', onClick: () => requestForm() }, icon('plus', 15), 'Xarajat so‘rovi') : null]);
   root.append(stats, charts, h('div', { class: 'card' }, table.el));
   await load();
   if (params[0] && /^\d+$/.test(params[0])) openDetail(params[0]);
