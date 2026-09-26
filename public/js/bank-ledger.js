@@ -94,7 +94,17 @@ export async function bankBlock(el, { can, query }) {
     }
   }
 
+  /** Karta sarlavhasidagi tugmalar. `d` bo'lmasa ham ishlaydi (reyestr bo'sh holati) */
+  function bankActions(d) {
+    return [
+      can('treasury', 'CREATE') && d ? h('button', { class: 'btn xs', onClick: () => cashDlg(d, load) }, icon('plus', 13), 'Kassa') : null,
+      can('transactions', 'CREATE') ? h('button', { class: 'btn xs', onClick: () => importDlg(load) }, icon('upload', 13), 'Bank ko‘chirmasi') : null,
+    ].filter(Boolean);
+  }
+
   function render(d) {
+    // Reyestr bo'sh bo'lsa pastdagi hech narsa kerak emas — va `d.sources` hali javobda ham bo'lmaydi
+    if (!d.registry.length) return card('Bank hisoblari', emptyState('Reyestr bo‘sh', 'Kompaniya va hisoblar hali kiritilmagan — scripts/bank-import.mjs --registry yoki API orqali qo‘shing', 'bank'), bankActions());
     const comps = d.registry;
     const selCompany = h('select', { class: 'select sm', 'aria-label': 'Kompaniya', onChange: (e) => { st.company = e.target.value; st.account = 'all'; load(); } },
       h('option', { value: 'global', selected: st.company === 'global' }, 'Global — barcha kompaniyalar'),
@@ -106,14 +116,10 @@ export async function bankBlock(el, { can, query }) {
       ...visibleAccs.map((a) => h('option', { value: a.account_number, selected: st.account === a.account_number }, `${st.company === 'global' ? a.cc + ' · ' : ''}${a.label}`)));
     const selMonth = h('select', { class: 'select sm', 'aria-label': 'Oy', onChange: (e) => { st.month = e.target.value; load(); } },
       ...(d.months.length ? d.months.map((m) => h('option', { value: m, selected: m === d.month }, monthLabel(m))) : [h('option', { value: '' }, 'Oy yo‘q')]));
-    const actions = [
-      can('treasury', 'CREATE') ? h('button', { class: 'btn xs', onClick: () => cashDlg(d, load) }, icon('plus', 13), 'Kassa') : null,
-      can('transactions', 'CREATE') ? h('button', { class: 'btn xs', onClick: () => importDlg(load) }, icon('upload', 13), 'Bank ko‘chirmasi') : null,
-    ].filter(Boolean);
+    const actions = bankActions(d);
     const scopeName = d.level === 'banks' ? 'Barcha bank hisoblari' : d.level === 'account' ? d.accounts[0]?.label : d.company ? d.company.code : 'Global';
-    const sources = h('button', { class: 'btn xs ghost', title: 'Ma’lumot olingan asl fayllar', onClick: () => sourcesDlg(d) }, ...d.sources.map((s) => badge(SRC_BADGE[s] || s)), icon('download', 13));
+    const sources = h('button', { class: 'btn xs ghost', title: 'Ma’lumot olingan asl fayllar', onClick: () => sourcesDlg(d) }, ...(d.sources || []).map((s) => badge(SRC_BADGE[s] || s)), icon('download', 13));
     const filters = h('div', { class: 'flex wrap gap8 mb12' }, selCompany, selAccount, selMonth, h('div', { class: 'grow' }), sources);
-    if (!d.registry.length) return card('Bank hisoblari', emptyState('Reyestr bo‘sh', 'Kompaniya va hisoblar hali kiritilmagan — scripts/bank-import.mjs --registry yoki API orqali qo‘shing', 'bank'), actions);
     if (!d.has_data) return card('Bank hisoblari', h('div', {}, filters, emptyState('Ma’lumot yo‘q', `${d.month ? monthLabel(d.month) + ' uchun' : 'Hali'} bank ko‘chirmasi yuklanmagan — “Bank ko‘chirmasi” tugmasi orqali .xls faylni yuklang`, 'upload')), actions, { sub: scopeName });
 
     const net = d.internal_excluded && (d.internal_in || d.internal_out);

@@ -104,7 +104,7 @@ export function formModal({ title, fields, values, submit, submitLabel = 'Saqlas
 
 // ---------- DataTable ----------
 /** columns: [{key,label,money,date,datetime,badge,pct,progress,render,right,width}] */
-export function dataTable({ columns, rows = [], search = true, pageSize = 25, onRow, filters = [], exportName, emptyText = 'Ma’lumot yo‘q', dateKey, footer, toolbarExtra, hideToolbar }) {
+export function dataTable({ columns, rows = [], search = true, pageSize = 25, onRow, filters = [], exportName, emptyText = 'Ma’lumot yo‘q', dateKey, footer, toolbarExtra, hideToolbar, onFilter }) {
   let all = rows, q = '', sortKey = null, sortDir = 1, page = 0, from = '', to = '';
   const visible = new Set(columns.map((c) => c.key));
   const filterVals = {};
@@ -134,6 +134,9 @@ export function dataTable({ columns, rows = [], search = true, pageSize = 25, on
   }
   function render() {
     const r = filtered();
+    // Jadval ustidagi ko'rsatkichlar filtrga ergashishi uchun (sana oralig'i, qidiruv, select'lar).
+    // Chaqiruvchi faqat o'z blokini chizadi — jadvalga tegmaydi, aks holda cheksiz aylanish bo'ladi.
+    onFilter?.(r);
     const pages = Math.max(1, Math.ceil(r.length / pageSize)); if (page >= pages) page = pages - 1;
     const slice = r.slice(page * pageSize, (page + 1) * pageSize);
     const cols = columns.filter((c) => visible.has(c.key));
