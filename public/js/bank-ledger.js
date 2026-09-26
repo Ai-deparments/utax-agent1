@@ -111,7 +111,10 @@ export async function bankBlock(el, { can, query }) {
       can('transactions', 'CREATE') ? h('button', { class: 'btn xs', onClick: () => importDlg(load) }, icon('upload', 13), 'Bank ko‘chirmasi') : null,
     ].filter(Boolean);
     const scopeName = d.level === 'banks' ? 'Barcha bank hisoblari' : d.level === 'account' ? d.accounts[0]?.label : d.company ? d.company.code : 'Global';
-    const sources = h('button', { class: 'btn xs ghost', title: 'Ma’lumot olingan asl fayllar', onClick: () => sourcesDlg(d) }, ...d.sources.map((s) => badge(SRC_BADGE[s] || s)), icon('download', 13));
+    // Ma'lumot yo'q bo'lsa (oysiz javob) `sources` kelmaydi — tugma ham ko'rsatilmaydi
+    const sources = d.sources?.length
+      ? h('button', { class: 'btn xs ghost', title: 'Ma’lumot olingan asl fayllar', onClick: () => sourcesDlg(d) }, ...d.sources.map((s) => badge(SRC_BADGE[s] || s)), icon('download', 13))
+      : null;
     const filters = h('div', { class: 'flex wrap gap8 mb12' }, selCompany, selAccount, selMonth, h('div', { class: 'grow' }), sources);
     if (!d.registry.length) return card('Bank hisoblari', emptyState('Reyestr bo‘sh', 'Kompaniya va hisoblar hali kiritilmagan — scripts/bank-import.mjs --registry yoki API orqali qo‘shing', 'bank'), actions);
     if (!d.has_data) return card('Bank hisoblari', h('div', {}, filters, emptyState('Ma’lumot yo‘q', `${d.month ? monthLabel(d.month) + ' uchun' : 'Hali'} bank ko‘chirmasi yuklanmagan — “Bank ko‘chirmasi” tugmasi orqali .xls faylni yuklang`, 'upload')), actions, { sub: scopeName });
