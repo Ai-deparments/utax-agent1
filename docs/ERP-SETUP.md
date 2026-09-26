@@ -1,7 +1,7 @@
 # UTAXERP ulash — jamoa a'zosi uchun qo'llanma
 
 > **Kimga:** `Ai-deparments/utax-agent1` repo'siga va UTAX tashkilotiga ruxsati bor xodimga.
-> Ruxsati yo'q odam ERP'ga ulana olmaydi: token repoda yo'q, u faqat shaxsiy kanal orqali beriladi.
+> Ruxsati yo'q odam ERP'ga ulana olmaydi: repoda token faqat **shifrlangan** holda yotadi, kalit shaxsiy kanal orqali beriladi.
 
 ---
 
@@ -10,7 +10,8 @@
 | Narsa | Qayerdan |
 |---|---|
 | Repo'ga ruxsat | Tashkilot admini beradi |
-| `.env` fayli (ichida `ERP_TOKEN`) | Loyiha egasidan **shaxsiy xabarda**. Guruhga tashlanmaydi |
+| `.env` fayli (ichida `DATA_VAULT_KEY`) | Loyiha egasidan **shaxsiy xabarda**. Guruhga tashlanmaydi |
+| `ERP_TOKEN` | **Kerak emas** — token repodagi seyfdan (`data/vault/erp-token.enc`) o'zi olinadi |
 | Node.js 22.5+ | nodejs.org |
 
 `.env`, `.erp-token` va `ERP/` papkasi `.gitignore` da — ular hech qachon commit qilinmaydi.
@@ -24,7 +25,7 @@ git clone https://github.com/Ai-deparments/utax-agent1.git
 cd utax-agent1
 
 # 1) .env ni joyiga qo'ying (loyiha egasi yuborgan fayl).
-#    Yoki .env.example dan nusxa olib, ERP_TOKEN ni to'ldiring:
+#    Yoki .env.example dan nusxa olib, DATA_VAULT_KEY ni to'ldiring — ERP_TOKEN shart emas:
 cp .env.example .env
 
 # 2) ERP'dan barcha ma'lumotni tortib, tizim jadvallariga moslashtirish (~3-5 daqiqa)
@@ -42,7 +43,13 @@ Kirish: `.env` dagi `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
 
 ## 3. Keyin nima bo'ladi
 
-Server ishga tushganda `.env` dagi `ERP_TOKEN` ni ko'rib, **UTAXERP integratsiyasini o'zi ulaydi** (token bazada AES-256-GCM bilan shifrlanadi). Shundan keyin:
+Server ishga tushganda tokenni topib, **UTAXERP integratsiyasini o'zi ulaydi** (token bazada AES-256-GCM bilan shifrlanadi). Token qayerdan olinadi:
+
+1. `.env` dagi `ERP_TOKEN` — to'ldirilgan bo'lsa;
+2. aks holda repodagi seyf `data/vault/erp-token.enc` — `DATA_VAULT_KEY` bilan ochiladi.
+
+Logda qaysi manba ishlatilgani yoziladi: `[erp] UTAXERP integratsiyasi ulandi (seyfdagi shifrlangan token)`.
+Tokenning muddatini ko'rish: `npm run erp:token:show`. Shundan keyin:
 
 | Ish | Qachon | Nima qiladi |
 |---|---|---|
@@ -104,7 +111,9 @@ Bular tizim xatosi emas — manbada shunday. **1-QOIDA:** ERP'da yo'q qiymat NUL
 | Belgi | Sabab / yechim |
 |---|---|
 | `HTTP 401 — token noto'g'ri/muddati o'tgan` | Token muddati tugagan. Loyiha egasidan yangisini so'rang |
-| `ERP_TOKEN yo'q` | `.env` da `ERP_TOKEN` to'ldirilmagan |
+| `ERP_TOKEN yo'q` | `.env` da na `ERP_TOKEN`, na `DATA_VAULT_KEY` bor (yoki seyf fayli yo'q) |
+| `Seyfdagi tokenni ochib bo'lmadi` | `DATA_VAULT_KEY` noto'g'ri — loyiha egasidan to'g'risini so'rang |
+| `Seyfdagi token muddati o'tgan` | Token egasi yangilashi kerak: `npm run erp:token:seal -- <yangi-token>` va PR |
 | `Bazani ko'chirib bo'lmadi` | Server ishlab turibdi — avval to'xtating |
 | Qoldiqlar `--` | Hisobning boshlang'ich qoldig'i yo'q (ERP'dan kelmagan) |
 | Dashboard 0 ko'rsatyapti | Joriy oyda yozuv yo'q — davr tanlagichidan oxirgi oyni tanlang |

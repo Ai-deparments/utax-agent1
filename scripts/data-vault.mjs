@@ -16,33 +16,16 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { encrypt, decrypt, parseKey, sha, keyFingerprint } from '../src/core/sealed.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const MAGIC = Buffer.from('UTAXVLT1');
 const ENV = path.join(ROOT, '.env');
 
-export function encrypt(plain, key) {
-  const iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
-  const body = Buffer.concat([c.update(zlib.gzipSync(plain, { level: 9 })), c.final()]);
-  return Buffer.concat([MAGIC, iv, c.getAuthTag(), body]);
-}
-export function decrypt(blob, key) {
-  if (!blob.subarray(0, MAGIC.length).equals(MAGIC)) throw new Error('Seyf fayli emas (sarlavha mos emas)');
-  const iv = blob.subarray(8, 20), tag = blob.subarray(20, 36), body = blob.subarray(36);
-  const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  d.setAuthTag(tag);
-  try { return zlib.gunzipSync(Buffer.concat([d.update(body), d.final()])); }
-  catch { throw new Error('Ochib bo‘lmadi: kalit noto‘g‘ri yoki fayl buzilgan'); }
-}
-export function parseKey(hex) {
-  if (!/^[0-9a-f]{64}$/i.test(String(hex || '').trim())) throw new Error('DATA_VAULT_KEY yo‘q yoki noto‘g‘ri (64 ta hex belgi kerak). .env ga qo‘ying — kalitni loyiha egasidan so‘rang.');
-  return Buffer.from(String(hex).trim(), 'hex');
-}
-const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+// Kriptografiya src/core/sealed.mjs da (bitta joyda) — bu yerdan qayta eksport qilinadi
+export { encrypt, decrypt, parseKey };
+
 function readEnvKey() {
   if (process.env.DATA_VAULT_KEY) return process.env.DATA_VAULT_KEY;
   if (!fs.existsSync(ENV)) return '';
@@ -90,7 +73,7 @@ async function main() {
       fs.writeFileSync(out, blob);
       files.push({ name: it.name, enc: path.relative(vault, out).replace(/\\/g, '/'), bytes: it.data.length, sha256: sha(it.data), enc_bytes: blob.length });
     }
-    const manifest = { format: 'UTAXVLT1 (AES-256-GCM + gzip)', created_at: new Date().toISOString(), key_fingerprint: sha(key).slice(0, 12), files };
+    const manifest = { format: 'UTAXVLT1 (AES-256-GCM + gzip)', created_at: new Date().toISOString(), key_fingerprint: keyFingerprint(key), files };
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
     console.log(`Seyf yangilandi: ${path.relative(ROOT, vault)}`);
     for (const f of files) console.log(`  ${f.enc}  (${f.bytes} bayt → ${f.enc_bytes} bayt shifrlangan)`);
@@ -99,7 +82,7 @@ async function main() {
 
   if (cmd === 'verify' || cmd === 'unpack') {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    if (manifest.key_fingerprint !== sha(key).slice(0, 12)) throw new Error('Kalit bu seyfga mos emas (fingerprint farq qiladi) — to‘g‘ri DATA_VAULT_KEY ni so‘rang');
+    if (manifest.key_fingerprint !== keyFingerprint(key)) throw new Error('Kalit bu seyfga mos emas (fingerprint farq qiladi) — to‘g‘ri DATA_VAULT_KEY ni so‘rang');
     const opened = manifest.files.map((f) => {
       const plain = decrypt(fs.readFileSync(path.join(vault, f.enc)), key);
       if (sha(plain) !== f.sha256) throw new Error(`${f.name}: xesh mos emas — fayl buzilgan`);

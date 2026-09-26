@@ -46,6 +46,19 @@ Haqiqiy baza git'ga ochiq holda tushmaydi (`data/*.db` ignore'da). Jamoa uchun u
 - Ochish: `.env` ga kalitni qo'yish → server to'xtagan holda `npm run vault:unpack` → `npm start`.
 - Yangilash (ma'lumot o'zgarganda): `npm run vault:pack -- --add <manba.xlsx>` → commit `data/vault/`.
 
+### UTAXERP tokeni (seyfda, 2026-09-26)
+
+Token har oy yangilanadi va `.env` git'ga tushmaydi — shu sababli a'zolar pull qilgach ERP 401 berardi. Endi token ham seyfda:
+`data/vault/erp-token.enc` (AES-256-GCM, xuddi shu `DATA_VAULT_KEY`). Yonida `erp-token.json` — faqat muddat va kalit izi, tokenning o'zi yo'q.
+
+| Kim | Nima qiladi |
+|---|---|
+| **Jamoa a'zosi** | `git pull` → `npm start`. `.env` da `DATA_VAULT_KEY` bo'lsa yetarli, `ERP_TOKEN` shart emas |
+| **Token egasi** (oyiga bir marta) | `npm run erp:token:seal -- <yangi-token>` → `data/vault/` ni commit qilib PR ochadi |
+| **Tekshirish** | `npm run erp:token:show` — kim uchun, necha kun qolgani (token ekranga chiqmaydi) |
+
+Tanlov tartibi: `.env` dagi `ERP_TOKEN` → seyf. Bazadagi token (UI'dagi "Tokenni yangilash") ikkalasidan yangiroq bo'lsa, u saqlanib qoladi — `ensureErpIntegration` muddatlarni solishtiradi. Kalit yo'q yoki fayl buzuq bo'lsa server ogohlantirish berib odatdagidek ishga tushadi. `seal` muddati o'tgan yoki JWT bo'lmagan qiymatni repoga qo'ymaydi.
+
 ### Texnik qoldiq tuzatmalari (foydalanuvchi so'rovi bilan, 2026-09-21)
 
 Excel'da 01.07 boshlang'ich qoldig'i yo'q edi. Shuning uchun bank va kassa minusga tushdi. Foydalanuvchi so'rovi bilan minus summasi **alohida** `balance_adjustments` jadvaliga kiritildi. Bank uchun +1 840 404 091,41, kassa uchun +61 804 920 so'm, turi `NEGATIVE_COVER`.

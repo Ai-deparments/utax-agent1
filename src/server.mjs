@@ -267,8 +267,9 @@ export async function prepareApp(app) {
  * Shu tufayli yangi xodim faqat .env ni qo'yadi, qolganini tizim o'zi qiladi (soatlik + kunlik sync).
  */
 export function ensureErpIntegration(app) {
-  const { token, base, autoRegister } = config.erp;
+  const { token, base, autoRegister, tokenSource } = config.erp;
   if (!token || !autoRegister) return null;
+  const src = tokenSource === 'vault' ? 'seyfdagi shifrlangan token' : '.env dagi ERP_TOKEN';
   const cur = app.db.get("SELECT * FROM integrations WHERE type='UTAXERP' ORDER BY id DESC LIMIT 1");
   const cfg = { base_url: base, endpoint: '/api/inOutMoney/find-many', mode: 'prisma', auth_type: 'bearer', since_field: 'date',
     field_map: { date: 'date', amount: 'value', direction: 'inOrOut', purpose: 'comment', id: 'id' }, page_size: 200, days_back: 900, bank_account_id: 1, full_mirror: true };
@@ -277,15 +278,15 @@ export function ensureErpIntegration(app) {
     let same = false, dbToken = null;
     try { dbToken = parseJson(decryptSecret(cur.secret_config), {}).api_key; same = dbToken === token && parseJson(cur.config, {}).base_url === base && cur.is_active; } catch {}
     if (same) return cur.id;
-    // UI orqali ("Tokenni yangilash") kiritilgan token .env dagidan yangiroq bo'lsa — eskisi bilan almashtirilmaydi
+    // UI orqali ("Tokenni yangilash") kiritilgan token manbadagidan yangiroq bo'lsa — eskisi bilan almashtirilmaydi
     const envExp = jwtExpiry(token), dbExp = jwtExpiry(dbToken);
     if (dbExp && (!envExp || dbExp > envExp)) return cur.id;
     app.db.run('UPDATE integrations SET config=?, secret_config=?, is_active=1 WHERE id=?', JSON.stringify(cfg), secret, cur.id);
-    console.log(`[erp] UTAXERP integratsiyasi yangilandi (.env dagi ERP_TOKEN) — sync har ${Math.round(config.erp.syncMs / 60000)} daq, to‘liq ${config.erp.fullAt}`);
+    console.log(`[erp] UTAXERP integratsiyasi yangilandi (${src}) — sync har ${Math.round(config.erp.syncMs / 60000)} daq, to‘liq ${config.erp.fullAt}`);
     return cur.id;
   }
   const id = app.db.insert('integrations', { type: 'UTAXERP', name: `UTAXERP (${base.replace(/^https?:\/\//, '')})`, config: JSON.stringify(cfg), secret_config: secret, is_active: 1, created_at: nowIso() });
-  console.log(`[erp] UTAXERP integratsiyasi ulandi (.env dagi ERP_TOKEN) — sync har ${Math.round(config.erp.syncMs / 60000)} daq, to‘liq ${config.erp.fullAt}`);
+  console.log(`[erp] UTAXERP integratsiyasi ulandi (${src}) — sync har ${Math.round(config.erp.syncMs / 60000)} daq, to‘liq ${config.erp.fullAt}`);
   return id;
 }
 
