@@ -2,11 +2,13 @@
 // Ma'lumot: /api/bank-ledger/* — bank ko'chirmasi fayli va qo'lda kiritilgan kassa. ERP'dan mustaqil yuklanadi:
 // ERP yoki asosiy dashboard xato bersa ham bu blok ishlaydi (va aksincha).
 import { get, post, put, qs, api } from './api.js';
-import { h, card, kpiCard, fmt, money, date, dt, badge, monthLabel, emptyState, alert, drawer, modal, formModal, dataTable, fileDrop, toast, err, icon, kv } from './ui.js';
+import { h, card, kpiCard, fmt, money, date, dt, badge, rangeLabel, emptyState, alert, drawer, modal, formModal, dataTable, fileDrop, toast, err, icon, kv } from './ui.js';
 
 const SRC_BADGE = { BANK_FILE: 'SRC_BANK_FILE', MANUAL: 'SRC_MANUAL', ERP: 'SRC_ERP' };
 const readB64 = (f) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(fr.error); fr.readAsDataURL(f); });
 const fmt2 = (n) => fmt(n, 2);
+/** Ko'rsatiladigan davr: ko'chirma qamroviga qirqilgan (effective) yoki tanlangan oraliq */
+const period = (d) => rangeLabel(d.effective || { from: d.from, to: d.to });
 const srcOf = (a) => a.source_file || a.statement?.source_file || null;
 /** Manba faylini yuklab olish — raqam aynan qaysi fayldan olinganini tekshirish uchun */
 async function downloadSource(f) {
@@ -33,7 +35,7 @@ function sourceBadge(a) {
 /** Doiradagi barcha manba fayllari ro'yxati */
 function sourcesDlg(d) {
   const rows = d.accounts.filter((a) => a.has_data);
-  modal({ title: `Manba fayllari · ${monthLabel(d.month)}`, body: h('div', {},
+  modal({ title: `Manba fayllari · ${period(d)}`, body: h('div', {},
     h('div', { class: 'list' }, ...rows.map((a) => {
       const f = srcOf(a);
       return h('div', { class: 'li' }, h('div', { class: 'grow' }, h('div', { class: 't' }, `${a.company_code} · ${a.label}`),
@@ -67,23 +69,27 @@ function tokenDlg(done) {
 }
 
 /**
- * Bank bloki. Tanlov URL'da saqlanadi: #/dashboard?company=ugs&account=<raqam>&month=2026-07
+ * Bank bloki. Davr — dashboard tepasidagi sana filtri (getRange); kompaniya va hisob URL'da: #/dashboard?company=ugs&account=<raqam>.
+ * Qaytaradi: { reload } — sana filtri o'zgarganda dashboard chaqiradi.
  */
-export async function bankBlock(el, { can, query }) {
-  const st = { company: (query.company || 'global').toLowerCase(), account: query.account || 'all', month: query.month || '' };
+export async function bankBlock(el, { can, query, getRange = () => null }) {
+  const st = { company: (query.company || 'global').toLowerCase(), account: query.account || 'all', from: '', to: '' };
   const saveUrl = () => {
-    const q = qs({ company: st.company !== 'global' ? st.company : '', account: st.account !== 'all' ? st.account : '', month: st.month });
+    const q = qs({ company: st.company !== 'global' ? st.company : '', account: st.account !== 'all' ? st.account : '' });
     history.replaceState(null, '', '#/dashboard' + q);
   };
+  let requested = null; // oxirgi so'ralgan oraliq kaliti — dashboard shu bilan qayta yuklash kerakligini biladi
   async function load() {
+    const r = getRange();
+    requested = r ? `${r.from}|${r.to}` : '';
     let d;
-    try { d = await get('/api/bank-ledger/summary' + qs({ company: st.company, account: st.account, month: st.month })); }
+    try { d = await get('/api/bank-ledger/summary' + qs({ company: st.company, account: st.account, from: r?.from, to: r?.to })); }
     catch (e) {
       // Noto'g'ri URL tanlovi (masalan, o'chirilgan hisob) — globalga qaytamiz
       if (e.status === 404 && (st.company !== 'global' || st.account !== 'all')) { st.company = 'global'; st.account = 'all'; saveUrl(); return load(); }
       el.replaceChildren(card('Bank hisoblari', alert('crit', 'Bank bloki yuklanmadi: ' + e.message))); return;
     }
-    st.month = d.month || '';
+    st.from = d.from || ''; st.to = d.to || '';
     saveUrl();
     el.replaceChildren(render(d));
     if (d.has_data) {
@@ -104,36 +110,41 @@ export async function bankBlock(el, { can, query }) {
       h('option', { value: 'all', selected: st.account === 'all' }, 'Barcha hisoblar'),
       h('option', { value: 'banks', selected: st.account === 'banks' }, 'Barcha bank hisoblari (UGS + UTAX, kassasiz)'),
       ...visibleAccs.map((a) => h('option', { value: a.account_number, selected: st.account === a.account_number }, `${st.company === 'global' ? a.cc + ' · ' : ''}${a.label}`)));
-    const selMonth = h('select', { class: 'select sm', 'aria-label': 'Oy', onChange: (e) => { st.month = e.target.value; load(); } },
-      ...(d.months.length ? d.months.map((m) => h('option', { value: m, selected: m === d.month }, monthLabel(m))) : [h('option', { value: '' }, 'Oy yo‘q')]));
     const actions = [
       can('treasury', 'CREATE') ? h('button', { class: 'btn xs', onClick: () => cashDlg(d, load) }, icon('plus', 13), 'Kassa') : null,
       can('transactions', 'CREATE') ? h('button', { class: 'btn xs', onClick: () => importDlg(load) }, icon('upload', 13), 'Bank ko‘chirmasi') : null,
     ].filter(Boolean);
     const scopeName = d.level === 'banks' ? 'Barcha bank hisoblari' : d.level === 'account' ? d.accounts[0]?.label : d.company ? d.company.code : 'Global';
-    // Ma'lumot yo'q bo'lsa (oysiz javob) `sources` kelmaydi — tugma ham ko'rsatilmaydi
+    // Ma'lumot yo'q bo'lsa `sources` bo'sh — tugma ham ko'rsatilmaydi
     const sources = d.sources?.length
       ? h('button', { class: 'btn xs ghost', title: 'Ma’lumot olingan asl fayllar', onClick: () => sourcesDlg(d) }, ...d.sources.map((s) => badge(SRC_BADGE[s] || s)), icon('download', 13))
       : null;
-    const filters = h('div', { class: 'flex wrap gap8 mb12' }, selCompany, selAccount, selMonth, h('div', { class: 'grow' }), sources);
+    const filters = h('div', { class: 'flex wrap gap8 mb12' }, selCompany, selAccount, h('div', { class: 'grow' }), sources);
     if (!d.registry.length) return card('Bank hisoblari', emptyState('Reyestr bo‘sh', 'Kompaniya va hisoblar hali kiritilmagan — scripts/bank-import.mjs --registry yoki API orqali qo‘shing', 'bank'), actions);
-    if (!d.has_data) return card('Bank hisoblari', h('div', {}, filters, emptyState('Ma’lumot yo‘q', `${d.month ? monthLabel(d.month) + ' uchun' : 'Hali'} bank ko‘chirmasi yuklanmagan — “Bank ko‘chirmasi” tugmasi orqali .xls faylni yuklang`, 'upload')), actions, { sub: scopeName });
+    const cov = d.coverage ? `Bank ko‘chirmalari mavjud davr: ${rangeLabel(d.coverage)}` : 'Hali bank ko‘chirmasi yuklanmagan';
+    if (!d.has_data) return card('Bank hisoblari', h('div', {}, filters, emptyState('Ma’lumot yo‘q', `${d.from ? rangeLabel({ from: d.from, to: d.to }) + ' oralig‘ida' : 'Hali'} bank ko‘chirmasi yo‘q. ${cov}. Yangi ko‘chirmani “Bank ko‘chirmasi” tugmasi bilan yuklang.`, 'upload')), actions, { sub: scopeName });
 
     const net = d.internal_excluded && (d.internal_in || d.internal_out);
-    const inSub = net ? `Yalpi ${fmt(d.inflow_gross)} · ichki o‘tkazmasiz` : d.internal_in ? `Shundan ichki o‘tkazma ${fmt(d.internal_in)}` : 'Oy davomida kirim';
-    const outSub = net ? `Yalpi ${fmt(d.outflow_gross)} · ichki o‘tkazmasiz` : d.internal_out ? `Shundan ichki o‘tkazma ${fmt(d.internal_out)}` : 'Oy davomida chiqim';
+    const inSub = net ? `Yalpi ${fmt(d.inflow_gross)} · ichki o‘tkazmasiz` : d.internal_in ? `Shundan ichki o‘tkazma ${fmt(d.internal_in)}` : 'Davr davomida kirim';
+    const outSub = net ? `Yalpi ${fmt(d.outflow_gross)} · ichki o‘tkazmasiz` : d.internal_out ? `Shundan ichki o‘tkazma ${fmt(d.internal_out)}` : 'Davr davomida chiqim';
+    const balSub = d.check_ok === true ? 'Fayldagi yakuniy qoldiq bilan mos' : d.check_ok === null ? 'Hisoblangan — davr oxiri ko‘chirma oxiriga to‘g‘ri kelmaydi' : d.closing === null ? 'Noma’lum — ma’lumot yetishmaydi' : 'Tekshiring: fayl bilan farq bor';
     const link = (el2, fn) => { el2.addEventListener('click', (e) => { e.preventDefault(); fn(); }); return el2; };
     const kpis = h('div', { class: 'kpis c4 mb12' },
-      link(kpiCard({ size: 'sm', icon: 'wallet', tone: 'blue', href: '#', label: `Boshlang‘ich qoldiq · ${monthLabel(d.month)}`, value: d.opening, sub: d.missing.length ? `Ma’lumot yo‘q: ${d.missing.join(', ')}` : 'Bank ko‘chirmasidan' }), () => breakdown(d)),
+      link(kpiCard({ size: 'sm', icon: 'wallet', tone: 'blue', href: '#', label: `Boshlang‘ich qoldiq · ${date(d.effective?.from || d.from)}`, value: d.opening, sub: d.missing.length ? `Ma’lumot yo‘q: ${d.missing.join(', ')}` : 'Bank ko‘chirmasidan' }), () => breakdown(d)),
       link(kpiCard({ size: 'sm', icon: 'inflow', tone: 'green', href: '#', label: 'Tushum', value: d.inflow, sub: inSub }), () => linesDrawer(d, st, 'IN')),
       link(kpiCard({ size: 'sm', icon: 'receipt', tone: 'orange', href: '#', label: 'Xarajat', value: d.outflow, sub: outSub }), () => linesDrawer(d, st, 'OUT')),
-      link(kpiCard({ size: 'sm', accent: true, icon: 'coins', tone: 'green', href: '#', label: 'Balans (yakuniy qoldiq)', value: d.closing, sub: d.check_ok ? 'Fayldagi yakuniy qoldiq bilan mos' : 'Tekshiring: fayl bilan farq bor', cls: d.check_ok ? '' : 'warn' }), () => breakdown(d)));
-    return card('Bank hisoblari', h('div', {}, filters, kpis,
-      net ? h('div', { class: 'small muted' }, `Ichki o‘tkazmalar (${scopeName} hisoblari orasida) tushum va xarajatdan chiqarilgan: ${fmt(d.internal_in)} so‘m. Hisob darajasida ular saqlanadi.`) : null),
-    actions, { sub: `${scopeName} · ${monthLabel(d.month)}` });
+      link(kpiCard({ size: 'sm', accent: true, icon: 'coins', tone: 'green', href: '#', label: `Balans (yakuniy qoldiq) · ${date(d.effective?.to || d.to)}`, value: d.closing, sub: balSub, cls: d.check_ok === false ? 'warn' : '' }), () => breakdown(d)));
+    const notes = [
+      d.clipped ? `Tanlangan oraliq: ${rangeLabel({ from: d.from, to: d.to })}. ${cov} — raqamlar shu davr bo‘yicha.` : null,
+      net ? `Ichki o‘tkazmalar (${scopeName} hisoblari orasida) tushum va xarajatdan chiqarilgan: ${fmt(d.internal_in)} so‘m. Hisob darajasida ular saqlanadi.` : null,
+      ...d.accounts.filter((a) => !a.has_data && a.reason).map((a) => `${a.company_code} · ${a.label}: ${a.reason}.${a.kind === 'CASH' ? ' Faqat bank qoldig‘ini ko‘rish uchun “Barcha bank hisoblari” ni tanlang.' : ''}`),
+    ].filter(Boolean);
+    return card('Bank hisoblari', h('div', {}, filters, kpis, ...notes.map((t) => h('div', { class: 'small muted' }, t))),
+    actions, { sub: `${scopeName} · ${period(d)}` });
   }
 
   await load();
+  return { reload: load, get requested() { return requested; } };
 }
 
 /** Boshlang'ich/Balans kartasi → hisoblar kesimidagi tekshiruv jadvali */
@@ -147,17 +158,17 @@ function breakdown(d) {
   const table = h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' },
     h('thead', {}, h('tr', {}, ...['Hisob', 'Boshlang‘ich', 'Tushum', 'Xarajat', 'Balans', 'Fayldagi qoldiq', 'Tekshiruv', 'Manba'].map((t, i) => h('th', { class: i && i < 6 ? 'right' : '' }, t)))),
     h('tbody', {}, ...rows.map(tr), total)));
-  drawer({ title: `Hisoblar kesimi · ${monthLabel(d.month)}`, body: h('div', {}, card('Boshlang‘ich + tushum − xarajat = balans', table, null, { tight: true }),
+  drawer({ title: `Hisoblar kesimi · ${period(d)}`, body: h('div', {}, card('Boshlang‘ich + tushum − xarajat = balans', table, null, { tight: true }),
     alert('mint', 'Bank hisoblari bo‘yicha qoldiq har doim bank ko‘chirmasidan olinadi. Kassa — qo‘lda kiritilgan oylik yig‘indi.')) });
 }
 
 /** Tushum/Xarajat kartasi → operatsiyalar ro'yxati (kartadagi raqam bilan bir xil doira) */
 async function linesDrawer(d, st, direction) {
-  const title = `${direction === 'IN' ? 'Tushum' : 'Xarajat'} · ${d.level === 'banks' ? 'Barcha bank hisoblari' : d.level === 'account' ? d.accounts[0]?.label : d.company?.code || 'Global'} · ${monthLabel(d.month)}`;
+  const title = `${direction === 'IN' ? 'Tushum' : 'Xarajat'} · ${d.level === 'banks' ? 'Barcha bank hisoblari' : d.level === 'account' ? d.accounts[0]?.label : d.company?.code || 'Global'} · ${period(d)}`;
   const dr = drawer({ title, body: h('div', { class: 'empty-state' }, 'Yuklanmoqda…') });
   try {
     const net = d.internal_excluded ? 1 : 0;
-    const r = await get('/api/bank-ledger/lines' + qs({ company: st.company, account: st.account, month: d.month, direction, net }));
+    const r = await get('/api/bank-ledger/lines' + qs({ company: st.company, account: st.account, from: st.from, to: st.to, direction, net }));
     const t = dataTable({
       columns: [
         { key: 'tx_date', label: 'Sana', date: true, nowrap: true },
@@ -169,7 +180,7 @@ async function linesDrawer(d, st, direction) {
         { key: 'is_internal', label: 'Turi', render: (x) => (x.is_internal ? badge('INTERNAL') : badge(x.direction === 'IN' ? 'INCOME' : 'EXPENSE')), exportValue: (x) => (x.is_internal ? 'Ichki o‘tkazma' : '') },
         { key: 'amount', label: 'Summa', money: true },
       ],
-      rows: r.rows, exportName: `bank-${direction === 'IN' ? 'tushum' : 'xarajat'}-${d.month}`, emptyText: 'Bu doirada operatsiya yo‘q',
+      rows: r.rows, exportName: `bank-${direction === 'IN' ? 'tushum' : 'xarajat'}-${d.from}_${d.to}`, emptyText: 'Bu doirada operatsiya yo‘q',
       footer: (rows) => h('tr', { class: 'total' }, h('td', { colspan: 7 }, `Jami: ${rows.length} ta`), h('td', { class: 'right tnum' }, fmt2(rows.reduce((s, x) => s + x.amount, 0)))),
     });
     const cashNote = r.has_cash ? alert('info', 'Kassa bo‘yicha operatsiyalar ro‘yxati yo‘q — kassa oylik yig‘indi sifatida qo‘lda kiritilgan va kartadagi jamiga qo‘shilgan.') : null;
@@ -209,7 +220,7 @@ function importDlg(done) {
 function cashDlg(d, done) {
   const cash = d.registry.flatMap((c) => c.accounts.filter((a) => a.kind === 'CASH').map((a) => [a.account_number, `${c.code} · ${a.label}`]));
   if (!cash.length) { toast('Reyestrda kassa yo‘q', 'err'); return; }
-  formModal({ title: 'Kassa — oylik yig‘indi (qo‘lda)', size: 'sm', values: { account_number: cash[0][0], period: d.month },
+  formModal({ title: 'Kassa — oylik yig‘indi (qo‘lda)', size: 'sm', values: { account_number: cash[0][0], period: (d.effective?.to || d.to || '').slice(0, 7) },
     fields: [
       { name: 'account_number', label: 'Kassa', type: 'select', options: cash, required: true, full: true },
       { name: 'period', label: 'Oy', type: 'month', required: true, full: true },
@@ -250,13 +261,13 @@ function summaryTable(d) {
     h('thead', {}, h('tr', {}, ...['Bank hisobi', 'Hisob raqami', 'Boshlang‘ich qoldiq', 'Tushum', 'Xarajat', 'Balans', 'Manba'].map((t, i) => h('th', { class: i >= 2 && i <= 5 ? 'right' : '' }, t)))),
     h('tbody', {}, ...body)));
   const note = d.internal_in || d.internal_out ? h('div', { class: 'small muted', style: { padding: '10px 16px' } }, `Jadvaldagi summalar yalpi (ichki o‘tkazmalar bilan, bank ko‘chirmasidagidek). Ichki o‘tkazmalar: ${fmt(d.internal_in)} so‘m.`) : null;
-  return card('Hisoblar kesimi', h('div', {}, table, note), null, { tight: true, sub: monthLabel(d.month) });
+  return card('Hisoblar kesimi', h('div', {}, table, note), null, { tight: true, sub: period(d) });
 }
 
 /** Operatsiyalar — tanlangan doiradagi barcha kirim/chiqimlar (bank ko'chirmasi qatorlari) */
 async function opsTable(box, d, st) {
   try {
-    const r = await get('/api/bank-ledger/lines' + qs({ company: st.company, account: st.account, month: d.month }));
+    const r = await get('/api/bank-ledger/lines' + qs({ company: st.company, account: st.account, from: st.from, to: st.to }));
     const accs = [...new Map(r.rows.map((x) => [x.account_number, `${x.company_code} · ${x.account_label}`])).entries()];
     const t = dataTable({
       columns: [
@@ -275,11 +286,11 @@ async function opsTable(box, d, st) {
         ...(accs.length > 1 ? [{ key: 'account_number', label: 'Barcha hisoblar', options: accs }] : []),
         { key: 'internal', label: 'Ichki o‘tkazmalar bilan', options: [['0', 'Ichki o‘tkazmasiz'], ['1', 'Faqat ichki o‘tkazmalar']] },
       ],
-      exportName: `bank-operatsiyalar-${d.month}`, emptyText: 'Bu doirada operatsiya yo‘q',
+      exportName: `bank-operatsiyalar-${d.from}_${d.to}`, emptyText: 'Bu doirada operatsiya yo‘q',
       footer: (rows) => h('tr', { class: 'total' }, h('td', { colspan: 6 }, `Jami: ${rows.length} ta`),
         h('td', { class: 'right tnum' }, fmt(rows.reduce((s, x) => s + (x.in_amount || 0), 0))), h('td', { class: 'right tnum' }, fmt(rows.reduce((s, x) => s + (x.out_amount || 0), 0)))),
     });
     const cashNote = r.has_cash ? h('div', { class: 'small muted', style: { padding: '10px 16px' } }, 'Kassa operatsiyalari ro‘yxati yo‘q — kassa oylik yig‘indi sifatida qo‘lda kiritilgan.') : null;
-    box.replaceChildren(card('Operatsiyalar', h('div', {}, t.el, cashNote), null, { tight: true, sub: `${r.rows.length} ta · ${monthLabel(d.month)}` }));
+    box.replaceChildren(card('Operatsiyalar', h('div', {}, t.el, cashNote), null, { tight: true, sub: `${r.rows.length} ta · ${period(d)}` }));
   } catch (e) { box.replaceChildren(alert('crit', 'Operatsiyalar yuklanmadi: ' + e.message)); }
 }

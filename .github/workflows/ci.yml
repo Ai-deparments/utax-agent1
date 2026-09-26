@@ -1,0 +1,40 @@
+# CI — pre-push hook bilan bir xil tekshiruvlar: sirlar skani → sintaksis → barcha testlar.
+# Qizil bo'lsa PR merge qilinmaydi (main uchun branch protection'da "CI / test" majburiy check qilinadi).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BOT_MODE: 'off'
+      TZ: Asia/Tashkent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Paketlar
+        run: npm ci --no-audit --no-fund
+      - name: Sirlar skani (token, kalit, .env, baza, Excel)
+        run: npm run secrets
+      - name: Sintaksis
+        run: npm run check
+      - name: Testlar
+        run: npm test
+      - name: Zaif paketlar (npm audit, yuqori daraja)
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true

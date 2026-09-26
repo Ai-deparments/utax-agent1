@@ -194,7 +194,7 @@ export function register(app) {
      *  `first`/`last` — Turso parserida kalit so'z (NULLS FIRST/LAST) va ustun nomi katta harfda qaytadi;
      *  shuning uchun SQL'da neytral nom, API shakli esa o'zgarmaydi ({first, last}). */
     dataSpan() {
-      const s = db.get("SELECT MIN(d) span_first, MAX(d) span_last FROM (SELECT tx_date d FROM bank_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT tx_date FROM cash_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT recognized_at FROM revenue_recognition WHERE status='RECOGNIZED')");
+      const s = db.get("SELECT MIN(d) span_first, MAX(d) span_last FROM (SELECT tx_date d FROM bank_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT tx_date FROM cash_transactions WHERE reversed_at IS NULL AND tx_date>='2000-01-01' UNION ALL SELECT recognized_at FROM revenue_recognition WHERE status='RECOGNIZED' UNION ALL SELECT tx_date FROM bank_statement_lines)");
       return { first: s?.span_first ?? null, last: s?.span_last ?? null };
     },
     /** range = {from, to} ixtiyoriy. Berilmasa — joriy oy va o'tgan oy bilan taqqoslash (avvalgi xatti-harakat, o'zgarishsiz) */
@@ -285,14 +285,14 @@ export function register(app) {
   };
   app.services.reports = svc;
 
-  r.get('/api/dashboard', { cache: true, perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr; auto=1 — joriy oy bo‘sh bo‘lsa oxirgi ma’lumotli oy)', query: ['from', 'to', 'auto'] }, async (ctx) => {
+  r.get('/api/dashboard', { cache: true, perm: ['dashboard', 'VIEW'], tags: ['reports'], summary: 'CEO Finance Dashboard — barcha KPI va grafiklar (from/to — ixtiyoriy davr; auto=1 — mavjud ma’lumotning birinchi sanasidan oxirgisigacha)', query: ['from', 'to', 'auto'] }, async (ctx) => {
     const { from, to, auto } = ctx.query;
     if (from && to && from > to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas');
-    // auto=1: avval web ikki marta so'rardi (birinchisi faqat data_span ni bilish uchun). Endi davrni server tanlaydi.
+    // auto=1: standart davr — mavjud ma'lumotning birinchi sanasidan oxirgi sanasigacha (butun davr).
+    // Web shu oraliqni sana tanlagichga qo'yadi va undan tashqaridagi sanalarni o'chiradi (min/max).
     if (!from && !to && auto === '1') {
-      const last = svc.dataSpan().last;
-      const lastM = last ? last.slice(0, 7) : null;
-      if (lastM && lastM < monthOf(today())) return { ...svc.dashboard(monthRange(lastM), ctx.user), auto_period: lastM };
+      const span = svc.dataSpan();
+      if (span.first && span.last) return { ...svc.dashboard({ from: span.first, to: span.last }, ctx.user), auto_range: { from: span.first, to: span.last } };
     }
     return svc.dashboard(from && to ? { from, to } : null, ctx.user);
   });

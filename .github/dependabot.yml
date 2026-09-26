@@ -1,0 +1,20 @@
+# Paketlar va GitHub Actions uchun haftalik xavfsizlik yangilanishlari (PR sifatida keladi, CI yashil bo'lsa merge qilinadi)
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Tashkent
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Tashkent
+    labels: [dependencies]

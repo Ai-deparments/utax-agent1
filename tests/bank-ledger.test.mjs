@@ -251,6 +251,47 @@ test('kesimlar: hisob / kompaniya / global; ichki o‘tkazma faqat doira ichida 
   assert.throws(() => L.summary({ company: 'zzz' }), /topilmadi/);
 }));
 
+test('sana oralig‘i: boshlang‘ich qoldiq oraliq boshiga hisoblanadi, qamrovdan tashqari qirqiladi, kassa faqat to‘liq oy bilan', () => withApp((app) => {
+  const L = app.services.bankLedger;
+  seedRegistry(L);
+  for (const [f, n] of [[fileA1, 'a1.xls'], [fileA2, 'a2.xls'], [fileB1, 'b1.xls']]) L.importStatement(f, { fileName: n }, ctx);
+  L.setCashPeriod({ account_number: 'KASSA-AAA', period: '2026-07', opening: 100, inflow: 50, outflow: 30 }, ctx);
+  assert.deepEqual(L.coverage(), { from: '2026-07-01', to: '2026-07-31' });
+
+  // Oy o'rtasi: 10.07–15.07 → boshlang'ich = 1000,5 + 02.07 dagi 500; fayl bilan solishtirib bo'lmaydi (check_ok = null)
+  const mid = L.summary({ company: 'AAA', account: A1, from: '2026-07-10', to: '2026-07-15' });
+  assert.deepEqual([mid.opening, mid.inflow, mid.outflow, mid.closing], [1500.5, 300, 200, 1600.5]);
+  assert.equal(mid.check_ok, null, 'oraliq oxiri ko‘chirma oxiri emas — hisoblangan qoldiq');
+  assert.equal(L.lines({ company: 'AAA', account: A1, from: '2026-07-10', to: '2026-07-15' }).rows.length, 2);
+
+  // Kengroq oraliq → ko'chirma qamroviga qirqiladi, fayl bilan solishtiriladi
+  const wide = L.summary({ company: 'AAA', account: A1, from: '2025-02-02', to: '2026-08-05' });
+  assert.equal(wide.clipped, true);
+  assert.deepEqual(wide.effective, { from: '2026-07-01', to: '2026-07-31' });
+  assert.deepEqual([wide.opening, wide.closing, wide.check_ok], [1000.5, 1450.25, true]);
+  // month bilan chaqiruv (eski) bir xil natija
+  assert.equal(L.summary({ company: 'AAA', account: A1, month: '2026-07' }).closing, 1450.25);
+
+  // Qamrovdan tashqari → ma'lumot yo'q, qoldiq taxmin qilinmaydi
+  const aug = L.summary({ from: '2026-08-01', to: '2026-08-31' });
+  assert.equal(aug.has_data, false);
+  assert.equal(aug.opening, null);
+  assert.ok(aug.accounts.find((x) => x.account_number === A1).reason);
+
+  // Kassa: qisman oy — ma'lumot yo'q (oylik yig'indi bo'linmaydi) → kompaniya jami ham noma'lum; to'liq oy — qo'shiladi
+  const part = L.summary({ company: 'AAA', from: '2026-07-10', to: '2026-07-15' });
+  const cash = part.accounts.find((x) => x.kind === 'CASH');
+  assert.equal(cash.has_data, false);
+  assert.match(cash.reason, /oylik/);
+  assert.equal(part.opening, null);
+  assert.equal(L.summary({ company: 'AAA', from: '2026-07-01', to: '2026-07-31' }).opening, 1000.5 + 700 + 100);
+
+  // Standart (oraliqsiz) — butun qamrov
+  const def = L.summary({});
+  assert.deepEqual([def.from, def.to], ['2026-07-01', '2026-07-31']);
+  assert.throws(() => L.summary({ from: '2026-07-20', to: '2026-07-10' }), /Boshlanish sanasi/);
+}));
+
 test('ERP holati: token muddati; eskirgan token qabul qilinmaydi; .env eski tokeni UI dagini almashtirmaydi', () => withApp(async (app) => {
   const { jwtExpiry } = await import('../src/modules/bank-ledger.mjs');
   const { ensureErpIntegration } = await import('../src/server.mjs');
