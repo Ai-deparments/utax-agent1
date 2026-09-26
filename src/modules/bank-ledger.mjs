@@ -9,12 +9,13 @@
  *    bir xil hisobni bersa ham bu yerda ikki marta sanalmaydi; ERP'dagi mos hisob faqat belgi sifatida ko'rsatiladi.
  */
 import { badRequest, notFound } from '../core/http.mjs';
-import { nowIso, round2, sha256, parseJson } from '../core/util.mjs';
+import { nowIso, round2, sha256, parseJson, addDays, monthRange, addMonths } from '../core/util.mjs';
 import { parseBankStatement, cents } from '../import/bank-statement.mjs';
 import { decryptSecret, encryptSecret } from '../core/auth.mjs';
 
 export const SOURCE_PRIORITY = ['BANK_FILE', 'MANUAL', 'ERP'];
 const MONTH = /^\d{4}-\d{2}$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const payCode = (purpose) => /^(\d{5})/.exec(String(purpose || '').trim())?.[1] || null;
 const fromCents = (c) => Math.round(c) / 100;
 
@@ -156,6 +157,28 @@ export function register(app) {
         WHERE m IS NOT NULL ORDER BY m DESC`).map((x) => x.m);
     },
 
+    /** Bank ko'chirmalari va kassa yig'indilari qamrab olgan umumiy davr */
+    coverage() {
+      const b = db.get('SELECT MIN(period_from) f, MAX(period_to) t FROM bank_statements');
+      const c = db.get('SELECT MIN(period) f, MAX(period) t FROM cash_period_entries');
+      const from = [b?.f, c?.f ? monthRange(c.f).from : null].filter(Boolean).sort()[0] || null;
+      const to = [b?.t, c?.t ? monthRange(c.t).to : null].filter(Boolean).sort().pop() || null;
+      return from && to ? { from, to } : null;
+    },
+
+    /**
+     * Sana oralig'i: from+to (dashboard'dagi sana filtri) → month (eski chaqiruvlar, CLI) → bo'lmasa butun qamrov.
+     * @returns {{from, to} | null}
+     */
+    resolveRange(q = {}) {
+      if (DAY.test(q.from || '') && DAY.test(q.to || '')) {
+        if (q.from > q.to) throw badRequest('Boshlanish sanasi tugash sanasidan keyin bo‘lishi mumkin emas');
+        return { from: q.from, to: q.to };
+      }
+      if (MONTH.test(q.month || '')) return monthRange(q.month);
+      return svc.coverage();
+    },
+
     /** Tanlov doirasi: company (kod, katta-kichik harf farqsiz) va/yoki account (raqam). Hech biri — global. */
     scope({ company, account } = {}) {
       const all = accountsAll();
@@ -180,77 +203,110 @@ export function register(app) {
       return { level, company: comp, accounts: accs, internalSet };
     },
 
-    accountMonth(a, month, internalSet) {
+    /**
+     * Bitta hisob, [from, to] oralig'i. Hech narsa taxmin qilinmaydi:
+     *  - BANK: oraliq ko'chirmalar qamrovi bilan kesishtiriladi (effective). Boshlang'ich qoldiq = shu kunni o'z ichiga olgan
+     *    ko'chirmaning boshlang'ichi + ko'chirma boshidan shu kungacha operatsiyalar. Ko'chirmalar orasida bo'shliq bo'lsa — belgilanadi.
+     *    Fayldagi yakuniy qoldiq bilan solishtirish faqat oraliq oxiri ko'chirma oxiriga to'g'ri kelsa (aks holda check_ok = null).
+     *  - CASH: oylik yig'indi — faqat oraliqqa TO'LIQ kirgan oylar olinadi (qisman oyni bo'lib bo'lmaydi).
+     */
+    accountRange(a, from, to, internalSet) {
       const base = { account_number: a.account_number, label: a.label, kind: a.kind, company_code: a.company_code, bank_name: a.bank_name, branch: a.branch, mfo: a.mfo };
       if (a.kind === 'CASH') {
-        const e = db.get('SELECT * FROM cash_period_entries WHERE account_id=? AND period=?', a.id, month);
-        if (!e) return { ...base, source: 'MANUAL', has_data: false };
-        return { ...base, source: 'MANUAL', has_data: true, opening: e.opening, inflow_gross: e.inflow, outflow_gross: e.outflow, internal_in: 0, internal_out: 0, scope_internal_in: 0, scope_internal_out: 0, closing: e.closing, closing_file: e.closing, ops: null, check_ok: true, note: e.note, source_file: sourceMeta('cash_period', e.id) };
+        const all = db.all('SELECT * FROM cash_period_entries WHERE account_id=? ORDER BY period', a.id);
+        const inside = all.filter((e) => { const r = monthRange(e.period); return r.from >= from && r.to <= to; });
+        const partial = all.some((e) => { const r = monthRange(e.period); return r.from <= to && r.to >= from; }) && !inside.length;
+        if (!inside.length) return { ...base, source: 'MANUAL', has_data: false, reason: partial ? 'Kassa oylik yig‘indi — tanlangan oraliq oyni to‘liq qamramaydi' : null };
+        const consecutive = inside.every((e, i) => !i || addMonths(inside[i - 1].period, 1) === e.period);
+        const inC = inside.reduce((x, e) => x + cents(e.inflow), 0), outC = inside.reduce((x, e) => x + cents(e.outflow), 0);
+        const last = inside[inside.length - 1];
+        return {
+          ...base, source: 'MANUAL', has_data: true, effective: { from: monthRange(inside[0].period).from, to: monthRange(last.period).to },
+          opening: inside[0].opening, inflow_gross: fromCents(inC), outflow_gross: fromCents(outC), internal_in: 0, internal_out: 0, scope_internal_in: 0, scope_internal_out: 0,
+          closing: fromCents(cents(inside[0].opening) + inC - outC), closing_file: last.closing, ops: null,
+          check_ok: consecutive && cents(inside[0].opening) + inC - outC === cents(last.closing), note: last.note, source_file: sourceMeta('cash_period', last.id),
+        };
       }
-      const st = db.get(`SELECT * FROM bank_statements WHERE account_id=? AND substr(period_from,1,7)=? ORDER BY period_from LIMIT 1`, a.id, month);
-      const last = db.get(`SELECT * FROM bank_statements WHERE account_id=? AND substr(period_to,1,7)=? ORDER BY period_to DESC LIMIT 1`, a.id, month);
-      const lines = db.all(`SELECT direction, amount, is_internal, corr_account FROM bank_statement_lines WHERE account_id=? AND substr(tx_date,1,7)=?`, a.id, month);
-      if (!st && !lines.length) return { ...base, source: 'BANK_FILE', has_data: false };
+      const stmts = db.all('SELECT * FROM bank_statements WHERE account_id=? ORDER BY period_from', a.id);
+      if (!stmts.length) return { ...base, source: 'BANK_FILE', has_data: false };
+      const covFrom = stmts[0].period_from, covTo = stmts[stmts.length - 1].period_to;
+      const eFrom = from > covFrom ? from : covFrom, eTo = to < covTo ? to : covTo;
+      const coverage = { from: covFrom, to: covTo };
+      if (eFrom > eTo) return { ...base, source: 'BANK_FILE', has_data: false, coverage, reason: 'Tanlangan oraliqda bank ko‘chirmasi yo‘q' };
+      const gap = stmts.some((st, i) => i && st.period_from !== addDays(stmts[i - 1].period_to, 1) && st.period_from > eFrom && stmts[i - 1].period_to < eTo);
+      const stAt = stmts.find((st) => st.period_from <= eFrom && st.period_to >= eFrom);
+      let opening = null;
+      if (stAt) {
+        const pre = db.get(`SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) m FROM bank_statement_lines WHERE account_id=? AND tx_date>=? AND tx_date<?`, a.id, stAt.period_from, eFrom);
+        opening = fromCents(cents(stAt.opening) + cents(pre.m));
+      }
+      const lines = db.all(`SELECT direction, amount, is_internal, corr_account FROM bank_statement_lines WHERE account_id=? AND tx_date BETWEEN ? AND ?`, a.id, eFrom, eTo);
       let inC = 0, outC = 0, iIn = 0, iOut = 0, sIn = 0, sOut = 0;
       for (const l of lines) {
         const c = cents(l.amount);
         if (l.direction === 'IN') { inC += c; if (l.is_internal) iIn += c; if (internalSet.has(l.corr_account)) sIn += c; }
         else { outC += c; if (l.is_internal) iOut += c; if (internalSet.has(l.corr_account)) sOut += c; }
       }
-      const opening = st ? st.opening : null;
-      const closing = opening === null ? null : fromCents(cents(opening) + inC - outC);
-      const closingFile = last ? last.closing : null;
+      const closing = opening === null || gap ? null : fromCents(cents(opening) + inC - outC);
+      const endSt = stmts.find((st) => st.period_to === eTo);
+      const closingFile = endSt ? endSt.closing : null;
+      const st = stAt || stmts[0];
       return {
-        ...base, source: 'BANK_FILE', has_data: true, opening, inflow_gross: fromCents(inC), outflow_gross: fromCents(outC),
+        ...base, source: 'BANK_FILE', has_data: true, coverage, effective: { from: eFrom, to: eTo }, clipped: eFrom !== from || eTo !== to, gap,
+        opening: gap ? null : opening, inflow_gross: fromCents(inC), outflow_gross: fromCents(outC),
         internal_in: fromCents(iIn), internal_out: fromCents(iOut), scope_internal_in: fromCents(sIn), scope_internal_out: fromCents(sOut),
-        closing, closing_file: closingFile, ops: lines.length, check_ok: closing !== null && closingFile !== null && cents(closing) === cents(closingFile),
-        statement: st ? { id: st.id, period_from: st.period_from, period_to: st.period_to, file_name: st.file_name, imported_at: st.imported_at, source_file: sourceMeta('bank_statement', st.id) } : null,
+        closing, closing_file: closingFile, ops: lines.length,
+        check_ok: closing === null ? false : closingFile === null ? null : cents(closing) === cents(closingFile),
+        statement: { id: st.id, period_from: st.period_from, period_to: st.period_to, file_name: st.file_name, imported_at: st.imported_at, source_file: sourceMeta('bank_statement', st.id) },
       };
     },
 
     summary(q = {}) {
-      const months = svc.months();
-      const month = MONTH.test(q.month || '') ? q.month : months[0] || null;
+      const range = svc.resolveRange(q);
       const sc = svc.scope(q);
-      const base = { month, months, level: sc.level, company: sc.company ? { code: sc.company.code, name: sc.company.name, inn: sc.company.inn } : null, registry: svc.registry() };
-      // Hali birorta oy yuklanmagan — javob shakli ma'lumotli holat bilan BIR XIL (web, bot, AI bir xil o'qisin): raqamlar null ('--'), ro'yxatlar bo'sh
-      if (!month) return {
+      const base = { from: range?.from || null, to: range?.to || null, coverage: svc.coverage(), months: svc.months(), month: MONTH.test(q.month || '') ? q.month : null,
+        level: sc.level, company: sc.company ? { code: sc.company.code, name: sc.company.name, inn: sc.company.inn } : null, registry: svc.registry() };
+      // Hali hech narsa yuklanmagan — javob shakli ma'lumotli holat bilan BIR XIL (web, bot, AI bir xil o'qisin): raqamlar null ('--'), ro'yxatlar bo'sh
+      if (!range) return {
         ...base, has_data: false, missing: sc.accounts.map((a) => a.label), opening: null, inflow: null, outflow: null, closing: null,
         inflow_gross: null, outflow_gross: null, internal_in: null, internal_out: null, internal_excluded: sc.internalSet.size > 0, check_ok: false, sources: [], accounts: [],
       };
-      const rows = sc.accounts.map((a) => svc.accountMonth(a, month, sc.internalSet));
+      const rows = sc.accounts.map((a) => svc.accountRange(a, range.from, range.to, sc.internalSet));
       const withData = rows.filter((x) => x.has_data);
       const missing = rows.filter((x) => !x.has_data).map((x) => x.label);
       const total = (k) => fromCents(withData.reduce((s, x) => s + cents(x[k] || 0), 0));
-      const openingKnown = withData.length && withData.every((x) => x.opening !== null) && !missing.length;
+      const openingKnown = withData.length > 0 && withData.every((x) => x.opening !== null) && !missing.length;
+      const closingKnown = openingKnown && withData.every((x) => x.closing !== null);
       const inflowGross = total('inflow_gross'), outflowGross = total('outflow_gross');
       const scopeIn = total('scope_internal_in'), scopeOut = total('scope_internal_out');
-      const opening = openingKnown ? total('opening') : null;
-      const closing = openingKnown ? total('closing') : null;
       return {
         ...base, has_data: withData.length > 0, missing,
-        opening, inflow: fromCents(cents(inflowGross) - cents(scopeIn)), outflow: fromCents(cents(outflowGross) - cents(scopeOut)),
+        opening: openingKnown ? total('opening') : null, inflow: fromCents(cents(inflowGross) - cents(scopeIn)), outflow: fromCents(cents(outflowGross) - cents(scopeOut)),
         inflow_gross: inflowGross, outflow_gross: outflowGross, internal_in: sc.internalSet.size ? scopeIn : total('internal_in'), internal_out: sc.internalSet.size ? scopeOut : total('internal_out'),
-        internal_excluded: sc.internalSet.size > 0, closing, check_ok: withData.every((x) => x.check_ok) && openingKnown,
+        internal_excluded: sc.internalSet.size > 0, closing: closingKnown ? total('closing') : null,
+        // true — fayl bilan mos; null — oraliq oxiri ko'chirma oxiriga to'g'ri kelmaydi (hisoblangan qoldiq); false — farq yoki ma'lumot yetishmaydi
+        check_ok: !closingKnown ? false : withData.some((x) => x.check_ok === false) ? false : withData.every((x) => x.check_ok === true) ? true : null,
+        clipped: withData.some((x) => x.clipped), effective: withData.length ? { from: withData.map((x) => x.effective.from).sort()[0], to: withData.map((x) => x.effective.to).sort().pop() } : null,
         sources: [...new Set(withData.map((x) => x.source))].sort((a, b) => SOURCE_PRIORITY.indexOf(a) - SOURCE_PRIORITY.indexOf(b)),
         accounts: rows,
       };
     },
 
-    /** Drill-down: tanlangan doira va oy operatsiyalari. net=1 — doira ichidagi ichki o'tkazmalarsiz (kartadagi raqam bilan bir xil). */
+    /** Drill-down: tanlangan doira va oraliq operatsiyalari. net=1 — doira ichidagi ichki o'tkazmalarsiz (kartadagi raqam bilan bir xil). */
     lines(q = {}) {
       const sc = svc.scope(q);
-      const month = MONTH.test(q.month || '') ? q.month : svc.months()[0];
+      const range = svc.resolveRange(q);
       const bankIds = sc.accounts.filter((a) => a.kind === 'BANK').map((a) => a.id);
-      if (!bankIds.length || !month) return { month, rows: [], cash_only: sc.accounts.some((a) => a.kind === 'CASH') };
-      const where = [`l.account_id IN (${bankIds.map(() => '?').join(',')})`, 'substr(l.tx_date,1,7)=?'];
-      const args = [...bankIds, month];
+      const has_cash = sc.accounts.some((a) => a.kind === 'CASH');
+      if (!bankIds.length || !range) return { from: range?.from || null, to: range?.to || null, level: sc.level, rows: [], cash_only: has_cash, has_cash };
+      const where = [`l.account_id IN (${bankIds.map(() => '?').join(',')})`, 'l.tx_date BETWEEN ? AND ?'];
+      const args = [...bankIds, range.from, range.to];
       if (q.direction === 'IN' || q.direction === 'OUT') { where.push('l.direction=?'); args.push(q.direction); }
       if (q.internal === 'only') where.push('l.is_internal=1');
       let rows = db.all(`SELECT l.*, a.account_number, a.label AS account_label, c.code AS company_code FROM bank_statement_lines l
         JOIN own_accounts a ON a.id=l.account_id JOIN own_companies c ON c.id=a.company_id WHERE ${where.join(' AND ')} ORDER BY l.tx_date, l.tx_time, l.id`, ...args);
       if (String(q.net) === '1') rows = rows.filter((l) => !sc.internalSet.has(l.corr_account));
-      return { month, level: sc.level, rows, cash_only: false, has_cash: sc.accounts.some((a) => a.kind === 'CASH') };
+      return { from: range.from, to: range.to, level: sc.level, rows, cash_only: false, has_cash };
     },
 
     /** ERP holati: oxirgi muvaffaqiyatli sinxron, oxirgi xato, token muddati (token o'zi qaytarilmaydi) */
@@ -293,8 +349,8 @@ export function register(app) {
     return svc.importStatement(Buffer.from(b.file_base64, 'base64'), { fileName: b.file_name || null, preview: !!b.preview }, ctx);
   });
   r.put('/api/bank-ledger/cash-period', { perm: ['treasury', 'CREATE'], tags: ['bank-ledger'], summary: 'Kassa oylik yig‘indisi (qo‘lda) {account_number, period, opening, inflow, outflow, closing?}' }, async (ctx) => svc.setCashPeriod(ctx.body || {}, ctx));
-  r.get('/api/bank-ledger/summary', { perm: ['treasury', 'VIEW'], tags: ['bank-ledger'], summary: 'Boshlang‘ich qoldiq · Tushum · Xarajat · Balans (company, account, month)', query: ['company', 'account', 'month'] }, async (ctx) => svc.summary(ctx.query));
-  r.get('/api/bank-ledger/lines', { perm: ['treasury', 'VIEW'], tags: ['bank-ledger'], summary: 'Operatsiyalar (drill-down)', query: ['company', 'account', 'month', 'direction', 'internal', 'net'] }, async (ctx) => svc.lines(ctx.query));
+  r.get('/api/bank-ledger/summary', { perm: ['treasury', 'VIEW'], tags: ['bank-ledger'], summary: 'Boshlang‘ich qoldiq · Tushum · Xarajat · Balans (company, account; from+to yoki month; bo‘lmasa butun qamrov)', query: ['company', 'account', 'from', 'to', 'month'] }, async (ctx) => svc.summary(ctx.query));
+  r.get('/api/bank-ledger/lines', { perm: ['treasury', 'VIEW'], tags: ['bank-ledger'], summary: 'Operatsiyalar (drill-down)', query: ['company', 'account', 'from', 'to', 'month', 'direction', 'internal', 'net'] }, async (ctx) => svc.lines(ctx.query));
   r.get('/api/bank-ledger/source-files/:entity/:id', { perm: ['treasury', 'VIEW'], tags: ['bank-ledger'], summary: 'Manba faylini yuklab olish (bank ko‘chirmasi yoki kassa uchun berilgan fayl)', raw: true }, async (ctx) => {
     const f = db.get('SELECT * FROM source_files WHERE entity=? AND entity_id=?', String(ctx.params.entity), Number(ctx.params.id));
     if (!f) throw notFound('Bu yozuvning manba fayli saqlanmagan — faylni qayta import qiling');

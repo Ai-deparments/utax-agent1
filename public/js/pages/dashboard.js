@@ -5,7 +5,9 @@ import { erpBanner, bankBlock } from '../bank-ledger.js';
 
 export default async function render(outerRoot, { setTitle, navigate, can, query }) {
   // Sana tanlanmasa — joriy oy va o'tgan oy bilan taqqoslash (avvalgidek); tanlansa — shu davr bo'yicha
-  const rng = dateRange({ allowEmpty: true, onChange: () => safeLoad() });
+  // Sana filtri butun dashboard'ga ta'sir qiladi: ERP ko'rsatkichlari va bank bloki (UGS/UTAX)
+  let bank = null;
+  const rng = dateRange({ allowEmpty: true, onChange: () => { safeLoad(); bank?.reload(); } });
   // Bloklar mustaqil yuklanadi: ERP banneri, bank hisoblari (fayl importi) va asosiy (ERP) ko'rsatkichlar — biri yiqilsa, qolgani ishlaydi
   const erpBox = h('div', {}), bankBox = h('div', { class: 'mb16' }), box = h('div', {});
   outerRoot.append(erpBox, can('treasury') ? bankBox : '', box);
@@ -16,7 +18,7 @@ export default async function render(outerRoot, { setTitle, navigate, can, query
   const { from, to } = rng.value;
   // auto=1 — server standart oraliqni (mavjud ma'lumotning birinchi → oxirgi sanasi) o'zi tanlaydi va `auto_range` qaytaradi.
   const d = await get('/api/dashboard' + (rng.active ? `?from=${from}&to=${to}` : autoAsk ? '?auto=1' : ''));
-  if (!rng.active && d.auto_range) rng.set(d.auto_range.from, d.auto_range.to);
+  if (!rng.active && d.auto_range) { rng.set(d.auto_range.from, d.auto_range.to); bank?.reload(); }
   autoAsk = false;
   // Mavjud ma'lumot oralig'idan tashqaridagi sanalar tanlagichda o'chiq
   if (d.data_span?.first && d.data_span?.last) rng.limit(d.data_span.first, d.data_span.last);
@@ -29,10 +31,10 @@ export default async function render(outerRoot, { setTitle, navigate, can, query
   // Standart holat — butun mavjud davr. Foydalanuvchi joriy oyga o'tsa va unda yozuv bo'lmasa, butun davrga qaytish tugmasi.
   const span = d.data_span;
   const alertRow = (text, btn) => root.append(h('div', { class: 'alert info mb16', style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } }, icon('info', 16), h('div', { class: 'grow' }, text), btn));
-  const showSpan = () => { rng.set(span.first, span.last); safeLoad(); };
+  const showSpan = () => { rng.set(span.first, span.last); safeLoad(); bank?.reload(); };
   if (span?.first && span?.last) {
     if (R && d.range.from === span.first && d.range.to === span.last) alertRow(`Mavjud ma’lumotning butun davri ko‘rsatilmoqda: ${date(span.first)} — ${date(span.last)}.`,
-      h('button', { class: 'btn sm', onClick: () => { autoAsk = false; rng.set('', ''); safeLoad(); } }, 'Joriy oyni ko‘rsatish'));
+      h('button', { class: 'btn sm', onClick: () => { autoAsk = false; rng.set('', ''); safeLoad(); bank?.reload(); } }, 'Joriy oyni ko‘rsatish'));
     else if (!R && span.last.slice(0, 7) < d.as_of.slice(0, 7)) alertRow(`Joriy oyda (${monthLabel(d.as_of.slice(0, 7))}) yozuvlar yo‘q — “joriy oy” ko‘rsatkichlari 0. Ma’lumot ${date(span.first)} — ${date(span.last)} oralig‘ida.`,
       h('button', { class: 'btn sm pri', onClick: showSpan }, 'Butun davrni ko‘rsatish'));
   }
@@ -96,7 +98,10 @@ export default async function render(outerRoot, { setTitle, navigate, can, query
   }
   await Promise.all([
     erpBanner(erpBox, { can }),
-    can('treasury') ? bankBlock(bankBox, { can, query }).catch((e) => bankBox.replaceChildren(alert('crit', 'Bank bloki yuklanmadi: ' + e.message))) : null,
+    can('treasury') ? bankBlock(bankBox, { can, query, getRange: () => (rng.active ? rng.value : null) }).then((b) => { bank = b; }).catch((e) => bankBox.replaceChildren(alert('crit', 'Bank bloki yuklanmadi: ' + e.message))) : null,
     safeLoad(),
   ]);
+  // Bank bloki ERP qismidan oldin yuklangan bo'lsa, u standart oraliqni (auto_range) hali bilmagan — bir marta qayta yuklanadi
+  const want = rng.active ? `${rng.value.from}|${rng.value.to}` : '';
+  if (bank && bank.requested !== want) bank.reload();
 }
