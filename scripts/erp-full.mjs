@@ -18,8 +18,11 @@ const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] :
 const base = opt('--base', config.erp.base);
 const dbFile = path.resolve(ROOT, opt('--db', process.env.DB_PATH || 'data/finance-erp.db'));
 const tokenFile = path.join(ROOT, '.erp-token');
-const token = (process.env.ERP_TOKEN || config.erp.token || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : ''));
-if (!token) { console.error('ERP_TOKEN yo‘q (.erp-token yoki env)'); process.exit(2); }
+const { pickErpToken } = await import('../src/import/erp-sync.mjs');
+const picked = pickErpToken([{ name: '.erp-token', token: fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : '' }, { name: 'ERP_TOKEN / .env', token: process.env.ERP_TOKEN || config.erp.token }]);
+if (!picked.token) { console.error(`ERP tokeni yaroqsiz: ${picked.reason}`); process.exit(2); }
+const token = picked.token;
+console.log(`token: ${picked.name}${picked.exp ? ` · muddati ${new Date(picked.exp * 1000).toISOString().slice(0, 16).replace('T', ' ')}` : ''}`);
 process.env.BOT_MODE = 'off';
 process.env.DB_PATH = dbFile;
 

@@ -34,6 +34,30 @@ function makeClient(base, token) {
  * @param opts {token, base='https://api.utaxerp.uz', log}
  * @returns {res, verify}  — yozilgan sonlar va ERP↔baza solishtiruvi
  */
+/**
+ * ERP tokenini tanlash: MUDDATI O'TMAGANI ustun.
+ *
+ * Nega: token har oy almashadi. Yangisi odatda `.erp-token` ga tashlanadi, lekin `.env` dagi eski
+ * nusxa har doim ustun kelib, sinxron jim 401 bilan to'xtardi va sabab ko'rinmasdi.
+ * Endi ikkala manba ham tekshiriladi va amal qilayotgani olinadi (tenglikda `.erp-token`).
+ *
+ * @param sources  [{ name, token }] — ustuvorlik tartibida
+ * @returns { token, name, exp } yoki hammasi yaroqsiz bo'lsa { token: '', reason }
+ */
+export function pickErpToken(sources) {
+  const now = Date.now() / 1000;
+  const parsed = sources.filter((s) => s.token).map((s) => {
+    let exp = null;
+    try { exp = JSON.parse(Buffer.from(String(s.token).split('.')[1], 'base64url').toString()).exp ?? null; } catch { /* JWT emas — muddatini bilib bo'lmaydi */ }
+    return { ...s, exp, valid: exp === null || exp > now };
+  });
+  if (!parsed.length) return { token: '', reason: 'token topilmadi (.erp-token yoki ERP_TOKEN)' };
+  const ok = parsed.find((s) => s.valid);
+  if (ok) return { token: ok.token, name: ok.name, exp: ok.exp };
+  const latest = parsed.reduce((a, b) => ((b.exp || 0) > (a.exp || 0) ? b : a));
+  return { token: '', reason: `barcha tokenlarning muddati o'tgan (eng yangisi ${latest.name}, ${new Date(latest.exp * 1000).toISOString().slice(0, 16).replace('T', ' ')})` };
+}
+
 export async function erpSync(app, { token, base = 'https://api.utaxerp.uz', log = () => {} }) {
   if (!token) throw new Error('ERP token yo‘q');
   const { db } = app;

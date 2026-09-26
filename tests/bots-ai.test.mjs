@@ -250,15 +250,17 @@ test('javob tugmalari: ishlatilgan tool bo‘yicha 🌐 web sahifa va shu botdag
 
 test('"yozmoqda" indikatori javob kelguncha takrorlanadi va keyin to‘xtaydi', async () => {
   const old = aiChatOptions.typingEveryMs;
-  aiChatOptions.typingEveryMs = 15;
+  // Kutish oynasi interval'dan ancha katta (200 / 10 = ~20 marta), shuning uchun to'liq to'plam
+  // ostida taymerlar kechiksa ham `>= 3` sharti bajariladi. Ilgari 90 / 15 edi va goh-goh yiqilardi.
+  aiChatOptions.typingEveryMs = 10;
   try {
-    S.ai.useLlm(fakeLlm(async () => { await new Promise((r) => setTimeout(r, 90)); return ok('Tayyor'); }));
+    S.ai.useLlm(fakeLlm(async () => { await new Promise((r) => setTimeout(r, 200)); return ok('Tayyor'); }));
     const cfo = H.link('cfo@utax.uz');
     const r = await H.send('rahbar', cfo, 'uzoq o‘ylanadigan savol');
     const n = r.method('sendChatAction').length;
     assert.ok(n >= 3, `typing ${n} marta`);
     const before = H.tg.calls.filter((c) => c.method === 'sendChatAction').length;
-    await new Promise((res) => setTimeout(res, 60));
+    await new Promise((res) => setTimeout(res, 80)); // 8 ta interval — to'xtamagan bo'lsa albatta sezilardi
     assert.equal(H.tg.calls.filter((c) => c.method === 'sendChatAction').length, before, 'javobdan keyin to‘xtadi');
   } finally { aiChatOptions.typingEveryMs = old; }
 });
