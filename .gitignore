@@ -4,6 +4,7 @@ data/*.db-*
 data/backups/
 .env
 .env.local
+.playwright-mcp/
 .env.*.local
 uploads/
 # Haqiqiy moliyaviy Excel fayllari va import hisobotlari — git'ga tushmasin

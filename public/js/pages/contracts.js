@@ -17,14 +17,23 @@ export default async function render(root, { setTitle, can, params, query, navig
     { key: 'amount', label: 'Summa', money: true }, { key: 'paid', label: 'To‘langan', money: true }, { key: 'remaining', label: 'Qoldiq', money: true }, { key: 'paid_pct', label: 'To‘lov', render: (r) => progress(r.paid_pct, r.payment_status === 'OVERDUE' ? 'crit' : r.paid_pct >= 100 ? 'good' : '') },
     { key: 'contract_date', label: 'Sana', date: true }, { key: 'next_due_date', label: 'Muddat', render: (r) => h('span', { class: r.overdue_days > 0 ? 'neg' : '' }, date(r.next_due_date), r.overdue_days > 0 ? ` (+${r.overdue_days} kun)` : '') }, { key: 'contract_status', label: 'Holat', badge: true }, { key: 'service_status', label: 'Xizmat holati', badge: true }, { key: 'payment_status', label: 'To‘lov holati', badge: true }, { key: 'manager_name', label: 'Menejer' },
   ];
-  const table = dataTable({ columns: cols, rows: [], onRow: (r) => openDetail(r.id), dateKey: 'contract_date', exportName: 'shartnomalar', filters: [{ key: 'contract_status', label: 'Holat', options: META.contract_statuses }, { key: 'service_name', label: 'Xizmat turi', options: META.service_types.map((s) => [s.name, s.name]) }, { key: 'manager_name', label: 'Menejer', options: META.managers.map((m) => [m.name, m.name]) }] });
+  // KPI'lar jadvalning FILTRLANGAN qatorlaridan hisoblanadi: sana oralig'i, qidiruv va select'lar
+  // o'zgarganda `onFilter` shu funksiyani qayta chaqiradi (ilgari KPI'lar doim barcha shartnomani sanardi).
+  function renderStats(rows) {
+    const active = rows.filter((c) => !['DRAFT', 'CANCELLED', 'CLOSED'].includes(c.contract_status));
+    stats.replaceChildren(
+      kpiCard({ size: 'sm', icon: 'contract', tone: 'green', label: 'Faol shartnomalar', value: String(active.length), sub: `jami ${rows.length} ta` }),
+      kpiCard({ size: 'sm', icon: 'coins', tone: 'blue', label: 'Shartnomalar summasi (faol)', value: active.reduce((s, c) => s + c.amount, 0) }),
+      kpiCard({ size: 'sm', icon: 'inflow', tone: 'teal', label: 'To‘langan', value: active.reduce((s, c) => s + c.paid, 0) }),
+      kpiCard({ size: 'sm', icon: 'users', tone: 'amber', label: 'Qoldiq (debitorlik)', value: active.reduce((s, c) => s + c.remaining, 0) }),
+      kpiCard({ size: 'sm', icon: 'clock', tone: active.some((c) => c.overdue_days > 0) ? 'red' : 'green', label: 'Muddati o‘tgan', value: String(active.filter((c) => c.overdue_days > 0).length) + ' ta', sub: 'shartnoma' }));
+  }
+  const table = dataTable({ columns: cols, rows: [], onRow: (r) => openDetail(r.id), dateKey: 'contract_date', onFilter: renderStats, exportName: 'shartnomalar', filters: [{ key: 'contract_status', label: 'Holat', options: META.contract_statuses }, { key: 'service_name', label: 'Xizmat turi', options: META.service_types.map((s) => [s.name, s.name]) }, { key: 'manager_name', label: 'Menejer', options: META.managers.map((m) => [m.name, m.name]) }] });
   async function load() {
     let rows = await (rowsP || get('/api/contracts'));
     rowsP = null; // birinchi yuklashdan keyin har safar yangisi olinadi
     if (query.company) rows = rows.filter((c) => String(c.company_id) === String(query.company));
-    table.setRows(rows);
-    const active = rows.filter((c) => !['DRAFT', 'CANCELLED', 'CLOSED'].includes(c.contract_status));
-    stats.replaceChildren(kpiCard({ size: 'sm', icon: 'contract', tone: 'green', label: 'Faol shartnomalar', value: String(active.length), sub: `jami ${rows.length} ta` }), kpiCard({ size: 'sm', icon: 'coins', tone: 'blue', label: 'Shartnomalar summasi (faol)', value: active.reduce((s, c) => s + c.amount, 0) }), kpiCard({ size: 'sm', icon: 'inflow', tone: 'teal', label: 'To‘langan', value: active.reduce((s, c) => s + c.paid, 0) }), kpiCard({ size: 'sm', icon: 'users', tone: 'amber', label: 'Qoldiq (debitorlik)', value: active.reduce((s, c) => s + c.remaining, 0) }), kpiCard({ size: 'sm', icon: 'clock', tone: active.some((c) => c.overdue_days > 0) ? 'red' : 'green', label: 'Muddati o‘tgan', value: String(active.filter((c) => c.overdue_days > 0).length) + ' ta', sub: 'shartnoma' }));
+    table.setRows(rows); // KPI'larni `onFilter` (renderStats) chizadi
   }
   setTitle('Shartnomalar', 'Shartnoma → to‘lov → daromadni tan olish', [can('contracts', 'CREATE') ? h('button', { class: 'btn', onClick: () => companyForm() }, icon('plus', 15), 'Kontragent') : null, can('contracts', 'CREATE') ? h('button', { class: 'btn pri', onClick: () => contractForm() }, icon('plus', 15), 'Yangi shartnoma') : null]);
   box.append(stats, h('div', { class: 'card' }, table.el));
