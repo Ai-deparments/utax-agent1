@@ -19,6 +19,7 @@ data/import-*.json
 .erp-token
 ERP/
 .env.member
+.env.bak.*
 
 # Ko‘p kompaniyali bank reyestri (hisob raqamlari, kassa yig‘indilari) — foydalanuvchi ma’lumoti
 data/bank-registry.json

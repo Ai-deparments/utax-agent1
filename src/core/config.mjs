@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readSealedErpToken } from './sealed.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(here, '..', '..');
@@ -26,6 +27,11 @@ if (!process.env.TZ) process.env.TZ = env('APP_TZ', 'Asia/Tashkent');
 export const ON_VERCEL = !!process.env.VERCEL;
 const VERCEL_URL = process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '';
 const TMP = (p) => path.join('/tmp', 'utax', p);
+
+// UTAXERP tokeni: .env → bo'lmasa data/vault/erp-token.enc (DATA_VAULT_KEY bilan ochiladi).
+// Ochilmasa server baribir ishga tushadi — faqat ERP sinxronizatsiyasi o'chiq qoladi.
+const ENV_ERP_TOKEN = env('ERP_TOKEN', '');
+const SEALED_ERP = ENV_ERP_TOKEN ? null : readSealedErpToken(ROOT, { warn: (m) => { if (!TEST_MODE) console.warn(m); } });
 
 export const config = {
   port: Number(env('PORT', 8100)),
@@ -62,7 +68,10 @@ export const config = {
   // UTAXERP (api.utaxerp.uz) — moliya ma'lumoti manbai. Token FAQAT .env da (git'ga tushmaydi):
   // repoga va tashkilotga ruxsati bor xodimgagina shaxsiy kanal orqali beriladi.
   erp: {
-    token: env('ERP_TOKEN', ''),
+    // .env dagi ERP_TOKEN birinchi o'rinda; bo'lmasa — repodagi shifrlangan seyfdan (jamoa a'zosi faqat pull qiladi)
+    token: ENV_ERP_TOKEN || SEALED_ERP?.token || '',
+    tokenSource: ENV_ERP_TOKEN ? 'env' : SEALED_ERP ? 'vault' : '',
+    tokenExpiresAt: ENV_ERP_TOKEN ? null : SEALED_ERP?.expires_at || null,
     base: env('ERP_BASE', 'https://api.utaxerp.uz'),
     syncMs: intEnv('ERP_SYNC_MS', 3600000, 60000),
     fullAt: env('ERP_FULL_AT', '04:00'),

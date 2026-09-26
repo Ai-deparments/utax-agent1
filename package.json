@@ -22,6 +22,8 @@
     "vault:pack": "node scripts/data-vault.mjs pack",
     "vault:unpack": "node scripts/data-vault.mjs unpack",
     "vault:verify": "node scripts/data-vault.mjs verify",
+    "erp:token:seal": "node scripts/erp-token.mjs seal",
+    "erp:token:show": "node scripts/erp-token.mjs show",
     "erp:setup": "node scripts/erp-import.mjs && node scripts/erp-full.mjs && node scripts/erp-map.mjs",
     "erp:sync": "node scripts/erp-import.mjs",
     "erp:full": "node scripts/erp-full.mjs",
